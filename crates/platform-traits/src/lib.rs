@@ -35,7 +35,7 @@ mod witness;
 
 pub use biometric::{BiometricAuth, BiometricAvailability, PreflightResult};
 pub use clock::{BootClock, BootClockError, BootId};
-pub use error::{SecretError, UnavailableReason};
+pub use error::{SecretError, StoreStep, UnavailableReason};
 pub use key::{AccessGroup, SecretKey, SERVICE_PREFIX};
 pub use policy::{AccessPolicy, AuthPrompt, MAX_PROMPT_CHARS};
 pub use store::{Roaming, SecretStore, StoreCapabilities};

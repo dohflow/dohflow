@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use platform_traits::{
@@ -74,6 +75,9 @@ pub struct MockSecretStore {
     biometry_supported: bool,
     unavailable: Option<UnavailableReason>,
     device: BiometryDevice,
+    /// Whether a tag read or update on a biometric item fails with `Unavailable(Locked)`, as it does
+    /// on a real Mac. On by default: see [`MockSecretStore::allow_tag_access_on_biometric_items`].
+    biometric_tag_access_fails: AtomicBool,
 }
 
 impl MockSecretStore {
@@ -93,7 +97,28 @@ impl MockSecretStore {
             biometry_supported: true,
             unavailable: None,
             device,
+            biometric_tag_access_fails: AtomicBool::new(true),
         }
+    }
+
+    /// Stops (or starts again) failing a tag read or update on a BIOMETRIC item. A real Mac fails them
+    /// with `Unavailable(Locked)` (`errSecInteractionNotAllowed`): reading or updating an attribute of
+    /// an item whose access control needs a fingerprint makes the platform evaluate that access
+    /// control, and with no prompt allowed it refuses (personal-cfo-xuu). The mock fails them the same
+    /// way by default, so a design that keeps its markers on a biometric item fails a test without a
+    /// sensor; turn it off only to model a store that does not do this.
+    pub fn allow_tag_access_on_biometric_items(&self, allow: bool) {
+        self.biometric_tag_access_fails
+            .store(!allow, Ordering::SeqCst);
+    }
+
+    fn refuse_tag_access(&self, item: &Item) -> Result<(), SecretError> {
+        if item.policy == AccessPolicy::DeviceOnlyBiometryCurrentSet
+            && self.biometric_tag_access_fails.load(Ordering::SeqCst)
+        {
+            return Err(SecretError::Unavailable(UnavailableReason::Locked));
+        }
+        Ok(())
     }
 
     /// A store with no biometric access control (storing that policy is refused as `Unsupported`).
@@ -117,6 +142,12 @@ impl MockSecretStore {
 
     pub fn script_biometry(&self, script: BiometryScript) {
         *self.script.lock().unwrap() = script;
+    }
+
+    /// Whether an item is stored under `key`, whatever its policy (no prompt, no tag access).
+    #[must_use]
+    pub fn contains(&self, key: &SecretKey) -> bool {
+        self.items.lock().unwrap().contains_key(key)
     }
 
     /// How many items are stored (for assertions that nothing was written).
@@ -181,6 +212,7 @@ impl SecretStore for MockSecretStore {
         self.check_available()?;
         match self.items.lock().unwrap().get_mut(key) {
             Some(item) => {
+                self.refuse_tag_access(item)?;
                 item.tag = tag.cloned();
                 Ok(())
             }
@@ -190,12 +222,10 @@ impl SecretStore for MockSecretStore {
 
     fn public_tag(&self, key: &SecretKey) -> Result<Option<PublicTag>, SecretError> {
         self.check_available()?;
-        self.items
-            .lock()
-            .unwrap()
-            .get(key)
-            .map(|item| item.tag.clone())
-            .ok_or(SecretError::NotFound)
+        let items = self.items.lock().unwrap();
+        let item = items.get(key).ok_or(SecretError::NotFound)?;
+        self.refuse_tag_access(item)?;
+        Ok(item.tag.clone())
     }
 
     fn load_secret(

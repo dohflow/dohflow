@@ -14,9 +14,10 @@ use core_foundation::data::CFData;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::string::CFString;
 use core_foundation_sys::base::{kCFAllocatorDefault, CFRelease, CFTypeRef};
+use core_foundation_sys::error::CFErrorGetCode;
 use platform_traits::{
     AccessGroup, AccessPolicy, AuthPrompt, PublicTag, Roaming, SecretError, SecretKey, SecretStore,
-    SecretValue, StoreCapabilities,
+    SecretValue, StoreCapabilities, StoreStep,
 };
 use security_framework_sys::access_control::{
     kSecAccessControlBiometryCurrentSet, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
@@ -34,7 +35,7 @@ use security_framework_sys::keychain_item::{
 use zeroize::Zeroizing;
 
 use crate::auth;
-use crate::status::{map_os_status, ERR_SEC_ITEM_NOT_FOUND};
+use crate::status::{map_os_status, store_step_error, ERR_SEC_ITEM_NOT_FOUND, NO_STATUS_GIVEN};
 
 // Two constants the sys crate does not export; both are CFString constants of the Security framework.
 // `SecTask` reads the entitlements of a running process; the app asks about itself.
@@ -78,6 +79,14 @@ impl MacSecretStore {
     #[must_use]
     pub fn new(group: AccessGroup) -> Self {
         Self { group }
+    }
+
+    /// The raw status of removing the item under `key` (`errSecItemNotFound` when there is none).
+    fn delete_status(&self, key: &SecretKey) -> i32 {
+        let query = self.base_query(key);
+        let dict = CFDictionary::from_CFType_pairs(&query);
+        // SAFETY: `dict` is valid for the call.
+        unsafe { SecItemDelete(dict.as_concrete_TypeRef()) }
     }
 
     fn base_query(&self, key: &SecretKey) -> Vec<(CFString, CFType)> {
@@ -267,15 +276,18 @@ impl SecretStore for MacSecretStore {
                     &mut error,
                 );
                 if control.is_null() {
-                    if !error.is_null() {
+                    // The framework's own error says why: its numeric code and nothing else is kept (a
+                    // `CFError`'s description can echo what was passed in). With no error object the
+                    // code is `NO_STATUS_GIVEN`. This used to be reported as `NoPasscode` whatever the
+                    // cause, which hid the real one (personal-cfo-xuu).
+                    let code = if error.is_null() {
+                        NO_STATUS_GIVEN
+                    } else {
+                        let code = CFErrorGetCode(error);
                         CFRelease(error as CFTypeRef);
-                    }
-                    // [U] Mapped to NoPasscode on the documented reading that the framework refuses
-                    // this combination when no passcode is set; the error is not inspected, so other
-                    // causes would be reported the same way. Unverified until run on a signed build.
-                    return Err(SecretError::Unavailable(
-                        platform_traits::UnavailableReason::NoPasscode,
-                    ));
+                        i32::try_from(code).unwrap_or(NO_STATUS_GIVEN)
+                    };
+                    return Err(store_step_error(StoreStep::AccessControl, code));
                 }
                 // `control` is a +1 reference: `wrap_under_create_rule` takes ownership.
                 attrs.push((
@@ -294,13 +306,16 @@ impl SecretStore for MacSecretStore {
         // Replace semantics: only now remove any existing item (an access control cannot be changed
         // by an update), then add. A missing item is fine. If the add itself then fails, no item
         // remains: a failed store MAY leave no item (documented on the trait).
-        self.delete_secret(key)?;
+        let delete_status = self.delete_status(key);
+        if !matches!(delete_status, 0 | ERR_SEC_ITEM_NOT_FOUND) {
+            return Err(store_step_error(StoreStep::Delete, delete_status));
+        }
         // SAFETY: `dict` is valid for the call; a null result pointer means "return nothing".
         let status = unsafe { SecItemAdd(dict.as_concrete_TypeRef(), std::ptr::null_mut()) };
         if status == 0 {
             Ok(())
         } else {
-            Err(map_os_status(status))
+            Err(store_step_error(StoreStep::Add, status))
         }
     }
 
@@ -338,11 +353,7 @@ impl SecretStore for MacSecretStore {
     }
 
     fn delete_secret(&self, key: &SecretKey) -> Result<(), SecretError> {
-        let query = self.base_query(key);
-        let dict = CFDictionary::from_CFType_pairs(&query);
-        // SAFETY: `dict` is valid for the call.
-        let status = unsafe { SecItemDelete(dict.as_concrete_TypeRef()) };
-        match status {
+        match self.delete_status(key) {
             0 | ERR_SEC_ITEM_NOT_FOUND => Ok(()),
             other => Err(map_os_status(other)),
         }

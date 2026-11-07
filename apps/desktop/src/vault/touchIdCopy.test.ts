@@ -14,6 +14,7 @@ const HOST_CODES = [
   "biometry_unknown",
   "signed_build_needed",
   "store_unavailable",
+  "store_refused",
   "not_enabled",
   "prompt_not_completed",
   "unlock_unavailable",

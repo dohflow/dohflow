@@ -215,11 +215,14 @@ Run these in Terminal on the Mac that should run it, from the folder that holds 
         that is signed but not notarized; this clears it for this one app)
   2. DOHFLOW_KEYCHAIN_ACCESS_GROUP=$access_group \\
        ./DohFlowKeychainSmoke.app/Contents/MacOS/DohFlowKeychainSmoke --ignored --test-threads=1 --nocapture \\
-       --exact entitled_the_store_passes_the_conformance_suite 2>&1 | tee ~/Desktop/keychain-smoke-output.txt
-  3. Touch the sensor if a prompt appears. The test is EXPECTED to fail on a Mac where the biometric store
-     fails: the failure message names the exact error. Send back ~/Desktop/keychain-smoke-output.txt.
-     It holds no vault, no password and no key; it is a throwaway item in this app's access group that the
-     test deletes again.
+       --exact entitled_the_store_passes_the_conformance_suite \\
+       manual_the_tag_of_a_biometric_item_cannot_be_read_or_updated_without_authentication \\
+       manual_the_markers_sibling_reads_and_updates_without_authentication_next_to_a_biometric_item \\
+       2>&1 | tee ~/Desktop/keychain-smoke-output.txt
+  3. Touch the sensor if a prompt appears. These tests need a Mac with Touch ID and a fingerprint enrolled.
+     Each one reports ok or names the exact failure; a failure is information, not a mistake of yours. Send
+     back ~/Desktop/keychain-smoke-output.txt. It holds no vault, no password and no key: the tests add a
+     few throwaway items in this app's access group and delete them again.
 STEPS
   echo "==> kept the signed bundle: $kept"
   echo "    steps for the other Mac: $keep_dir/RUN-ON-THE-OTHER-MAC.txt"
@@ -245,6 +248,7 @@ entitled_tests=(
   entitled_the_access_group_is_the_signed_entitlement
   entitled_the_store_passes_the_conformance_suite
   entitled_a_public_tag_is_updated_without_authentication_and_the_secret_is_untouched
+  entitled_a_markers_sibling_round_trips_next_to_a_device_only_item
   entitled_report_the_biometric_availability
 )
 echo "==> entitled run (inside the signed bundle)"
