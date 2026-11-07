@@ -80,7 +80,9 @@ export function CompactNavBar({
           type="button"
           variant="ghost"
           className={barButton}
-          aria-haspopup="dialog"
+          // `aria-haspopup="dialog"` is deliberately NOT set: iOS maps it to a pop-up (menu) button, which
+          // is announced as one and is not a plain button to assistive technology or UI tests, and this
+          // opens a full-screen dialog, not a menu. `aria-expanded` carries the state.
           aria-expanded={open}
           aria-label={largeText ? "Sections" : undefined}
           onClick={() => setOpen(true)}

@@ -93,6 +93,16 @@ describe("the compact navigation (personal-cfo-i93n3.25 slice C)", () => {
     expect(screen.getByRole("button", { name: "Sections" }).textContent).toBe("Sections");
   });
 
+  it("is a plain button that reports whether its dialog is open, not a pop-up (menu) button", () => {
+    render(<Harness />);
+    const sections = screen.getByRole("button", { name: "Sections" });
+    // `aria-haspopup` would make iOS expose a pop-up button, not a button.
+    expect(sections).not.toHaveAttribute("aria-haspopup");
+    expect(sections).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(sections);
+    expect(sections).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("calls Search and Lock", () => {
     const onSearch = vi.fn();
     const onLock = vi.fn();
