@@ -698,4 +698,6 @@ fn the_largest_legal_envelope_fits_the_container_cap() {
         container.len()
     );
     parse_container_with_limit(&container, MAX_ENVELOPE_CONTAINER_LEN).unwrap();
+    // The protocol's `max_envelope_container_bytes` (7.1) is this exact size.
+    assert_eq!(container.len(), 17_040_163);
 }

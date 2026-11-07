@@ -522,3 +522,16 @@ fn an_envelope_container_over_the_size_cap_is_refused_before_it_is_read() {
     );
     const { assert!(MAX_ENVELOPE_CONTAINER_LEN > (1 << 24)) };
 }
+
+#[test]
+fn the_largest_snapshot_container_is_the_protocols_maximum() {
+    // The protocol's `max_snapshot_container_bytes` (7.1) is 2^30 + 313: the container's 18 framing
+    // bytes (magic, version, header length, ciphertext length), a header of at most 279 bytes
+    // (a 64-byte engine version, both commitments present, the envelope-only fields absent), and the
+    // 16-byte tag after a plaintext of at most 2^30.
+    let mut header = ClearHeader::decode(&vector("header_snapshot")).unwrap();
+    header.engine_version = "e".repeat(sync_core::header::MAX_ENGINE_VERSION);
+    let encoded = header.encode().unwrap();
+    assert_eq!(encoded.len(), 279);
+    assert_eq!(18 + encoded.len() + (1 << 30) + 16, 1_073_742_137);
+}
