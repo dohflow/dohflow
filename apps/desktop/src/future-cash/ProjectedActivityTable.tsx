@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { AlertTriangle, ChevronRight, Columns3, Search } from "lucide-react";
 
 import type { ForecastEventDto, MultiSeriesForecastDto } from "@/bindings";
@@ -13,11 +13,13 @@ import {
   formatSignedMoney,
   signedAmountClass,
 } from "@/lib/format";
+import { useCompactLayout } from "@/lib/compact";
 import { cn } from "@/lib/utils";
 import { PaginationControls } from "@/components/ui/pagination";
 import { PAGE_SIZE_OPTIONS, usePagination } from "@/lib/usePagination";
 import { explainEvent } from "./explainEvent";
 import { ForecastRowExplanation } from "./ForecastRowExplanation";
+import { PickerSheet } from "./PickerSheet";
 import { accountLabel, seriesAsLabelled } from "./seriesKeys";
 
 const TIER_LABEL: Record<string, string> = {
@@ -334,11 +336,33 @@ function AccountColumnPicker({
   onChange: (next: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // On a phone the choice opens in a bottom sheet (a different element tree), not a popover.
+  const compact = useCompactLayout();
   const real = accounts.filter((a) => a.account_id !== null);
   if (real.length === 0) return null;
+  // The same rows in both presentations (the account names arrive already told apart: 5ie.18).
+  const rows = real.map((account) => {
+    const id = account.account_id!;
+    const on = selected.includes(id);
+    return (
+      <label
+        key={id}
+        className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted"
+      >
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={() => onChange(on ? selected.filter((x) => x !== id) : [...selected, id])}
+        />
+        <span className="min-w-0 break-words">{account.name}</span>
+      </label>
+    );
+  });
   return (
     <div className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
@@ -352,34 +376,26 @@ function AccountColumnPicker({
           </span>
         )}
       </button>
-      {open && (
+      {open && !compact && (
         <div
           role="group"
           aria-label="Account columns"
           className="absolute right-0 z-20 mt-1 flex w-56 flex-col gap-1 rounded-md border bg-popover p-2 shadow-lg"
         >
-          {real.map((account) => {
-            const id = account.account_id!;
-            const on = selected.includes(id);
-            return (
-              <label
-                key={id}
-                className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted"
-              >
-                <input
-                  type="checkbox"
-                  checked={on}
-                  onChange={() =>
-                    onChange(
-                      on ? selected.filter((x) => x !== id) : [...selected, id],
-                    )
-                  }
-                />
-                <span className="min-w-0 break-words">{account.name}</span>
-              </label>
-            );
-          })}
+          {rows}
         </div>
+      )}
+      {compact && (
+        <PickerSheet
+          open={open}
+          onOpenChange={setOpen}
+          title="Account columns"
+          restoreFocusTo={triggerRef}
+        >
+          <div role="group" aria-label="Account columns" className="flex flex-col gap-1">
+            {rows}
+          </div>
+        </PickerSheet>
       )}
     </div>
   );

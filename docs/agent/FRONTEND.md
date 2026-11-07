@@ -571,6 +571,15 @@ on a desktop window, and a test proves each.
   Within-session state lifting (a destination keeping its filters across a visit elsewhere) is
   `personal-cfo-i93n3.27`, not this.
 
+- **Future Cash pickers on a phone** (personal-cfo-i93n3.27, slice B). The Series picker and the table's account-columns
+  picker are a different element tree on a compact screen (`useCompactLayout()`): the choice opens in the shared dialog
+  (`PickerSheet`, `future-cash/PickerSheet.tsx`, a bottom sheet) instead of a popover hanging off its trigger. The sheet is
+  named by the source copy (Series: "Choose which series to plot"; the table: "Account columns", the group keeping that
+  name) and has a generic Close. Values keep their meaning and **apply as they change**: there is no Apply step and
+  nothing to roll back, so Close, Escape and an outside tap all keep the choice, and focus returns to the trigger
+  (`restoreFocusTo`). The Series trigger carries `aria-expanded` but, on a phone, never `aria-haspopup` (iOS exposes it
+  as a pop-up button, the Compact navigation rule). Long account names wrap. Desktop keeps its popovers.
+
 ## 8. Testing
 
 - Each view gets a **Vitest + Testing Library** behavioral test that mocks
