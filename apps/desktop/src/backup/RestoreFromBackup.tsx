@@ -1,11 +1,13 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Loader2, Upload } from "lucide-react";
+import { Upload } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
 import { describeIpcError, useVault } from "@/vault/useVault";
+import { pickedFilePath } from "./pickedPath";
 
 /// Restore a vault from an encrypted backup file (au3, ADR 0024). Pick the package
 /// via a native Open dialog, enter its password, and the vault opens unlocked. A fresh
@@ -22,6 +24,10 @@ export function RestoreFromBackup({
   const id = useId();
   const pickerButton = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef(false);
+  // Set when the native picker closed without a file (cancelled, or failed): focus goes back to the
+  // button that opened it. The button is disabled while the picker is open, so a disabled element
+  // cannot hold focus and the browser drops it; it is restored once the button is enabled again.
+  const returnFocusAfterPick = useRef(false);
   const submitting = useRef(false);
   const [packagePath, setPackagePath] = useState<string | null>(null);
   const [password, setPassword] = useState("");
@@ -37,6 +43,13 @@ export function RestoreFromBackup({
     }
   }, [packagePath]);
 
+  useEffect(() => {
+    if (!picking && packagePath === null && returnFocusAfterPick.current) {
+      returnFocusAfterPick.current = false;
+      pickerButton.current?.focus();
+    }
+  }, [picking, packagePath]);
+
   async function onPick() {
     if (picking || submitting.current) return;
     setPicking(true);
@@ -48,9 +61,11 @@ export function RestoreFromBackup({
         filters: [{ name: "DohFlow backup", extensions: ["pcfobk"] }],
       });
       // `open` returns string | string[] | null; we requested a single file.
-      if (typeof selected === "string") setPackagePath(selected);
+      if (typeof selected === "string") setPackagePath(pickedFilePath(selected));
+      else returnFocusAfterPick.current = true;
     } catch {
       setError("The backup file picker could not be opened. Please try again.");
+      returnFocusAfterPick.current = true;
     } finally {
       setPicking(false);
     }
@@ -105,14 +120,15 @@ export function RestoreFromBackup({
             onClick={() => void onPick()}
             disabled={picking}
           >
-            {picking ? <Loader2 className="animate-spin" aria-hidden /> : <Upload aria-hidden />}
+            {picking ? <Spinner /> : <Upload aria-hidden />}
             {mode === "newNamed" ? "Restore as a new vault…" : "Restore from backup…"}
           </Button>
           {error && <p role="alert" className="text-sm text-loss">{error}</p>}
         </>
       ) : (
         <form onSubmit={(event) => void onRestore(event)} className="flex flex-col gap-2" aria-busy={busy}>
-          <p className="truncate text-xs text-muted-foreground">{packagePath}</p>
+          {/* The chosen file wraps (a long path is never cut off); it is not truncated. */}
+          <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{packagePath}</p>
           {mode === "newNamed" && (
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={`${id}-name`}>New vault name</Label>
@@ -160,7 +176,7 @@ export function RestoreFromBackup({
               type="submit"
               disabled={busy || password.length === 0 || (mode === "newNamed" && name.trim().length === 0)}
             >
-              {busy && <Loader2 className="animate-spin" aria-hidden />}
+              {busy && <Spinner />}
               {busy ? "Restoring…" : "Restore"}
             </Button>
           </div>

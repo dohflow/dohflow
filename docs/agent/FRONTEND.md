@@ -571,6 +571,18 @@ on a desktop window, and a test proves each.
   Within-session state lifting (a destination keeping its filters across a visit elsewhere) is
   `personal-cfo-i93n3.27`, not this.
 
+- **Vault access screens** (the pre-vault `Screen`: create, unlock, recovery, restore; and the vault picker, which is not a
+  `Screen` and is wired the same way, with both of its dialogs; personal-cfo-i93n3.26).
+  On a compact screen `Screen` (and the picker) marks itself `data-comfortable-targets`, which `globals.css` turns into
+  **48-point** inputs and buttons (a checkbox or radio keeps its 44-point hit region; a native `select` takes an explicit 48px height, because iOS WebKit ignores `min-height` on it; the floating Appearance toggle is outside the screen and keeps the 44-point floor), and moves focus to the
+  screen's heading when it appears (`useFocusHeadingOnArrival`) (a screen with its own focus rule, an incorrect password or a damaged
+  vault, sets that after). A damaged-vault message takes focus, with the restore action next, and the
+  password field is NOT focused on the way. A busy form is `aria-busy`. The shared busy indicator is
+  `Spinner` (`components/ui/spinner.tsx`): it spins, and under Reduce Motion it is hidden so the static busy
+  label ("Unlocking…", "Restoring…") is the whole indicator. The native backup picker's trigger is disabled
+  while the picker is open, so when the picker closes without a file (cancelled or failed) focus is returned
+  to it explicitly; a chosen file name wraps, never truncates.
+
 ## 8. Testing
 
 - Each view gets a **Vitest + Testing Library** behavioral test that mocks

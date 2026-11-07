@@ -187,6 +187,31 @@ describe("compact layout seams as compiled (personal-cfo-i93n3.25)", () => {
       expect(block).toMatch(/input:not\(\[type="hidden"\],\s*\[type="checkbox"\],\s*\[type="radio"\],\s*\[type="range"\]\)/);
     });
 
+    it("the vault access screens raise inputs and buttons from 44px to 48px, and checkboxes stay at 44px", async () => {
+      const css = await compiled(["p-4"]);
+      const block = splitCompactBlocks(css).blocks.find((b) => b.includes("min-height: 44px")) ?? "";
+      const at = block.indexOf("[data-comfortable-targets]");
+      expect(at).toBeGreaterThan(-1);
+      const rule = block.slice(at, block.indexOf("}", at) + 1);
+      expect(rule).toMatch(/min-height:\s*48px/);
+      for (const selector of ["button", "select", "textarea", "input:not("]) {
+        expect(rule, selector).toContain(selector);
+      }
+      // The checkbox and radio are excluded: the design asks 44 for those.
+      expect(rule).toMatch(/\[type="checkbox"\],\s*\[type="radio"\]/);
+      // It comes after the 44px floor and is more specific, so it wins (both are unlayered).
+      expect(at).toBeGreaterThan(block.indexOf("min-height: 44px"));
+      // A native select ignores min-height on iOS WebKit: it takes an explicit 48px height as well, and
+      // that rule also follows the 44px select rule so that it wins.
+      const selectAt = block.indexOf("[data-comfortable-targets] select");
+      expect(selectAt).toBeGreaterThan(-1);
+      expect(block.slice(selectAt, block.indexOf("}", selectAt))).toMatch(/height:\s*max\(48px,\s*calc\(1lh \+ 20px\)\)/);
+      expect(selectAt).toBeGreaterThan(block.indexOf("select {"));
+      // Never outside the compact query.
+      expect(splitCompactBlocks(css).rest).not.toContain("min-height: 48px");
+      expect(splitCompactBlocks(css).rest).not.toContain("max(48px");
+    });
+
     it("a native select takes an explicit height, because iOS WebKit ignores its min-height", async () => {
       const css = await compiled(["p-4"]);
       const block = splitCompactBlocks(css).blocks.find((b) => b.includes("min-height: 44px")) ?? "";

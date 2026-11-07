@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import type { VaultSummaryDto } from "@/bindings";
+import { COMPACT_QUERY } from "@/lib/compact";
 import { sparklinePoints, VaultPickerScreen } from "./VaultPickerScreen";
 
 const ops = vi.hoisted(() => ({
@@ -245,4 +246,79 @@ test("the restore action goes away on the next attempt when it fails for another
   fireEvent.click(within(dialog).getByRole("button", { name: /^unlock$/i }));
   expect(await within(dialog).findByText(/incorrect password/i)).toBeInTheDocument();
   expect(within(dialog).queryByTestId("restore")).not.toBeInTheDocument();
+});
+
+// personal-cfo-i93n3.26: the picker is the locked landing screen on a phone, so it follows the vault access
+// design like the `Screen` screens: 48-point targets, heading focus on arrival, aria-busy on its forms.
+function stubMatchMedia(compact: boolean) {
+  vi.stubGlobal("matchMedia", ((query: string) => ({
+    matches: compact && query === COMPACT_QUERY,
+    media: query,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  })) as unknown as typeof window.matchMedia);
+}
+
+describe("the picker on a phone (personal-cfo-i93n3.26)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  test("marks the screen and both of its dialogs for 48-point targets", async () => {
+    stubMatchMedia(false);
+    const { container } = render(<VaultPickerScreen />);
+    expect(container.querySelector("main")).toHaveAttribute("data-comfortable-targets");
+    fireEvent.click(screen.getByRole("button", { name: /real/i }));
+    expect(await screen.findByRole("dialog", { name: /unlock real/i })).toHaveAttribute("data-comfortable-targets");
+    fireEvent.click(screen.getByRole("button", { name: /back to vaults/i }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: /new vault/i }));
+    expect(await screen.findByRole("dialog", { name: /create a new vault/i })).toHaveAttribute("data-comfortable-targets");
+  });
+
+  test("moves focus to its heading when it appears on a compact screen", async () => {
+    stubMatchMedia(true);
+    render(<VaultPickerScreen />);
+    const heading = screen.getByRole("heading", { name: "Welcome back" });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading).toHaveAttribute("tabindex", "-1");
+  });
+
+  test("leaves focus alone on a desktop window", () => {
+    stubMatchMedia(false);
+    render(<VaultPickerScreen />);
+    expect(screen.getByRole("heading", { name: "Welcome back" })).not.toHaveAttribute("tabindex");
+  });
+
+  test("the unlock form is aria-busy while an unlock runs", async () => {
+    stubMatchMedia(false);
+    let finish: (value: string | null) => void = () => undefined;
+    ops.unlockVault.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    render(<VaultPickerScreen />);
+    fireEvent.click(screen.getByRole("button", { name: /real/i }));
+    fireEvent.change(await screen.findByLabelText(/master password/i), { target: { value: "hunter2hunter2" } });
+    const form = screen.getByRole("dialog", { name: /unlock real/i }).querySelector("form")!;
+    expect(form).toHaveAttribute("aria-busy", "false");
+    fireEvent.click(screen.getByRole("button", { name: /^unlock$/i }));
+    await waitFor(() => expect(form).toHaveAttribute("aria-busy", "true"));
+    finish("WrongPassword");
+    await waitFor(() => expect(form).toHaveAttribute("aria-busy", "false"));
+  });
+
+  test("the new-vault form is aria-busy while it creates", async () => {
+    stubMatchMedia(false);
+    let finish: (value: string | null) => void = () => undefined;
+    ops.createNamedVault.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    render(<VaultPickerScreen />);
+    fireEvent.click(screen.getByRole("button", { name: /new vault/i }));
+    await screen.findByRole("dialog", { name: /create a new vault/i });
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "Scratch" } });
+    fireEvent.change(screen.getByLabelText(/^master password$/i), { target: { value: "hunter2hunter2" } });
+    fireEvent.change(screen.getByLabelText(/confirm password/i), { target: { value: "hunter2hunter2" } });
+    fireEvent.click(screen.getByRole("checkbox"));
+    const form = screen.getByRole("dialog", { name: /create a new vault/i }).querySelector("form")!;
+    expect(form).toHaveAttribute("aria-busy", "false");
+    fireEvent.click(screen.getByRole("button", { name: /create vault/i }));
+    await waitFor(() => expect(form).toHaveAttribute("aria-busy", "true"));
+    finish("Failed");
+    await waitFor(() => expect(form).toHaveAttribute("aria-busy", "false"));
+  });
 });

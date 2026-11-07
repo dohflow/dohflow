@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+
+import { useFocusHeadingOnArrival } from "@/lib/arrivalFocus";
 import {
   ArrowLeft,
   ChevronRight,
   Eye,
   EyeOff,
-  Loader2,
   LockKeyhole,
   Plus,
   Search,
@@ -15,6 +16,7 @@ import { BrandLockup } from "@/brand/Brand";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
 import { describeIpcError, useVault } from "@/vault/useVault";
 import { PasswordStrengthMeter } from "@/vault/PasswordStrengthMeter";
 import { RestoreFromBackup } from "@/backup/RestoreFromBackup";
@@ -82,6 +84,8 @@ function createdLabel(createdAt: string): string {
 /// picked vault is remembered (the registry's active entry) for the next launch.
 export function VaultPickerScreen() {
   const { status, vaults, switchVault, restoreRecoveryStatus } = useVault();
+  const main = useRef<HTMLElement>(null);
+  useFocusHeadingOnArrival(main);
   const [query, setQuery] = useState("");
   const [unlocking, setUnlocking] = useState<VaultSummaryDto | null>(null);
   const [creating, setCreating] = useState(false);
@@ -108,7 +112,12 @@ export function VaultPickerScreen() {
   }
 
   return (
-    <main className="flex min-h-dvh flex-col items-center bg-background pt-[calc(3rem+var(--safe-area-top))] pr-[calc(2rem+var(--safe-area-right))] pb-[calc(1.5rem+max(var(--safe-area-bottom),var(--keyboard-inset)))] pl-[calc(2rem+var(--safe-area-left))]">
+    <main
+      ref={main}
+      // 48-point inputs and buttons and heading focus on arrival, as the `Screen` screens (compact only).
+      data-comfortable-targets=""
+      className="flex min-h-dvh flex-col items-center bg-background pt-[calc(3rem+var(--safe-area-top))] pr-[calc(2rem+var(--safe-area-right))] pb-[calc(1.5rem+max(var(--safe-area-bottom),var(--keyboard-inset)))] pl-[calc(2rem+var(--safe-area-left))]"
+    >
       <div className="flex h-full w-full max-w-[476px] flex-1 flex-col">
         {/* The stacked lockup above the vault list (personal-cfo-4d8.28.3): the mark
             centered over the wordmark, the tagline aligned to the wordmark's left edge. */}
@@ -269,6 +278,7 @@ function UnlockVaultModal({
       className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/50 backdrop-blur-[3px]"
       role="dialog"
       aria-modal="true"
+      data-comfortable-targets=""
       aria-label={`Unlock ${vault.name}`}
       onClick={submitting ? undefined : onBack}
     >
@@ -299,7 +309,7 @@ function UnlockVaultModal({
           </div>
         </div>
 
-        <form onSubmit={onSubmit} className="mt-5 flex flex-col gap-2">
+        <form onSubmit={onSubmit} className="mt-5 flex flex-col gap-2" aria-busy={submitting}>
           <Label htmlFor="picker-password">Master password</Label>
           <div className="relative">
             <Input
@@ -362,7 +372,7 @@ function UnlockVaultModal({
             className="mt-1 w-full"
             disabled={password.length === 0 || submitting}
           >
-            {submitting && <Loader2 className="animate-spin" aria-hidden />}
+            {submitting && <Spinner />}
             {submitting ? "Unlocking…" : "Unlock"}
           </Button>
         </form>
@@ -419,6 +429,7 @@ function CreateVaultModal({ onBack }: { onBack: () => void }) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/50 backdrop-blur-[3px]"
       role="dialog"
       aria-modal="true"
+      data-comfortable-targets=""
       aria-label="Create a new vault"
       onClick={onBack}
     >
@@ -446,7 +457,7 @@ function CreateVaultModal({ onBack }: { onBack: () => void }) {
           </p>
         </div>
 
-        <form onSubmit={onSubmit} className="mt-5 flex flex-col gap-4">
+        <form onSubmit={onSubmit} className="mt-5 flex flex-col gap-4" aria-busy={submitting}>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="new-vault-name">Name</Label>
             <Input
@@ -499,7 +510,7 @@ function CreateVaultModal({ onBack }: { onBack: () => void }) {
           )}
 
           <Button type="submit" className="w-full" disabled={!canSubmit}>
-            {submitting && <Loader2 className="animate-spin" aria-hidden />}
+            {submitting && <Spinner />}
             {submitting ? "Creating…" : "Create vault"}
           </Button>
         </form>
