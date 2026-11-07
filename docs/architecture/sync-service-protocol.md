@@ -116,8 +116,12 @@ credential, and a server MAY implement either with any opaque token format:
   entitlement) is outside this protocol; the DohFlow desktop client obtains it
   through a system-browser sign-in (ADR 0004 section 4). It is
   accepted only by `claimCredential`, and, **before the vault's genesis is
-  installed**, by `stageSnapshot`, `putArtifact` and `installEpoch` (`reason 1`),
-  because no device credential exists yet.
+  installed**, by `stageSnapshot`, `stageSnapshotClosure` (4.14), the four
+  operations that stage in parts (4.13: `beginSnapshotUpload`, `putSnapshotPart`,
+  `completeSnapshotUpload` and `abortSnapshotUpload`), `putArtifact` and
+  `installEpoch` (`reason 1`), because no device credential exists yet. (A vault
+  whose first snapshot has more than 4096 artifacts is founded by staging its closure
+  under the account credential, so that operation has to be on this list.)
 - A **device credential** is scoped to one device of one vault and is returned
   by `claimCredential`. It is accepted by every other authenticated operation,
   and by all of them once the genesis is installed.
@@ -927,13 +931,17 @@ out of order.
 the body as `application/octet-stream` with a `Content-Length`. Like `stageSnapshot`
 it accepts an account credential before the vault's genesis is installed and a device
 credential after it. The server decides in this order, and the first failing step
-answers:
+answers. **Steps 1 to 4 are decided from the headers and the server's state alone, before
+any byte of the body is read,** so a refused request costs the server no more than its
+headers did.
 
 1. **Authenticate** (`Unauthorized`, `DeviceRevoked`, `Forbidden`), then **the halt
    gate** (`ReplicaHalted`): this operation stages a snapshot.
-2. **The length**, from `Content-Length` before any byte is read: more than
-   `max_snapshot_closure_bytes` is `SnapshotTooLarge` (HTTP 413, the closure holds more
-   than 2^20 ids); a length that is not a multiple of 32 is `MalformedObject`.
+2. **The length**, from `Content-Length` before any byte is read. A request with no
+   `Content-Length`, or one sent with a chunked `Transfer-Encoding`, is
+   `MalformedRequest`: the length is what lets a server refuse an over-long body unread.
+   More than `max_snapshot_closure_bytes` is `SnapshotTooLarge` (HTTP 413, the closure
+   holds more than 2^20 ids); a length that is not a multiple of 32 is `MalformedObject`.
 3. **The snapshot.** It MUST have been staged (or already be published or retained):
    `SnapshotNotFound`. A snapshot that is staged keeps its closure; one that was
    dropped is not there.
@@ -941,7 +949,8 @@ answers:
 5. **The content.** The ids are strictly ascending (`MalformedObject`), and the
    closure commitment of `vault-format.md` C.3 over them, computed by the server, equals
    the `artifact_manifest_commitment` in the staged snapshot's clear header
-   (`MalformedObject`). Nothing is stored for a body that fails.
+   (`MalformedObject`). Nothing is stored for a body that fails, and a request that fails changes
+   nothing for a snapshot that is already published.
 6. **Quota.** `QuotaExceeded`.
 7. **Store** the body with the snapshot and answer `201`, or `200` for a snapshot that
    already holds this closure (the commitment fixes the list, so a retry is always the
@@ -1222,6 +1231,8 @@ protocol-visible consequences:
   server, its parts are discarded and its reservation is released. The expiry is
   fixed when the upload begins (the rule above for announced windows). Seven days is
   the usual default of the object stores servers sit on.
+- **Closure sidecars.** The bytes of a staged closure (section 4.14) count toward
+  `usage` like any stored object, and are deleted with their snapshot.
 - **Collection.** An artifact is collectible only if no active or retained
   snapshot or tail pins it and a newer retained recovery root excludes it. An
   uploaded object that no accepted publication references is collected after
@@ -1414,6 +1425,7 @@ production deploy).
 | 2026-11-03 | `personal-cfo-g3m.36` | addition | Operations `beginSnapshotUpload`, `putSnapshotPart`, `completeSnapshotUpload` and `abortSnapshotUpload` (4.13), which stage a snapshot in parts; errors `UploadNotFound`, `PartOutOfSequence` and `UploadIncomplete`; the optional `getInfo` limits `snapshot_single_request_max_bytes`, `snapshot_part_max_bytes` and `snapshot_upload_expiry_seconds` (7.2); the incomplete-upload expiry of 7.3; the halt gate (4.12) also applies to the three operations that stage; and the second exception to the failure rule of 2.5, the discard of an upload whose container does not match what was declared (4.13). |
 | 2026-11-03 | `personal-cfo-g3m.36` | pre-release amendment | What 7.1's acceptance rule means for a snapshot: a server accepts it through `stageSnapshot` up to its `snapshot_single_request_max_bytes` and above that through the operations of 4.13, so `stageSnapshot` can answer `PayloadTooLarge` (a code it did not list before) for a container over that limit. |
 | 2026-11-03 | `personal-cfo-v98vd` (AC27) | pre-release amendment | The failure name for an epoch record that names a membership record that is neither installed nor in the request is `EpochRecordMissing` (400, a malformed pairing), as 6.1 step 4 already said, and no longer `BadEpochSequence` (409, "fetch the chain and rebuild"), which sent a client with a malformed request into a rebuild loop. The membership-chain verifier named it `BadEpochSequence`, and the public vector `invalid_epoch_naming_an_unknown_head` pinned that name; both are corrected (vault-format.md spec-version 27), and `invalid_grant_without_the_add_it_names` is added (`vectors_version` stays 1: 60 cases). Section 6.1 and the error registry are unchanged. |
+| 2026-11-06 | `personal-cfo-v98vd` (AC30) | pre-release amendment | Section 2.4's list of operations that accept an account credential before the genesis is installed named `stageSnapshot`, `putArtifact` and `installEpoch` only, though 4.13 already gave the four operations that stage in parts the account credential. The list now names those four and `stageSnapshotClosure`. This corrects 2.4 to agree with 4.13 and with the operation table (`auth` is `account/device` for each); it changes no request, response or code. |
 | 2026-11-06 | `personal-cfo-v98vd` (AC30) | addition | Operations `stageSnapshotClosure` and `getSnapshotClosure` (4.14), which stage and return a snapshot's closure as a binary sidecar of up to 2^20 ids; the halt gate (4.12) also applies to `stageSnapshotClosure`; the response member `artifact_count` of `getLatestSnapshot`. |
 | 2026-11-06 | `personal-cfo-v98vd` (AC30) | pre-release amendment | A snapshot's closure may hold up to 2^20 ids, where 4.4 and 4.9 allowed the 4096 of `max_artifact_manifest_ids`: a closure of more than 4096 ids is staged first and the `publishSnapshot` or `installEpoch` request then carries an empty `artifact_manifest` (a request member's meaning); `getLatestSnapshot` returns `artifact_manifest` as `null` for such a closure; `ArtifactMissing` lists at most the first 4096 missing ids; and section 7.1 gains the rows `max_snapshot_closure_ids` and `max_snapshot_closure_bytes`. |
 
@@ -1463,9 +1475,11 @@ For `personal-cfo-g3m.36` (the third row), against the same five things:
    table. The one rule of 7.1 whose reading is narrowed, that a server MUST accept every
    well-formed object, is the pre-release amendment of the fourth row.
 
-For `personal-cfo-v98vd` AC30 (the last two rows), against the same five things. The
-addition row is the two new operations and one optional response member. The
-pre-release row is what the other four checks find:
+For `personal-cfo-v98vd` AC30 (the last three rows), against the same five things. The
+addition row is the two new operations and one optional response member. The first
+pre-release row (the 2.4 list) is a text correction that changes no request, response,
+code or number, so the five checks pass trivially for it. The second pre-release row is
+what the checks below find:
 
 1. **An existing operation's request:** changed, so this is a pre-release amendment and
    not an addition. `artifact_manifest` in `publishSnapshot` and `installEpoch` is empty

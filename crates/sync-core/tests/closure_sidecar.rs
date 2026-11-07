@@ -90,6 +90,15 @@ fn all_cases() -> Vec<Case> {
         literal("empty", "An empty body is the empty closure, which has a commitment like any other.", Vec::new()),
         literal("one_id", "One id.", a.to_vec()),
         literal("two_ids_ascending", "Two ids in ascending order.", [a, b].concat()),
+        {
+            let json_list: Vec<String> = [1_u64, 2, 3].iter().map(|&i| hex(&counted_id(i))).collect();
+            Case {
+            name: "three_ids_in_both_forms",
+            description: "A closure of 4096 ids or fewer may be sent either way: as this body, or as the JSON list of 64-hex ids in publishSnapshot or installEpoch. Both give the one commitment, the delta's.",
+            body: json!({ "hex": hex(&[counted_id(1), counted_id(2), counted_id(3)].concat()), "json_list": json_list }),
+            bytes: [counted_id(1), counted_id(2), counted_id(3)].concat(),
+        }
+        },
         counted("the_delta_bound", "4096 ids: the most an envelope's delta holds, and fine for a closure.", 4096),
         counted("one_above_the_delta_bound", "4097 ids: more than a delta can hold; a closure may.", 4097),
         counted("the_closure_bound", "2^20 ids (33,554,432 bytes): the most a closure holds.", MAX_SNAPSHOT_CLOSURE),
@@ -137,7 +146,7 @@ fn document() -> Value {
         "vectors_version": 1,
         "spec": "docs/architecture/sync-service-protocol.md 4.14 and 7.1; docs/architecture/vault-format.md C.3 and C.4 (field 17); personal-cfo-v98vd AC30",
         "synthetic": "Every id is a synthetic counter. No key, secret or real value is in this file.",
-        "how_to_read": "A case gives a closure sidecar body and what a server must make of it. 'body' is {hex} (the bytes) or {counted_ids: N, extra_zero_bytes?: M}: the body of N ids followed by M zero bytes, where id i (0-based) is i as a big-endian 64-bit integer in its first eight bytes and zero in the other twenty-four, so the ids ascend. 'expect' is {ok: {count, commitment}}, where 'commitment' is the hex of the closure commitment of C.3 (SHA-256 of the label 'dohflow/sync-artifact-manifest/v1' and the ids as a CBE1 list) over the ids in the body, which a server compares with the snapshot header's field 17; or {error: name}: TooManyIds (the body is longer than 2^20 * 32 bytes; the protocol's SnapshotTooLarge), NotWholeIds (the length is not a multiple of 32) or NotAscending (an id is not greater than the one before it, which includes a repeat); the last two are the protocol's MalformedObject. The length is judged first, then order. The body is never sorted for the sender.",
+        "how_to_read": "A case gives a closure sidecar body and what a server must make of it. 'body' is {hex} (the bytes, with 'json_list' alongside when the same closure may be sent as the JSON list of publishSnapshot or installEpoch, in which case both forms give the one commitment) or {counted_ids: N, extra_zero_bytes?: M}: the body of N ids followed by M zero bytes, where id i (0-based) is i as a big-endian 64-bit integer in its first eight bytes and zero in the other twenty-four, so the ids ascend. 'expect' is {ok: {count, commitment}}, where 'commitment' is the hex of the closure commitment of C.3 (SHA-256 of the label 'dohflow/sync-artifact-manifest/v1' and the ids as a CBE1 list) over the ids in the body, which a server compares with the snapshot header's field 17; or {error: name}: TooManyIds (the body is longer than 2^20 * 32 bytes; the protocol's SnapshotTooLarge), NotWholeIds (the length is not a multiple of 32) or NotAscending (an id is not greater than the one before it, which includes a repeat); the last two are the protocol's MalformedObject. The length is judged first, then order. The body is never sorted for the sender.",
         "cases": cases,
     })
 }
@@ -186,7 +195,7 @@ fn body_of(description: &Value) -> Vec<u8> {
 fn from_sidecar_gives_every_committed_vector_its_outcome() {
     let file: Value = serde_json::from_str(VECTORS).unwrap();
     let cases = file["cases"].as_array().unwrap();
-    assert!(cases.len() >= 14);
+    assert!(cases.len() >= 15);
     for case in cases {
         assert_eq!(
             outcome(&body_of(&case["body"])),
@@ -194,6 +203,27 @@ fn from_sidecar_gives_every_committed_vector_its_outcome() {
             "{}",
             case["name"]
         );
+        // A case that also gives the closure as a JSON list: the list commits to the same value.
+        if let Some(list) = case["body"]["json_list"].as_array() {
+            let ids: Vec<[u8; 32]> = list
+                .iter()
+                .map(|id| {
+                    let text = id.as_str().unwrap();
+                    let mut out = [0_u8; 32];
+                    for (i, byte) in out.iter_mut().enumerate() {
+                        *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).unwrap();
+                    }
+                    out
+                })
+                .collect();
+            let as_list = ArtifactManifest::new(ids).unwrap().commitment();
+            assert_eq!(
+                case["expect"]["ok"]["commitment"].as_str().unwrap(),
+                hex(as_list.as_bytes()),
+                "{}",
+                case["name"]
+            );
+        }
     }
 }
 

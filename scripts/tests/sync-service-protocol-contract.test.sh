@@ -246,6 +246,11 @@ need "closure: the body is raw ids with no framing" 'The ids'"'"' 32 raw bytes e
 need "closure: the body bound is 2^20 ids of 32 bytes" '**33,554,432 bytes** (`max_snapshot_closure_bytes`'
 need "closure: a body out of order is refused, not sorted" 'never put in order for the sender'
 need "closure: the length is judged from Content-Length" 'from `Content-Length` before any byte is read'
+need "closure: 2.4 lets the account credential stage a closure and the parts operations" '`stageSnapshotClosure` (4.14), the four'
+need "closure: no Content-Length or chunked encoding is MalformedRequest" 'or one sent with a chunked `Transfer-Encoding`, is'
+need "closure: steps 1 to 4 are decided before the body is read" '**Steps 1 to 4 are decided from the headers and the server'"'"'s state alone, before'
+need "closure: closure bytes count toward usage" 'The bytes of a staged closure (section 4.14) count toward'
+need "closure: 11.4 names the 2.4 correction" "Section 2.4's list of operations that accept an account credential"
 need "closure: the commitment check is the exact one" 'The commitment check is the exact one of `installEpoch` step 8'
 need "closure: a staged closure means an empty request list" 'this request then carries an empty'
 need "closure: ArtifactMissing is bounded" 'the first 4096 in ascending order'
