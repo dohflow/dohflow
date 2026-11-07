@@ -279,8 +279,16 @@ synthetic no-app recovery test before any such public claim.
   C.4 ("Counter register and nonce state") says a register entry is never 0 and what a missing
   entry, a missing witness or a witness of exactly 0 means, and C.6 freshness rule 5 says how the
   verified state is born (a birth mark in the witness before the first persist) and how each
-  combination of persisted state and witness is judged. No wire, write-set, vector or
-  `engine_version` change: the tables are device-local and outside every hash.
+  combination of persisted state and witness is judged. `sync_genesis.state` moves only forward
+  (`Persisted`, `Installed`, `Published`) and has two terminal states: `VaultKnown` (the service
+  refused the genesis because the vault already exists; the device bootstraps as a replica) and
+  `GenesisResumeLost` (an earlier attempt of this genesis reached the service and the container it
+  sent is gone, so a fresh export would not be what the service holds). Both are persisted so that
+  a restart never retries and never burns a counter on a fresh seal; nothing is published, minted
+  or discarded; `GenesisResumeLost` is shown in Sync status with the support path, because the
+  vault holds changes the service's snapshot lacks and bootstrapping would drop them. Neither state
+  can be left, and `GenesisResumeLost` is entered only from `Persisted` or `Installed`. No wire,
+  write-set, vector or `engine_version` change: the tables are device-local and outside every hash.
 - `spec-version = 33` (personal-cfo-bxsbz.4, schema version 67) adds the nullable device-local column
   `sync_outbox.issued_at`: the command's original `issued_at`, in microseconds since the Unix epoch and
   bounded as an envelope's is (C.6), written in the operation-log transaction while Sync is enabled.
@@ -631,7 +639,7 @@ therefore requires reviewing this inventory.
 | `outbox_queue` | 3 | exclude | exclude | Device-local state: the commands a rebase queued for the user, with their reason, envelope and audit evidence. |
 | `sync_counter_register` | 3 | exclude | exclude | Device-local state: the durable `next_counter` of each `(vault_id, key_epoch, fingerprint, object_type)` context (C.4). A row is never 0. Written under the writer lock, so a restore rolls it back and the independent witness detects it. |
 | `sync_saved_snapshot` | 3 | exclude | exclude | Device-local state: the sealed snapshot saved beside the register for an exact-byte retransmission, with the hashes of what it was sealed from. |
-| `sync_genesis` | 3 | exclude | exclude | Device-local state: the genesis records this device minted at sync-enable, persisted before any key is installed from them, and how far enabling got. The records never change. |
+| `sync_genesis` | 3 | exclude | exclude | Device-local state: the genesis records this device minted at sync-enable, persisted before any key is installed from them, and how far enabling got (`Persisted`, `Installed`, `Published`, or a terminal `VaultKnown` or `GenesisResumeLost`). The records never change. |
 <!-- inventory:end -->
 
 Rules that apply to the whole inventory:
