@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 pub mod register;
+pub mod snapshot_service;
 
 use sync_core::header::Fingerprint;
 use sync_core::membership::{Action, MembershipBody, Reason, SignedRecord, KEM_ID, SUITE_ID};

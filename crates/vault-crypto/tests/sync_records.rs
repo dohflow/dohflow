@@ -535,5 +535,9 @@ fn no_debug_output_of_an_accepted_walk_shows_key_bytes() {
             !shown.contains(&format!("{byte:02x}").repeat(32)),
             "key bytes {byte:#04x} in hex form: {shown}"
         );
+        assert!(
+            !shown.contains(&format!("{:x?}", [byte; 32])),
+            "key bytes {byte:#04x} in hex-array form: {shown}"
+        );
     }
 }

@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=34 -->
+<!-- vault-format: spec-version=35 -->
 <!-- vault-format: schema-version=68 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -272,6 +272,12 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 35` (personal-cfo-1cltt.4, part B) states how a snapshot is published and where
+  its plaintext is read from (C.8 "Publishing a snapshot": a genesis by `installEpoch`, a later
+  snapshot by `publishSnapshot`, the live vault only for a genesis, no publish while halted or
+  stopped, a refused stage while enabling is not read as the vault being known) and the lifecycle
+  of the saved sealed snapshot file (C.4 "Saved sealed snapshot"). No wire layout, write-set rule,
+  vector or `engine_version` change, and no schema change.
 - `spec-version = 34` (personal-cfo-1cltt.4, schema version 68) adds the SQLite home of the counter
   register and of the genesis a device mints at sync-enable: the class-3 tables
   `sync_counter_register`, `sync_saved_snapshot` and `sync_genesis` (inventory rows, all excluded from
@@ -1497,6 +1503,38 @@ receives and accepts only an exact-byte retry afterwards, as a duplicate-detecti
 backstop and never as the security source. The same independent witness also
 protects the newest verified membership head and the accepted epoch chain (C.6).
 
+### Saved sealed snapshot
+
+A snapshot's container can be up to 1 GiB, so the exact bytes sealed for a publish are a **file**,
+never a database row, kept so that a retransmission of the same publish sends the same ciphertext
+and burns no second counter. The device-local table `sync_saved_snapshot` holds the record that
+names it (ids, the plaintext's SHA-256, the container's SHA-256 and length, the counter). The file's
+lifecycle:
+
+- **Path.** `sync/snapshots/<snapshot id as 32 lowercase hex digits>.snapshot`, in the `sync/`
+  directory beside `vault.db`. Its temporary name is `.<same name>.tmp` in the same directory.
+- **Write.** Atomic: to the temporary name, flushed to disk, renamed over the final name, and the
+  directory flushed, so a crash leaves the old file or the new one whole. The register's record is
+  written only after the file is.
+- **Reuse.** Only when the record, the file's length and the file's SHA-256 all agree, the header
+  still names the key epoch and device, and the register has advanced past the saved counter. A
+  file that is missing or fails any check is not reusable: the publish reseals with a fresh
+  counter and the record is replaced.
+- **Dropped** once the publish is accepted (a re-snapshot published, a genesis installed), or when a
+  genesis is refused as `VaultKnown`. Any other answer, `Unavailable` included, keeps the file: the
+  client then resends exactly these bytes, because resealing the same snapshot id with a new
+  counter would be a different byte string and an `ObjectConflict`.
+- **Replaced** when a seal is for a different publish: the record is replaced and the earlier
+  file is removed.
+- **Backups.** Excluded. A backup is `vault.db`, the envelope and the attachment blobs; a restore
+  clears `sync/` and the restored register row names a file that is gone, which the rule above
+  treats as not reusable.
+- **Deletion.** Removed with the vault (the whole `sync/` directory goes).
+- **Key rotation.** Not re-encrypted: it is ciphertext under the epoch key, not a copy of vault
+  data. A rotation neither reads nor rewrites it, and a seal under a new epoch is a new publish.
+- **Sweeps.** Any housekeeping of `sync/` temporary files must leave `snapshots/` alone: its
+  temporary names belong to a write in flight.
+
 ## C.5 Idempotency keys and the tag
 
 Every idempotency key that enters a Sync envelope is a UUID version 4 drawn from
@@ -1980,6 +2018,29 @@ the typed error `SnapshotTooLarge` until a chunked framing is specified.
 Publication follows ADR 0074 Decision 1: the service accepts a snapshot only when
 `base_seq` equals the current head and the snapshot, its artifact closure and
 every closure pin are durable in one compare-and-swap transaction.
+
+### Publishing a snapshot
+
+A **genesis** (the first snapshot of a vault, sealed under epoch 1) is published by `installEpoch`
+with `reason 1`, `base_seq` `0`, the genesis records exactly as the device persisted them, and the
+snapshot's closure sidecar (empty until class-1b artifacts join the genesis). A later snapshot (a
+re-snapshot that truncates a tail) is published by `publishSnapshot` with `base_seq` equal to the
+head and to the snapshot's own; a snapshot that starts a key epoch is never sent there. A client
+stages the snapshot first. A refused stage while enabling is not evidence of anything, because the
+service refuses the account credential at `stageSnapshot` once the genesis is installed (which is
+the state after a lost `installEpoch` response): the client goes on to `installEpoch` with the same
+bytes, and only that answer says the vault is known (`VaultExists`, R39), after which the genesis is
+never published or re-minted and nothing in the vault is discarded.
+
+**Where the plaintext is read from.** Only a genesis is read from the live vault, at sync-enable,
+before any outbox row exists. The live vault holds the effects of local commands no envelope has
+sequenced, so every other snapshot is read from a state equal to the log at the snapshot's head,
+and the client refuses to publish a snapshot after the genesis whose source is the live vault
+(before it seals, spends a counter or makes a request).
+
+**While halted or stopped.** A replica halted at a poisoned position, or stopped at an invalid
+envelope or an engine version it does not run, publishes no snapshot (ADR 0074 Addendum D rule 5);
+the client refuses locally, before it seals, spends a counter or makes a request.
 
 ## C.9 Artifact transport
 

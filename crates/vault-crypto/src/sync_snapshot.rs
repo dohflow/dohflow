@@ -41,6 +41,7 @@ use std::path::{Path, PathBuf};
 
 use platform_traits::{CounterContext, RollbackWitness};
 use sha2::{Digest, Sha256};
+use sync_core::artifact::ArtifactId;
 use sync_core::envelope::ArtifactManifest;
 use sync_core::header::{
     encode_container, parse_container, ClearHeader, Fingerprint, ManifestCommitment, NonceDomain,
@@ -123,6 +124,14 @@ fn context_of(key: &EpochKey, fingerprint: &Fingerprint) -> CounterContext {
 /// [`SnapshotSealError::PlaintextInvalid`] if the plaintext does not verify or its closure is not a
 /// strictly ascending list of at most 4096 ids.
 pub fn closure_commitment_of(plaintext: &[u8]) -> Result<ManifestCommitment, SnapshotSealError> {
+    // `verify` already requires strictly ascending ids; the manifest type orders and refuses a
+    // duplicate or an oversized closure again, so the commitment is over a list that is.
+    Ok(ArtifactManifest::new(closure_bytes_of(plaintext)?)
+        .map_err(|_| SnapshotSealError::PlaintextInvalid)?
+        .commitment())
+}
+
+fn closure_bytes_of(plaintext: &[u8]) -> Result<Vec<[u8; 32]>, SnapshotSealError> {
     fn id_of(hex: &str) -> Option<[u8; 32]> {
         if hex.len() != 64 {
             return None;
@@ -134,18 +143,26 @@ pub fn closure_commitment_of(plaintext: &[u8]) -> Result<ManifestCommitment, Sna
         Some(out)
     }
     let verified = verify_plaintext(plaintext).map_err(|_| SnapshotSealError::PlaintextInvalid)?;
-    let ids = verified
+    verified
         .manifest
         .artifacts
         .iter()
         .map(|id| id_of(id))
         .collect::<Option<Vec<_>>>()
-        .ok_or(SnapshotSealError::PlaintextInvalid)?;
-    // `verify` already requires strictly ascending ids; the manifest type orders and refuses a
-    // duplicate or an oversized closure again, so the commitment is over a list that is.
-    Ok(ArtifactManifest::new(ids)
-        .map_err(|_| SnapshotSealError::PlaintextInvalid)?
-        .commitment())
+        .ok_or(SnapshotSealError::PlaintextInvalid)
+}
+
+/// The artifact ids a snapshot plaintext's manifest names, ascending: the closure sidecar that
+/// travels with `publishSnapshot` and `installEpoch`. Empty until `personal-cfo-1cltt.7` puts class-1b
+/// artifacts into a genesis.
+///
+/// # Errors
+/// [`SnapshotSealError::PlaintextInvalid`], as [`closure_commitment_of`].
+pub fn closure_ids_of(plaintext: &[u8]) -> Result<Vec<ArtifactId>, SnapshotSealError> {
+    Ok(closure_bytes_of(plaintext)?
+        .into_iter()
+        .map(ArtifactId::from_derived)
+        .collect())
 }
 
 /// Seal `plaintext` as the snapshot `fields` describe, with `key` as the epoch's key and `sealer`
