@@ -51,7 +51,29 @@ export function useArchiveFlow(
       setConfirming(false);
       void run();
     },
+    /// The phone's confirmation (a full-screen sheet): the question stays OPEN while the archive runs and when it
+    /// fails, so the failure is read where the choice was made and Cancel is still there to leave; it closes only when
+    /// the archive worked. (The desktop's inline notice closes at once and shows the failure under the row: `confirm`.)
+    async confirmInSheet() {
+      if (busy || account === null) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const failure = await archive(account.id);
+        if (failure) setError(describeIpcError(failure));
+        else setConfirming(false);
+      } catch {
+        setError(ARCHIVE_OUTCOME_UNKNOWN);
+      } finally {
+        setBusy(false);
+      }
+    },
     cancel() {
+      setConfirming(false);
+    },
+    /// Leaving the sheet with a failure shown: the failure goes with it (the person has seen it and chose to leave).
+    dismissSheet() {
+      if (busy) return;
       setConfirming(false);
     },
   };

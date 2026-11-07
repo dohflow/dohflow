@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -334,7 +334,9 @@ function Stat({
         <span
           className={cn(
             "font-semibold tabular-nums compact:[overflow-wrap:anywhere]",
-            emphasis ? "text-lg" : "text-base",
+            // On a phone the figure never outgrows the window: the smaller of its size and a share of the window width,
+            // so at the largest text size it stays on one line instead of breaking inside the number.
+            emphasis ? "text-lg compact:text-[min(1.125rem,7.5vw)]" : "text-base compact:text-[min(1rem,7.5vw)]",
             valueClass,
           )}
         >
@@ -568,6 +570,7 @@ function AccountRow({
 }) {
   const { archiveAccount, reinstateAccount } = useAccounts();
   const archiveFlow = useArchiveFlow(account, archiveAccount);
+  const archiveButtonRef = useRef<HTMLButtonElement>(null);
   // In batch mode an editable account's figure becomes an inline input; everything
   // else in the row (name, subtype, controls) stays put (personal-cfo-4d8.25.24).
   const editing = batch !== null && batch.isEditable(account);
@@ -651,6 +654,7 @@ function AccountRow({
         </button>
         {account.active ? (
           <button
+            ref={archiveButtonRef}
             type="button"
             // A balance that anchors the forecast must not vanish from it silently
             // (personal-cfo-tiqf, ADR 0056); the shared flow asks first when it does.
@@ -687,7 +691,7 @@ function AccountRow({
       )}
       {/* Sits UNDER the row rather than inside it: the row's own name is a button that
           opens the account, and a button inside a button is invalid HTML. */}
-      <ArchiveImpactConfirm account={account} flow={archiveFlow} />
+      <ArchiveImpactConfirm account={account} flow={archiveFlow} triggerRef={archiveButtonRef} />
       <ArchiveFailure flow={archiveFlow} />
     </li>
   );

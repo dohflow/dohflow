@@ -588,6 +588,18 @@ on a desktop window, and a test proves each.
   a leading date); the others keep their order. Account detail's Activity is the second user (Upcoming and Posted labels,
   the projected rows as cards). Projected activity is the first user; `.28`'s Accounts and Activity are next.
 
+- **Archive an account on a phone** (personal-cfo-i93n3.28; `accounts/ArchiveFlowViews.tsx`, AA-1 AA04). On a compact
+  screen the forecast-impact question is a full-screen **alert dialog** (the shared `Dialog` with `COMPACT_FULLSCREEN`,
+  `role="alertdialog"`, named "Archive <account>") instead of the inline notice, with the same words. The page behind it is
+  inert and hidden from assistive technology. **Cancel comes first and takes focus**; Archive is the only other action.
+  While the archive runs both are held ("Archiving…") and the sheet cannot be dismissed (Escape and a tap outside do
+  nothing), because a begun write is never reversed by closing. A refusal or an unknown outcome stays in the sheet's own
+  announced error (`DialogError`, so it is read once, not also under the row), the sheet stays open, and Archive can be
+  tried again or Cancel leaves. It closes when the archive worked (`useArchiveFlow.confirmInSheet`). Closing returns focus
+  to the exact control that opened it (`triggerRef`; a phone does not focus a tapped button), else, when the archive removed
+  that row, to the nearest row that survives, else the section's own toggle. An account that moves no forecast (a card, a
+  zero balance) still archives in one tap. The desktop keeps the inline notice.
+
 ## 8. Testing
 
 - Each view gets a **Vitest + Testing Library** behavioral test that mocks
