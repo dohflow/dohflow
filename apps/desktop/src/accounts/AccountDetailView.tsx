@@ -442,6 +442,8 @@ function ActivityTable({
       key: "description",
       header: "Description",
       className: "font-medium",
+      // On a phone the description is the card's heading and the date a labeled value.
+      phoneTitle: true,
       cell: (t) => t.memo ?? t.counterparty ?? "Transaction",
     },
     {
@@ -478,6 +480,7 @@ function ActivityTable({
       rows={postedRows}
       rowKey={(t) => t.transaction_id}
       label={`Activity on ${account.name}`}
+      phoneLayout="stacked"
       minWidth="min-w-[560px]"
       status={postedError ? "error" : postedTotal === undefined ? "loading" : "ready"}
       error={postedError}
@@ -517,8 +520,51 @@ function ActivityTable({
           <SectionRow label="Posted" note={null} span={columns.length} />
         </>
       }
+      // The phone's equivalent of the pinned rows above: section labels and the projected upcoming activity as cards,
+      // before the posted rows (so no phone table stays horizontal because of a pinned block).
+      leadingCards={
+        <>
+          {upcoming.length > 0 && <StackedSectionLabel label="Upcoming" note="projected" />}
+          {upcoming.map((u) => (
+            <li key={u.key} className="flex flex-col gap-1.5 border-b bg-muted/40 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2 font-medium text-muted-foreground [overflow-wrap:anywhere]">
+                <span>{u.label}</span>
+                <Badge variant="outline" className="text-[0.625rem]">
+                  Projected
+                </Badge>
+              </div>
+              {u.detail && <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{u.detail}</p>}
+              <dl className="flex flex-col gap-1 text-sm text-muted-foreground">
+                <div className="flex items-baseline justify-between gap-4">
+                  <dt>Date</dt>
+                  <dd className="tabular-nums">{formatIsoDate(u.date)}</dd>
+                </div>
+                <div className="flex items-baseline justify-between gap-4">
+                  <dt>Amount</dt>
+                  <dd className="tabular-nums [overflow-wrap:anywhere]">
+                    {u.amountMinor !== null
+                      ? formatSignedMoney({ minor_units: u.amountMinor, currency })
+                      : "—"}
+                  </dd>
+                </div>
+              </dl>
+            </li>
+          ))}
+          <StackedSectionLabel label="Posted" note={null} />
+        </>
+      }
       footer={<PaginationControls pagination={pagination} noun="transactions" />}
     />
+  );
+}
+
+/// A section label in the phone list (the stacked counterpart of `SectionRow`).
+function StackedSectionLabel({ label, note }: { label: string; note: string | null }) {
+  return (
+    <li className="px-4 pb-1 pt-4">
+      <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-muted-foreground">{label}</span>
+      {note && <span className="ml-2 text-[0.6875rem] text-muted-foreground">· {note}</span>}
+    </li>
   );
 }
 

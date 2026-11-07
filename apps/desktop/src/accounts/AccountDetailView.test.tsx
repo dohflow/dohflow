@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -8,6 +8,7 @@ import type {
   CashFlowHistoryDto,
   MultiSeriesForecastDto,
 } from "@/bindings";
+import { COMPACT_QUERY } from "@/lib/compact";
 import { AccountDetailView } from "./AccountDetailView";
 
 const mocks = vi.hoisted(() => ({
@@ -205,6 +206,40 @@ beforeEach(() => {
 });
 
 describe("AccountDetailView", () => {
+  // personal-cfo-i93n3.28: no phone table stays horizontal. The pinned Upcoming block has a stacked equivalent.
+  it("stacks the activity on a phone: Upcoming and Posted labels, the projected event as a card, posted rows as cards", async () => {
+    vi.stubGlobal("matchMedia", ((query: string) => ({
+      matches: query === COMPACT_QUERY,
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia);
+    try {
+      renderWithClient(<AccountDetailView accountId={CHECKING.id} onBack={vi.fn()} />);
+      const list = await screen.findByRole("list", { name: `Activity on ${CHECKING.name}` });
+      expect(screen.queryByRole("table", { name: `Activity on ${CHECKING.name}` })).toBeNull();
+      const items = within(list).getAllByRole("listitem");
+      const texts = items.map((i) => i.textContent ?? "");
+      // Order: the Upcoming label, the projected card, the Posted label, then the posted rows.
+      const upcoming = texts.findIndex((t) => /^Upcoming/.test(t));
+      const payroll = texts.findIndex((t) => /Payroll/.test(t));
+      const posted = texts.findIndex((t) => /^Posted/.test(t));
+      const trader = texts.findIndex((t) => /TRADER JOES/.test(t));
+      expect(upcoming).toBeGreaterThanOrEqual(0);
+      expect(upcoming).toBeLessThan(payroll);
+      expect(payroll).toBeLessThan(posted);
+      expect(posted).toBeLessThan(trader);
+      // The projected card says Projected and carries labeled Date and Amount; a posted row's title is its description.
+      expect(within(items[payroll]!).getByText("Projected")).toBeInTheDocument();
+      expect([...items[payroll]!.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["Date", "Amount"]);
+      const row = items[trader]!;
+      expect([...row.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["Date", "Amount", "Balance"]);
+      expect(row.firstElementChild!.textContent).toContain("TRADER JOES");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("renders a liquid account: balance, chart, upcoming event, and posted activity with a running balance", async () => {
     renderWithClient(
       <AccountDetailView accountId={CHECKING.id} onBack={vi.fn()} />,
