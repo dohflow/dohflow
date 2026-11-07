@@ -7,7 +7,7 @@ record until the first tagged release.
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-11-12
+## [0.4.0] - 2026-11-07
 
 ### Added
 
