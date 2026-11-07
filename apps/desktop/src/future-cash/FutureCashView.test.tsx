@@ -170,6 +170,16 @@ beforeEach(() => {
 });
 
 describe("FutureCashView", () => {
+  // personal-cfo-i93n3.27 slice F: at the largest text size on a phone the pickers and the money wrap instead of
+  // running off the screen (found by measuring the populated screen with the accessibility tree).
+  it("lets the horizon and lookback pickers wrap, and breaks money inside the number, on a phone", async () => {
+    renderWithClient(<FutureCashView />);
+    expect(await screen.findByRole("group", { name: "Forecast horizon" })).toHaveClass("compact:flex", "compact:flex-wrap", "compact:max-w-full");
+    expect(screen.getByRole("group", { name: "History lookback" })).toHaveClass("compact:flex-wrap");
+    const money = await screen.findAllByText(/\$2,500\.00/);
+    expect(money[0]).toHaveClass("compact:[overflow-wrap:anywhere]");
+  });
+
   it("shows a loading state until the forecast resolves", () => {
     mocks.futureCashForecast.mockReturnValue(new Promise(() => {}));
     renderWithClient(<FutureCashView />);
