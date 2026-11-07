@@ -221,7 +221,8 @@ export function FutureCashView({
   return (
     <>
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
-        <div className="flex items-center justify-between gap-4">
+        {/* The title and the horizon control wrap onto two rows when they do not fit (a phone at a large text size). */}
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <h2 className="text-xl font-semibold tracking-tight">Cash Flow</h2>
           <HorizonPicker value={horizon} onChange={setHorizon} />
         </div>
@@ -299,7 +300,9 @@ export function FutureCashView({
         </div>
 
         <Card>
-          <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
+          {/* On a phone the controls go under the title and description instead of squeezing them into a
+              narrow column beside the controls (personal-cfo-i93n3.27). */}
+          <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0 compact:flex-col compact:items-stretch compact:gap-3">
             <div className="flex flex-col gap-1.5">
               <CardTitle>Liquid cash — history &amp; projection</CardTitle>
               <CardDescription>
@@ -308,7 +311,7 @@ export function FutureCashView({
                   : "Your liquid cash projected forward by group, with its likely range."}
               </CardDescription>
             </div>
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2 compact:justify-start">
               <LookbackPicker value={lookback} onChange={setLookback} />
               {projection && (
                 <SeriesPicker

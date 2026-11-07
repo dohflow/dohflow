@@ -130,7 +130,9 @@ export function ScenarioBar({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
+      {/* On a phone the label sits over a full-width select and the action buttons take the full width
+          (personal-cfo-i93n3.27). */}
+      <div className="flex flex-wrap items-center gap-2 compact:flex-col compact:items-stretch">
         <Label
           htmlFor="scenario-select"
           className="text-sm text-muted-foreground"
@@ -142,7 +144,7 @@ export function ScenarioBar({
           value={selectedId ?? ""}
           onChange={(e) => onSelect(e.target.value || null)}
           disabled={!tz.verified}
-          className="h-9 rounded-md border bg-background px-3 text-sm"
+          className="h-9 rounded-md border bg-background px-3 text-sm compact:w-full"
         >
           <option value="">Base (no scenario)</option>
           {listed.map((scenario) => (
@@ -160,7 +162,7 @@ export function ScenarioBar({
           <TimezoneReadNotice failure={tz.failure} retry={tz.retry} retrying={tz.retrying} />
         )}
         {!creating && (
-          <Button variant="outline" size="sm" onClick={() => setCreating(true)}>
+          <Button variant="outline" size="sm" className="compact:w-full" onClick={() => setCreating(true)}>
             <FolderPlus aria-hidden />
             New scenario
           </Button>

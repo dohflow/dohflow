@@ -174,6 +174,16 @@ describe("FutureCashView", () => {
     renderWithClient(<FutureCashView />);
     expect(await screen.findByRole("combobox", { name: "Forecast date" })).toBeInTheDocument();
     expect(screen.getByText("Read forecast by date")).toBeInTheDocument();
+  // personal-cfo-i93n3.27: on a phone the chart card's controls go under its title and description instead of
+  // squeezing them into a narrow column, and the page title and horizon control wrap when they do not fit.
+  it("lays out its headers for a phone (i93n3.27)", async () => {
+    renderWithClient(<FutureCashView />);
+    const title = await screen.findByText("Liquid cash — history & projection");
+    const cardHeader = title.parentElement!.parentElement!;
+    expect(cardHeader).toHaveClass("compact:flex-col", "compact:items-stretch");
+    expect(cardHeader.lastElementChild).toHaveClass("compact:justify-start");
+    const pageHeader = screen.getByRole("heading", { name: "Cash Flow" }).parentElement!;
+    expect(pageHeader).toHaveClass("flex-wrap");
   });
 
   it("shows a loading state until the forecast resolves", () => {
