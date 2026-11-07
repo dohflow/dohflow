@@ -118,24 +118,6 @@ pub use staged_import::StagedDecision;
 /// cannot be opened by this build (ADR 0024, personal-cfo-g3m.4).
 pub const CURRENT_SCHEMA_VERSION: i64 = migrations::CURRENT_VERSION;
 
-/// Whether any file of a rotation (ADR 0083 §2: the journal and its temp file, the re-encrypted copy
-/// and its envelope, the old database) sits beside the database at `db_path`.
-fn rekey_artifacts_beside(db_path: &Path) -> bool {
-    let Some(name) = db_path.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    let dir = db_path.parent().unwrap_or_else(|| Path::new("."));
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    entries.flatten().any(|entry| {
-        entry.file_name().to_str().is_some_and(|candidate| {
-            candidate.starts_with(&format!("{name}.rekey"))
-                || candidate.starts_with(&format!("{name}.envelope.rekey"))
-        })
-    })
-}
-
 /// The apply-semantics generation recorded in every operation-log row (`engine_version`,
 /// vault-format.md C.5; ADR 0074 R40). It names *what `apply` does* for a given payload and base
 /// state, not the app release: two builds with the same value must produce the same rows and the
@@ -3301,9 +3283,11 @@ impl DbWorker {
     /// They are the ciphertext of a blob whose key was never committed, left by a crash between
     /// writing the file and recording the row. Called once when a vault unlocks, after rotation
     /// recovery. It takes the writer lock, so an import or materialization cannot be between its
-    /// file and its row, and it does **nothing** while any file of an interrupted rotation sits
-    /// beside the database (its new-name blobs are not named by the database yet). Returns how
-    /// many files it removed.
+    /// file and its row. It does **nothing** while a swap or a rebase is in progress
+    /// ([`base_image::swap_or_rebase_in_progress`], the one shared predicate): the new-name blobs
+    /// of an interrupted rotation, and any blob that only a rebase's scratch vault, the base image
+    /// or the pre-rebase copy names, are not named by the database. Returns how many files it
+    /// removed.
     ///
     /// # Errors
     /// [`DbError`] if the worker is unavailable or a file cannot be read or removed.
@@ -3313,7 +3297,7 @@ impl DbWorker {
         if guard.state != WorkerState::Healthy {
             return Err(DbError::WorkerUnavailable(guard.state));
         }
-        if rekey_artifacts_beside(&self.path) {
+        if base_image::swap_or_rebase_in_progress(&self.path) {
             return Ok(0);
         }
         attachments::sweep_orphans(&dir, &guard.conn)

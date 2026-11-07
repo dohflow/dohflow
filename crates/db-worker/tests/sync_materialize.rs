@@ -923,3 +923,51 @@ fn the_sweep_does_nothing_while_a_rotation_is_interrupted() {
         fs::remove_file(&new_name).unwrap();
     }
 }
+
+#[test]
+fn the_sweep_also_stands_down_while_a_rebase_is_in_progress() {
+    let vault = Vault::new();
+    fs::create_dir_all(vault.blobs()).unwrap();
+    let sync = vault.dir.path().join("sync");
+    fs::create_dir_all(&sync).unwrap();
+    let orphan = vault.blobs().join("3".repeat(64));
+
+    // Each of these means a swap or a rebase is under way or just done: the pre-rebase copy, the base
+    // image's capture temp file, and anything the rebase swap names with its reserved prefix (its
+    // journal, a scratch vault as a file or a directory).
+    let artifacts: [(&str, bool); 5] = [
+        ("pre-rebase.db", false),
+        ("base.db.tmp", false),
+        ("rebase.journal", false),
+        ("rebase-scratch.db", false),
+        ("rebase-scratch", true),
+    ];
+    for (name, is_dir) in artifacts {
+        let path = sync.join(name);
+        if is_dir {
+            fs::create_dir(&path).unwrap();
+        } else {
+            fs::write(&path, b"x").unwrap();
+        }
+        fs::write(&orphan, b"a blob only the scratch vault names").unwrap();
+        assert_eq!(vault.worker.sweep_orphan_blobs().unwrap(), 0, "{name}");
+        assert!(orphan.is_file(), "{name}: the blob survives");
+        if is_dir {
+            fs::remove_dir(&path).unwrap();
+        } else {
+            fs::remove_file(&path).unwrap();
+        }
+    }
+    // The base image itself, which exists whenever Sync is armed, is not a rebase in progress.
+    fs::write(sync.join("base.db"), b"x").unwrap();
+    assert_eq!(vault.worker.sweep_orphan_blobs().unwrap(), 1);
+    assert!(!orphan.exists());
+    // And the predicate is the one place that says so.
+    assert!(!db_worker::base_image::swap_or_rebase_in_progress(
+        &vault.dir.path().join("vault.db")
+    ));
+    fs::write(sync.join("pre-rebase.db"), b"x").unwrap();
+    assert!(db_worker::base_image::swap_or_rebase_in_progress(
+        &vault.dir.path().join("vault.db")
+    ));
+}

@@ -2284,7 +2284,7 @@ the mapping with a recorded hash equal to the bound one counts as verified, and 
 residual of C.6's malicious-member class for artifacts. What it does not close: a member that holds
 `K_e` and can predict the blob an honest device will publish can squat that artifact's id with other
 bytes first, and so block that device's command. That is a member denial of service in C.6's residual
-class, with no data revealed and no replica corrupted; revoking the member (C.7) is the remedy.
+class, with no data revealed and no replica corrupted; revoking the member (C.7) is the remedy. The same class holds a second case: a member that learns the random id of a batch a peer is still importing (an id that does not leave the peer's device before the batch's first commit) can publish a batch under it, which replaces the peer's uncommitted source rows, so the peer's import fails cleanly with `ReferenceMissing` at commit; nothing replicated is affected, and revoking the member is the remedy.
 
 **Plaintext (`SyncArtifactTransportV1`).** `label
 "dohflow/sync-artifact-transport/v1" ‖ digest sync_artifact_id ‖ u8
