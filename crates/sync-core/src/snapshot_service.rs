@@ -51,6 +51,10 @@ pub struct InstalledEpoch {
     pub membership_head: [u8; 32],
     /// The id of the epoch record just installed.
     pub epoch_record_id: [u8; 32],
+    /// `true` when the service answered an **exact retry** of an epoch record it had already
+    /// installed (HTTP `200` rather than `201`, protocol 4.4 and 6.1 check 3): the genesis was
+    /// installed by an earlier request, with the snapshot that request staged.
+    pub already_installed: bool,
 }
 
 /// One `installEpoch` request (protocol 4.4). The epoch record carries its own `reason`; the
