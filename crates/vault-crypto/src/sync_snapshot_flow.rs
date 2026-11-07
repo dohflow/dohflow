@@ -105,6 +105,17 @@ pub enum PublishError {
     /// effects. Refused locally.
     #[error("a snapshot after the genesis is not exported from the live vault")]
     LiveVaultSource,
+    /// A re-snapshot was read from the state at one position but declares another as its
+    /// `base_seq`. Refused locally.
+    #[error(
+        "the snapshot is built from the state at position {source_head} but declares {base_seq}"
+    )]
+    SourceHeadMismatch {
+        /// The position the plaintext was read at.
+        source_head: u64,
+        /// The `base_seq` the snapshot declares.
+        base_seq: u64,
+    },
     /// A genesis was not read from the live vault, or does not start at position `0`.
     #[error("a genesis is exported from the live vault at position 0")]
     GenesisSource,
@@ -162,6 +173,17 @@ where
     match (&request.kind, request.source) {
         (PublishKind::ReSnapshot, SnapshotSource::LiveVault) => {
             return Err(PublishError::LiveVaultSource)
+        }
+        // The state the plaintext was read from must be the position the snapshot claims: a
+        // snapshot that says it is built on position 5 but holds the state at 3 would make every
+        // replica that bootstraps from it lose the envelopes in between.
+        (PublishKind::ReSnapshot, SnapshotSource::StateAtHead { head })
+            if head != request.fields.base_seq =>
+        {
+            return Err(PublishError::SourceHeadMismatch {
+                source_head: head,
+                base_seq: request.fields.base_seq,
+            })
         }
         (PublishKind::Genesis { .. }, source)
             if source != SnapshotSource::LiveVault || request.fields.base_seq != 0 =>
