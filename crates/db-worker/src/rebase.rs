@@ -38,6 +38,7 @@ mod execute;
 mod overlay;
 mod plan;
 mod reconcile;
+mod swap;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -217,6 +218,14 @@ pub enum RebaseError {
     /// kept as the evidence; the way out is a pull-first re-bootstrap.
     #[error("{}", .0.describe())]
     ArtifactRebootstrapRequired(Box<ArtifactRebootstrapRequired>),
+    /// The swap needs a rebase that ran to the end: replayed, overlaid, with the pulled class-3
+    /// effects run; and a live vault whose base is `Ready`.
+    #[error("the rebase is not ready to be swapped in")]
+    NotReadyToSwap,
+    /// The live vault changed after the preservation image was captured, so the rebuilt vault does
+    /// not carry what the live vault now holds: the rebase starts over. Nothing was changed.
+    #[error("the live vault changed after the rebase began")]
+    LiveMovedOn,
     /// The database or the filesystem failed.
     #[error(transparent)]
     Db(#[from] DbError),
@@ -299,6 +308,7 @@ pub use reconcile::{
     reconcile, reconcile_and_replay, AcceptedEvidence, Disagreement, ForkSource, Probe,
     ProtocolForkEvidence, PulledLogEntry, Reconciliation, RetainedEnvelope, Settled, SettledBy,
 };
+pub use swap::SwapInputs;
 
 /// A table row a command wrote: the table name and its canonical primary key
 /// (`WriteSet::rows`).
@@ -331,6 +341,9 @@ pub struct Scratch<'a> {
     pulled_commands: Vec<effects::PulledCommand>,
     /// Whether the pulled commands' class-3 effects were run.
     effects_applied: bool,
+    /// The scratch vault as it stood after the pulled envelopes and before the local commands: the
+    /// file that becomes the new base image.
+    new_base: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Scratch<'_> {
@@ -416,6 +429,7 @@ impl DbWorker {
             overlaid: false,
             pulled_commands: Vec::new(),
             effects_applied: false,
+            new_base: None,
         })
     }
 

@@ -567,7 +567,15 @@ impl DbWorker {
         if guard.state != WorkerState::Healthy {
             return Err(DbError::WorkerUnavailable(guard.state).into());
         }
-        let tx = guard.conn.unchecked_transaction()?;
+        capture_in(&guard.conn)
+    }
+}
+
+/// [`DbWorker::capture_preservation`] on a connection the caller holds under the writer lock. The
+/// swap uses it to compare the live vault with the image the rebase was built from.
+pub(super) fn capture_in(conn: &Connection) -> Result<Preservation, RebaseError> {
+    {
+        let tx = conn.unchecked_transaction()?;
         let local = read_local_commands_on(&tx)?;
         let tables = OVERLAID
             .iter()

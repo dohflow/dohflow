@@ -2693,6 +2693,17 @@ mod overlay {
         assert_eq!(account_name(s, w.account), "Remote rename");
     }
 
+    /// A second rebase on another scratch path, for tests that need two.
+    fn ready_again(w: &World) -> (Scratch<'_>, Preservation) {
+        let image = w.live.capture_preservation().unwrap();
+        let mut scratch = w
+            .live
+            .rollback_to(5, &w.dir.path().join("rebase").join("second.db"))
+            .unwrap();
+        scratch.rebase_local(image.local()).unwrap();
+        (scratch, image)
+    }
+
     /// A rebase of `drift`ed state, left ready for the overlay.
     fn ready(w: &World) -> (Scratch<'_>, Preservation) {
         drift(w);
@@ -3763,5 +3774,174 @@ mod overlay {
             }
         ));
         assert_eq!(row_count(scratch.worker(), "source_records", record), 0);
+    }
+
+    #[test]
+    fn begin_swap_freezes_the_live_vault_when_it_is_unchanged_and_abort_restores_it() {
+        let w = world();
+        drift(&w);
+        let image = w.live.capture_preservation().unwrap();
+        w.live.begin_swap(&image).unwrap();
+        // Frozen: nothing runs, and the intent is on disk.
+        let refused = w
+            .live
+            .dispatch(
+                meta(),
+                liquid_account_cmd(AccountId::new(), Currency::Usd, 1),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(refused, DbError::WorkerUnavailable(WorkerState::Swapping)),
+            "{refused:?}"
+        );
+        assert_eq!(
+            w.live
+                .lock()
+                .conn
+                .query_row("SELECT state FROM sync_base", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "Rebasing"
+        );
+        w.live.abort_swap().unwrap();
+        assert_eq!(
+            w.live
+                .lock()
+                .conn
+                .query_row("SELECT state FROM sync_base", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "Ready"
+        );
+        w.live
+            .dispatch(
+                meta(),
+                liquid_account_cmd(AccountId::new(), Currency::Usd, 1),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn begin_swap_refuses_a_live_vault_that_moved_on_and_changes_nothing() {
+        let w = world();
+        drift(&w);
+        let image = w.live.capture_preservation().unwrap();
+        w.live.set_device_setting("device.theme", "blue").unwrap();
+        assert!(matches!(
+            w.live.begin_swap(&image),
+            Err(RebaseError::LiveMovedOn)
+        ));
+        assert_eq!(
+            w.live
+                .lock()
+                .conn
+                .query_row("SELECT state FROM sync_base", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "Ready"
+        );
+        w.live
+            .dispatch(
+                meta(),
+                liquid_account_cmd(AccountId::new(), Currency::Usd, 1),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_finished_rebase_becomes_two_hashed_files_the_new_base_without_credentials() {
+        let w = world();
+        drift(&w);
+        let (mut scratch, image) = ready(&w);
+        // Not ready until the overlay and the pulled effects ran.
+        scratch.overlay_class3(&image).unwrap();
+        scratch.apply_pulled_class3_effects().unwrap();
+        // Defense in depth: even a credential that reached the new base copy is stripped.
+        let planted = scratch.new_base_path().unwrap().to_path_buf();
+        w.live
+            .key
+            .open_image(&planted, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .unwrap()
+            .execute(
+                "INSERT INTO connector_connection_secrets (connection_id, credential, updated_at)
+                 VALUES (?1, 'planted-credential', 't')",
+                params![w.a],
+            )
+            .unwrap();
+        let inputs = scratch.into_swap().unwrap();
+
+        assert_eq!(inputs.old_base_seq, 5);
+        assert_eq!(inputs.head_seq, 6);
+        // The files are what the hashes say, and they are closed.
+        assert_eq!(
+            crate::base_image::sha256_file(&inputs.scratch_path).unwrap(),
+            inputs.scratch_sha256
+        );
+        assert_eq!(
+            crate::base_image::sha256_file(&inputs.new_base_path).unwrap(),
+            inputs.new_base_sha256
+        );
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
+        // The new base image holds no credential, but the class-1 state at the new head.
+        let base = w.live.key.open_image(&inputs.new_base_path, flags).unwrap();
+        let secrets: i64 = base
+            .query_row(
+                "SELECT COUNT(*) FROM connector_connection_secrets",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(secrets, 0);
+        let renamed: String = base
+            .query_row(
+                "SELECT name FROM accounts WHERE name = 'From device B'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(renamed, "From device B");
+        // The rebuilt vault keeps the credential, records the new base, and has the replayed outbox.
+        let rebuilt = w.live.key.open_image(&inputs.scratch_path, flags).unwrap();
+        let kept: i64 = rebuilt
+            .query_row(
+                "SELECT COUNT(*) FROM connector_connection_secrets",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 1);
+        let (seq, digest, state): (i64, Vec<u8>, String) = rebuilt
+            .query_row(
+                "SELECT base_seq, base_digest, state FROM sync_base",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (seq, digest.as_slice(), state.as_str()),
+            (6, inputs.new_base_sha256.as_slice(), "Ready")
+        );
+        let pending: i64 = rebuilt
+            .query_row(
+                "SELECT COUNT(*) FROM sync_outbox WHERE state = 'Pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 1);
+    }
+
+    #[test]
+    fn a_rebase_that_has_not_run_to_the_end_cannot_be_swapped() {
+        let w = world();
+        drift(&w);
+        let (scratch, _image) = ready(&w);
+        assert!(matches!(
+            scratch.into_swap(),
+            Err(RebaseError::NotReadyToSwap)
+        ));
+        let (mut scratch, image) = ready_again(&w);
+        scratch.overlay_class3(&image).unwrap();
+        assert!(matches!(
+            scratch.into_swap(),
+            Err(RebaseError::NotReadyToSwap)
+        ));
     }
 }
