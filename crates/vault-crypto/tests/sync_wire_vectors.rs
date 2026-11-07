@@ -448,6 +448,16 @@ fn manifest_commitment(ids: &[[u8; 32]]) -> [u8; 32] {
     )
 }
 
+/// The artifact binding commitment (C.3): the hashes are those of the artifacts' ciphertexts, in
+/// the strictly ascending order of the ids they belong to, so they are not sorted here.
+fn binding_commitment(hashes_in_id_order: &[[u8; 32]]) -> [u8; 32] {
+    sha256(
+        &Enc::new("dohflow/sync-artifact-binding/v1")
+            .list_digests(hashes_in_id_order, 4096)
+            .done(),
+    )
+}
+
 struct Header {
     object_type: u8,
     key_epoch: u64,
@@ -994,6 +1004,16 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         ("artifact_id_epoch2", art_1_e2.to_vec()),
         ("artifact_id_readdress_epoch2", art_1_readdress_e2.to_vec()),
         ("artifact_manifest_commitment", man_commit.to_vec()),
+        // The binding commitment of an empty closure (a genesis snapshot, field 18 of C.4) and of two
+        // ciphertext hashes in id order.
+        (
+            "artifact_binding_commitment_empty",
+            binding_commitment(&[]).to_vec(),
+        ),
+        (
+            "artifact_binding_commitment_2",
+            binding_commitment(&[[0x11; 32], [0x22; 32]]).to_vec(),
+        ),
         (
             "write_set_hash_sample",
             write_set_hash(&[
@@ -1415,6 +1435,27 @@ fn manifest_commitment_is_order_independent_and_exact() {
     assert_eq!(manifest_commitment(&[x, y]), manifest_commitment(&[y, x]));
     assert_ne!(manifest_commitment(&[x, y]), manifest_commitment(&[x]));
     assert_ne!(manifest_commitment(&[x]), manifest_commitment(&[]));
+}
+
+#[test]
+fn binding_commitment_depends_on_the_hashes_their_order_and_nothing_else() {
+    let (x, y) = ([1u8; 32], [2u8; 32]);
+    assert_ne!(
+        binding_commitment(&[x, y]),
+        binding_commitment(&[y, x]),
+        "order"
+    );
+    assert_ne!(
+        binding_commitment(&[x, y]),
+        binding_commitment(&[x]),
+        "count"
+    );
+    assert_ne!(binding_commitment(&[x]), binding_commitment(&[y]), "value");
+    assert_ne!(
+        binding_commitment(&[]),
+        manifest_commitment(&[]),
+        "its own label: the empty binding is not the empty manifest commitment"
+    );
 }
 
 #[test]

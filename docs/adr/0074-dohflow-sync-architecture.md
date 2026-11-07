@@ -1301,7 +1301,7 @@ Decision 1's class-1b closure describes an artifact's id at its first publicatio
 records three choices that the SYNC-2c artifact work (`personal-cfo-0g528.2`) depends on, before any
 code does. They are engineering within Decision 9's epoch design; nothing here is business-sensitive
 (ADR 0082, public tier). The bytes are specified in vault-format.md C.3, C.4, C.8 and C.9 (spec-version 32; decisions 4 and 5
-below, spec-version 37).
+below, spec-version 38).
 
 1. **First-publication ids and chained re-address ids.** The first id keeps the formula above, with
    its input pinned as the **raw 32 bytes** of the local address (C.3), not the text of the hex form
@@ -1352,7 +1352,7 @@ below, spec-version 37).
    fault and voidable. This also closes the collusion residual Addendum I recorded in decision 3. The
    binding is one sync-core function that the service calls as well (`personal-cfo-v98vd` AC31). The
    cost is one header field: the container maxima in the protocol rise by 33 bytes and the C.4
-   vectors change, under spec-version 37 and `dohflow-engine-3`.
+   vectors change, under spec-version 38 and `dohflow-engine-3`.
 
 Open (an owner question routed through `05-decisions`, not decided here): an artifact lost from the
 service and from every device blocks a revocation cutover permanently under C.9's rule that a closure

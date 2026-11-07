@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=37 -->
+<!-- vault-format: spec-version=38 -->
 <!-- vault-format: schema-version=67 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -272,7 +272,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
-- `spec-version = 37` (personal-cfo-0g528.2, part S2c part 2, first commit: the spec before any code)
+- `spec-version = 38` (personal-cfo-0g528.2, part S2c part 2, first commit: the spec before any code; provisional, it settles at merge)
   closes the cases in which one member, alone, could stop every replica at a position, and settles
   what a receiver may judge. (1) **The ciphertext binding (T5).** A new header field 18,
   `artifact_binding_commitment`, for both object types, commits to the `ciphertext_sha256` of every
@@ -1231,7 +1231,7 @@ HKDF-SHA256-Expand with PRK `K` and output length 32.
 | `sync_artifact_id_{e+1}` (re-address at a key-changing epoch) | `HMAC-SHA256(Expand(K_{e+1}, label "dohflow/sync-artifact-readdress/v1" ‖ uuid vault_id ‖ u64 key_epoch_{e+1}), digest sync_artifact_id_e)` |
 | Artifact object key | `Expand(K_e, label "dohflow/sync-artifact-object/v1" ‖ u16 protocol_version ‖ uuid vault_id ‖ u64 key_epoch ‖ digest sync_artifact_id)` |
 | Artifact manifest commitment | `SHA-256(label "dohflow/sync-artifact-manifest/v1" ‖ list(digest, N) of the ids in strictly ascending byte order)`, with `N` = 4096 for an envelope's delta manifest and `N` = 2^20 for a snapshot's full closure. The label and the bytes are the same for both (a CBE1 list count is a `u32`); only the bound a producer and a receiver enforce differs. |
-| Artifact binding commitment | `SHA-256(label "dohflow/sync-artifact-binding/v1" ‖ list(digest, N) of the ciphertext_sha256 of each artifact, one per id of the manifest list, in that list's strictly ascending id order)`, with the same `N` as the manifest commitment. `ciphertext_sha256` is the SHA-256 of the AEAD output a container carries (its `ciphertext` field, tag included), the value an `ArtifactReceiptV1` carries; never a transport or blob plaintext digest. It is one sync-core function, which the service calls too. |
+| Artifact binding commitment | `SHA-256(label "dohflow/sync-artifact-binding/v1" ‖ list(digest, N) of the ciphertext_sha256 of each artifact, one per id of the manifest list, in that list's strictly ascending id order)`, with the same `N` as the manifest commitment. `ciphertext_sha256` is the SHA-256 of the AEAD output a container carries (its `ciphertext` field, tag included), the value an `ArtifactReceiptV1` carries; never a transport or blob plaintext digest. It is one sync-core function, which the service calls too. **An empty list** has the commitment `SHA-256(label ‖ u32 0)` (the vector `artifact_binding_commitment_empty`), which is not the empty manifest commitment: the labels differ. It is the value of field 18 for the genesis snapshot and for any snapshot whose closure is empty; an envelope without artifacts carries neither field 17 nor field 18 (C.4). `artifact_binding_commitment_2` pins the preimage for two hashes (`0x11` and `0x22` repeated 32 times, in that order). |
 | `canonical_envelope_digest` | `SHA-256(label "dohflow/sync-envelope-digest/v1" ‖ u32 len ‖ header bytes ‖ u64 len ‖ ciphertext)` |
 
 `issued_at` is a signed 64-bit count of microseconds since the Unix epoch, UTC.
@@ -1277,7 +1277,7 @@ The header is the AAD of the object's AEAD. Its fields, in order:
 | 15 | `engine_version` | `text(64)` | |
 | 16 | `schema_version` | `u32` | the vault schema version of the producer |
 | 17 | `artifact_manifest_commitment` | `opt(digest)` | an envelope: the delta manifest commitment, present **only when the delta manifest is non-empty** (absent otherwise; at most 4096 ids); a snapshot: always present, the commitment of its full closure even when that closure is empty (at most 2^20 ids, C.3) |
-| 18 | `artifact_binding_commitment` | `opt(digest)` | present exactly when field 17 is present: an envelope with a non-empty delta manifest, and always for a snapshot (the commitment of the empty list when the closure is empty). It commits to the ciphertext SHA-256 of every artifact of field 17's list, in that list's order (C.3), so the artifact bytes a replica must accept are fixed by the sealed object and not by whatever the service serves for an id |
+| 18 | `artifact_binding_commitment` | `opt(digest)` | present exactly when field 17 is present: an envelope with a non-empty delta manifest, and always for a snapshot (its value for an empty closure is the commitment of the empty list, C.3 and the vector `artifact_binding_commitment_empty`; an envelope with an empty delta carries neither field). It commits to the ciphertext SHA-256 of every artifact of field 17's list, in that list's order (C.3), so the artifact bytes a replica must accept are fixed by the sealed object and not by whatever the service serves for an id |
 
 The service-assigned `seq` is **not** in the header: it does not exist until the
 service accepts the already sealed object, and the service binds it to the
@@ -2705,6 +2705,8 @@ the canonical manifest whose bytes the export vectors seal.
 <!-- sync-vector: artifact_id_epoch2=b8532c2b8f48fc07410d0fcaab93293882b32a0dc4cbb6d9263ddd4d5b708273 -->
 <!-- sync-vector: artifact_id_readdress_epoch2=684c15bc0b06fbaa3d36a0ee22f46e32c230390ab1b98f934c004016d0dba999 -->
 <!-- sync-vector: artifact_manifest_commitment=e9f048d0e627a918249c19bd2df94315be7373469a5af23869cd32c65cd88631 -->
+<!-- sync-vector: artifact_binding_commitment_empty=e30750db1b856820b86032ab3235ce315e98dec24c6e34ef76243ad2a1be7bef -->
+<!-- sync-vector: artifact_binding_commitment_2=92bae898ceb1bdb96c06faec67b4812accb9f066056b01debd998d00da274990 -->
 <!-- sync-vector: write_set_hash_sample=5e2ef15d19742bcf1f39b0071f115a9c5b1f427f11eb3eb3468cf08bbdfe3f11 -->
 <!-- sync-vector: artifact_object_key=57441986f4b6610011f5efa0aa280eb3dd5f415d6275d4e823e03048851944e1 -->
 <!-- sync-vector: artifact_aad=001c646f68666c6f772f73796e632d61727469666163742d6161642f76310001111111111111111111111111111111110000000000000001d250092c040686d891c21151a01b44a593e22451b71f872fbf367c9327fd90de -->
