@@ -5,11 +5,11 @@ import { renderWithClient } from "@/test/renderWithClient";
 import type { BuildInfoDto } from "@/bindings";
 import { CreateVaultScreen } from "./CreateVaultScreen";
 
-const mocks = vi.hoisted(() => ({ buildInfo: vi.fn() }));
+const mocks = vi.hoisted(() => ({ buildInfo: vi.fn(), createVault: vi.fn() }));
 
 vi.mock("@/bindings", () => ({ commands: { buildInfo: mocks.buildInfo } }));
 vi.mock("@/vault/useVault", () => ({
-  useVault: () => ({ createVault: vi.fn() }),
+  useVault: () => ({ createVault: mocks.createVault }),
   describeIpcError: (error: unknown) => String(error),
 }));
 // The restore control has its own tests and its own IPC; only the footer copy is under test.
@@ -124,5 +124,24 @@ describe("create-vault fields at the largest text size", () => {
     // Both options are still offered, with the same labels as before.
     expect(screen.getByRole("option", { name: "US Dollar (USD)" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Euro (EUR)" })).toBeInTheDocument();
+  });
+});
+
+describe("create-vault form (personal-cfo-i93n3.26)", () => {
+  test("the form is aria-busy while the vault is being created", async () => {
+    mocks.buildInfo.mockResolvedValue(buildInfo(null));
+    let finish: (value: string | null) => void = () => undefined;
+    mocks.createVault.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const { container } = renderWithClient(<CreateVaultScreen />);
+    await waitFor(() => expect(mocks.buildInfo).toHaveBeenCalled());
+    const form = container.querySelector("form")!;
+    expect(form).toHaveAttribute("aria-busy", "false");
+    fireEvent.change(screen.getByLabelText(/^master password$/i), { target: { value: "hunter2hunter2" } });
+    fireEvent.change(screen.getByLabelText(/confirm password/i), { target: { value: "hunter2hunter2" } });
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /create vault/i }));
+    await waitFor(() => expect(form).toHaveAttribute("aria-busy", "true"));
+    finish("Failed");
+    await waitFor(() => expect(form).toHaveAttribute("aria-busy", "false"));
   });
 });
