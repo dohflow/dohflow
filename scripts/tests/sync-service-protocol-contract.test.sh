@@ -194,18 +194,18 @@ need "the halt gate is outside sections 5 and 6" 'it is not a step of section 5 
 need "appendVoid works for a halted device" '`appendVoid` and `reportHalt` must work for a halted device'
 need "void evidence is retained" 'A server does not drop the envelope at a position a void'
 need "additions are recorded with their date" '| 2026-11-02 | `personal-cfo-g3m.33` |'
-GATED="installEpoch stageSnapshot publishSnapshot beginSnapshotUpload putSnapshotPart completeSnapshotUpload"
+GATED="installEpoch stageSnapshot publishSnapshot beginSnapshotUpload putSnapshotPart completeSnapshotUpload stageSnapshotClosure"
 refused="$(jq -r --arg ops "$GATED" '($ops | split(" ")) as $g | [.operations[] | select(.op as $o | $g | index($o)) | select(.errors | index("ReplicaHalted"))] | length' "$JSON")"
-[ "$refused" = "6" ] && pass "the three operations that stage a snapshot or install an epoch, and the three that stage in parts, can all return ReplicaHalted" || fail "ReplicaHalted is not on all six gated operations"
+[ "$refused" = "7" ] && pass "the three operations that stage a snapshot or install an epoch, the three that stage in parts and the closure sidecar can all return ReplicaHalted" || fail "ReplicaHalted is not on all seven gated operations"
 other="$(jq -r '[.operations[] | select(.errors | index("ReplicaHalted"))] | length' "$JSON")"
-[ "$other" = "6" ] && pass "no other operation returns ReplicaHalted" || fail "ReplicaHalted appears on an operation that the halt gate does not cover"
+[ "$other" = "7" ] && pass "no other operation returns ReplicaHalted" || fail "ReplicaHalted appears on an operation that the halt gate does not cover"
 abort_gated="$(jq -r '[.operations[] | select(.op == "abortSnapshotUpload") | select(.errors | index("ReplicaHalted"))] | length' "$JSON")"
 [ "$abort_gated" = "0" ] && pass "abortSnapshotUpload is not gated, so a halted device can clean up" || fail "abortSnapshotUpload must not return ReplicaHalted"
 SEC114="$(awk '/^### 11.4 /{on=1;next} /^### /{on=0} on' "$DOC")"
 answers="$(grep -c '^[1-5]\. \*\*.*:\*\* not changed' <<<"$SEC114")"
-[ "$answers" = "9" ] && pass "section 11.4 answers four limits of 11.1 for g3m.33 and all five for g3m.36 with 'not changed'" || fail "section 11.4 does not answer 4 + 5 limits of 11.1 with 'not changed' (found $answers)"
+[ "$answers" = "11" ] && pass "section 11.4 answers four limits of 11.1 for g3m.33, all five for g3m.36 and two for AC30 (status codes and decision order) with 'not changed'" || fail "section 11.4 does not answer 4 + 5 + 2 limits of 11.1 with 'not changed' (found $answers)"
 item2="$(grep -c '^2\. \*\*An existing member.s meaning:\*\*' <<<"$SEC114")"
-[ "$item2" = "2" ] && pass "section 11.4 answers item 2 of 11.1 for both beads" || fail "section 11.4 lost its answer to item 2 of 11.1 for one of the beads (found $item2)"
+[ "$item2" = "3" ] && pass "section 11.4 answers item 2 of 11.1 for the three beads" || fail "section 11.4 lost its answer to item 2 of 11.1 for one of the beads (found $item2)"
 need "item 2 names the pre-release amendment" 'that is the pre-release amendment of the first row, not an addition'
 need "11.1 states the pre-release rule" 'Protocol version 1 is pre-release until the first deploy of a conforming Sync server to the operator'"'"'s production environment'
 need "staging does not count as release" 'staging does not count'
@@ -239,6 +239,25 @@ if [ -f "$VOID_VECTORS" ] && [ "$(jq -r '.vectors_version' "$VOID_VECTORS")" = "
   pass "the void conformance vectors exist and the document names them"
 else
   fail "the void conformance vectors are missing, unversioned, or not named by section 11.2"
+fi
+# The snapshot closure sidecar (personal-cfo-v98vd AC30, section 4.14).
+need "closure: a closure of more than 4096 ids is its own object" 'a closure of more than 4096 ids travels as **its own octet-stream object**'
+need "closure: the body is raw ids with no framing" 'The ids'"'"' 32 raw bytes each, in strictly ascending byte order, with no'
+need "closure: the body bound is 2^20 ids of 32 bytes" '**33,554,432 bytes** (`max_snapshot_closure_bytes`'
+need "closure: a body out of order is refused, not sorted" 'never put in order for the sender'
+need "closure: the length is judged from Content-Length" 'from `Content-Length` before any byte is read'
+need "closure: the commitment check is the exact one" 'The commitment check is the exact one of `installEpoch` step 8'
+need "closure: a staged closure means an empty request list" 'this request then carries an empty'
+need "closure: ArtifactMissing is bounded" 'the first 4096 in ascending order'
+need "closure: getLatestSnapshot says null for a large closure" 'is `null` otherwise'
+need "closure: 11.4 lists the addition" '| 2026-11-06 | `personal-cfo-v98vd` (AC30) | addition |'
+need "closure: 11.4 lists the pre-release amendment" '| 2026-11-06 | `personal-cfo-v98vd` (AC30) | pre-release amendment |'
+[ "$(jq -r '.limits.max_snapshot_closure_ids' "$JSON")" = "1048576" ] && [ "$(jq -r '.limits.max_snapshot_closure_bytes' "$JSON")" = "33554432" ] && [ "$(jq -r '.limits.max_snapshot_closure_bytes / .limits.max_snapshot_closure_ids' "$JSON")" = "32" ] && pass "closure: the byte bound is 32 times the id bound" || fail "closure: the closure limits are missing, or the byte bound is not 32 times the id bound"
+CLOSURE_VECTORS="$REPO_ROOT/docs/architecture/vectors/closure-sidecar-v1.json"
+if [ -f "$CLOSURE_VECTORS" ] && [ "$(jq -r '.vectors_version' "$CLOSURE_VECTORS")" = "1" ] && grep -Fq 'closure-sidecar-v1.json' "$DOC"; then
+  pass "the closure sidecar conformance vectors exist and the document names them"
+else
+  fail "the closure sidecar conformance vectors are missing, unversioned, or not named by section 11.2"
 fi
 PARTS_VECTORS="$REPO_ROOT/docs/architecture/vectors/sync-service-snapshot-parts-v1.json"
 if [ -f "$PARTS_VECTORS" ] && [ "$(jq -r '.vectors_version' "$PARTS_VECTORS")" = "1" ] && grep -Fq 'sync-service-snapshot-parts-v1.json' "$DOC"; then

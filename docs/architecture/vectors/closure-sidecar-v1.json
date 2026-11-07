@@ -1,0 +1,177 @@
+{
+  "cases": [
+    {
+      "body": {
+        "hex": ""
+      },
+      "description": "An empty body is the empty closure, which has a commitment like any other.",
+      "expect": {
+        "ok": {
+          "commitment": "7e91b4e357e9e73332c2dcd1f4b518219acd37d01d20ea308518743e020cf608",
+          "count": "0"
+        }
+      },
+      "name": "empty"
+    },
+    {
+      "body": {
+        "hex": "0000000000000007000000000000000000000000000000000000000000000000"
+      },
+      "description": "One id.",
+      "expect": {
+        "ok": {
+          "commitment": "20e45724d496dd1dcba34f47d3c9aae9584fd2ec36a41558630df432ab5af208",
+          "count": "1"
+        }
+      },
+      "name": "one_id"
+    },
+    {
+      "body": {
+        "hex": "00000000000000070000000000000000000000000000000000000000000000000000000000000009000000000000000000000000000000000000000000000000"
+      },
+      "description": "Two ids in ascending order.",
+      "expect": {
+        "ok": {
+          "commitment": "34a4ea73fd1e5dbabe50ebe63064a6b2b30077cc87c4c7ea297e63ddaffa8bf7",
+          "count": "2"
+        }
+      },
+      "name": "two_ids_ascending"
+    },
+    {
+      "body": {
+        "counted_ids": "4096"
+      },
+      "description": "4096 ids: the most an envelope's delta holds, and fine for a closure.",
+      "expect": {
+        "ok": {
+          "commitment": "908e1974fce9f72d0a4021dffaa91ad235205f2a936f515d5752eaf2d31d1340",
+          "count": "4096"
+        }
+      },
+      "name": "the_delta_bound"
+    },
+    {
+      "body": {
+        "counted_ids": "4097"
+      },
+      "description": "4097 ids: more than a delta can hold; a closure may.",
+      "expect": {
+        "ok": {
+          "commitment": "0dd6cc25a3a17b149898662c13d42d8f54d8d0dd1dfae0ff1b276d6d0bc7d39a",
+          "count": "4097"
+        }
+      },
+      "name": "one_above_the_delta_bound"
+    },
+    {
+      "body": {
+        "counted_ids": "1048576"
+      },
+      "description": "2^20 ids (33,554,432 bytes): the most a closure holds.",
+      "expect": {
+        "ok": {
+          "commitment": "121a2633e3a4f9f2722a79e61764b9d429434850771916aceafe5396d3d0e5f4",
+          "count": "1048576"
+        }
+      },
+      "name": "the_closure_bound"
+    },
+    {
+      "body": {
+        "counted_ids": "1048577"
+      },
+      "description": "2^20 + 1 ids (33,554,464 bytes): refused by the length alone, before any id is read.",
+      "expect": {
+        "error": "TooManyIds"
+      },
+      "name": "one_above_the_closure_bound"
+    },
+    {
+      "body": {
+        "counted_ids": "1048576",
+        "extra_zero_bytes": "1"
+      },
+      "description": "2^20 ids and one more byte: the length is over the bound, so it is TooManyIds and not NotWholeIds.",
+      "expect": {
+        "error": "TooManyIds"
+      },
+      "name": "one_byte_above_the_closure_bound"
+    },
+    {
+      "body": {
+        "hex": "01010101010101010101010101010101010101010101010101010101010101"
+      },
+      "description": "One byte short of an id.",
+      "expect": {
+        "error": "NotWholeIds"
+      },
+      "name": "thirty_one_bytes"
+    },
+    {
+      "body": {
+        "hex": "000000000000000700000000000000000000000000000000000000000000000000"
+      },
+      "description": "An id and one stray byte.",
+      "expect": {
+        "error": "NotWholeIds"
+      },
+      "name": "thirty_three_bytes"
+    },
+    {
+      "body": {
+        "hex": "00000000000000070000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000000000000000000"
+      },
+      "description": "The same id twice: not strictly ascending.",
+      "expect": {
+        "error": "NotAscending"
+      },
+      "name": "a_repeated_id"
+    },
+    {
+      "body": {
+        "hex": "00000000000000090000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000000000000000000"
+      },
+      "description": "Two ids in descending order: refused, never put in order for the sender.",
+      "expect": {
+        "error": "NotAscending"
+      },
+      "name": "descending"
+    },
+    {
+      "body": {
+        "hex": "000000000000000100000000000000000000000000000000000000000000000000000000000000050000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000"
+      },
+      "description": "Ascending, ascending, then a step down.",
+      "expect": {
+        "error": "NotAscending"
+      },
+      "name": "the_third_id_is_out_of_order"
+    },
+    {
+      "body": {
+        "hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "description": "The largest id, then the smallest.",
+      "expect": {
+        "error": "NotAscending"
+      },
+      "name": "all_ones_then_zero"
+    },
+    {
+      "body": {
+        "hex": "000000000000000900000000000000000000000000000000000000000000000000"
+      },
+      "description": "Out of order and 33 bytes: NotWholeIds, because the length is checked first.",
+      "expect": {
+        "error": "NotWholeIds"
+      },
+      "name": "length_is_judged_before_order"
+    }
+  ],
+  "how_to_read": "A case gives a closure sidecar body and what a server must make of it. 'body' is {hex} (the bytes) or {counted_ids: N, extra_zero_bytes?: M}: the body of N ids followed by M zero bytes, where id i (0-based) is i as a big-endian 64-bit integer in its first eight bytes and zero in the other twenty-four, so the ids ascend. 'expect' is {ok: {count, commitment}}, where 'commitment' is the hex of the closure commitment of C.3 (SHA-256 of the label 'dohflow/sync-artifact-manifest/v1' and the ids as a CBE1 list) over the ids in the body, which a server compares with the snapshot header's field 17; or {error: name}: TooManyIds (the body is longer than 2^20 * 32 bytes; the protocol's SnapshotTooLarge), NotWholeIds (the length is not a multiple of 32) or NotAscending (an id is not greater than the one before it, which includes a repeat); the last two are the protocol's MalformedObject. The length is judged first, then order. The body is never sorted for the sender.",
+  "spec": "docs/architecture/sync-service-protocol.md 4.14 and 7.1; docs/architecture/vault-format.md C.3 and C.4 (field 17); personal-cfo-v98vd AC30",
+  "synthetic": "Every id is a synthetic counter. No key, secret or real value is in this file.",
+  "vectors_version": 1
+}
