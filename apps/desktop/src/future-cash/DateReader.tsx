@@ -72,6 +72,7 @@ export function DateReader({ projection }: { projection: MultiSeriesForecastDto 
             type="button"
             variant="outline"
             size="sm"
+            className="compact:flex-1"
             disabled={index === 0}
             onClick={() => setSelected(spine[index - 1]!)}
           >
@@ -85,7 +86,9 @@ export function DateReader({ projection }: { projection: MultiSeriesForecastDto 
             id={`${id}-date`}
             value={date}
             onChange={(event) => setSelected(event.target.value)}
-            className="min-w-0 flex-1"
+            // On a phone the date control takes its own full-width row above the two buttons (squeezed between them it
+            // showed one letter, "N").
+            className="min-w-0 flex-1 compact:order-first compact:basis-full"
           >
             {spine.map((d) => (
               <option key={d} value={d}>
@@ -97,6 +100,7 @@ export function DateReader({ projection }: { projection: MultiSeriesForecastDto 
             type="button"
             variant="outline"
             size="sm"
+            className="compact:flex-1"
             disabled={index === spine.length - 1}
             onClick={() => setSelected(spine[index + 1]!)}
           >
