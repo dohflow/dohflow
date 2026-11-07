@@ -28,19 +28,24 @@ export function NoResetWarning({
       <div className="flex gap-2">
         <TriangleAlert className="size-4 shrink-0 text-warning" aria-hidden />
         {warning && (
-          <p data-testid="no-reset-warning" className="text-xs text-foreground">
+          <p
+            data-testid="no-reset-warning"
+            className="min-w-0 text-xs text-foreground [overflow-wrap:anywhere]"
+          >
             {warning}
           </p>
         )}
       </div>
-      <label className="flex items-start gap-2 text-xs text-foreground">
+      <label className="flex min-w-0 items-start gap-2 text-xs text-foreground">
         <input
           type="checkbox"
           checked={acknowledged}
           onChange={(event) => onAcknowledgedChange(event.target.checked)}
           className="mt-0.5 size-3.5 shrink-0"
         />
-        <span>I understand and have saved my password somewhere safe.</span>
+        <span className="min-w-0 [overflow-wrap:anywhere]">
+          I understand and have saved my password somewhere safe.
+        </span>
       </label>
     </div>
   );

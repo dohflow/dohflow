@@ -40,4 +40,28 @@ describe("NoResetWarning", () => {
     fireEvent.click(screen.getByRole("checkbox"));
     expect(onChange).toHaveBeenCalledWith(true);
   });
+
+  // At the largest system text size an unbreakable word ("unrecoverable") is wider than the card's
+  // column. A flex child will not shrink below its content unless `min-width: 0`, and a long word only
+  // breaks with `overflow-wrap: anywhere`, so both the warning and the acknowledgement must carry them
+  // or the page grows sideways and the copy is clipped at the screen edge (personal-cfo-i93n3.25).
+  it("lets the warning and the acknowledgement shrink and wrap at the largest text size", async () => {
+    renderWithClient(
+      <NoResetWarning acknowledged={false} onAcknowledgedChange={() => {}} />,
+    );
+
+    const warning = await screen.findByTestId("no-reset-warning");
+    const acknowledgement = screen.getByText(
+      "I understand and have saved my password somewhere safe.",
+    );
+    const label = screen.getByRole("checkbox").closest("label");
+    for (const element of [warning, acknowledgement, label]) {
+      expect(element).toHaveClass("min-w-0");
+    }
+    for (const element of [warning, acknowledgement]) {
+      expect(element).toHaveClass("[overflow-wrap:anywhere]");
+    }
+    // The copy is untouched.
+    expect(warning.textContent).toBe(CANONICAL);
+  });
 });

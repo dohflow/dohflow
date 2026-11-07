@@ -59,3 +59,22 @@ describe("create-vault footer (personal-cfo-i93n3.9)", () => {
     expect(note).toHaveAttribute("role", "note");
   });
 });
+
+// A fixed `h-10` clips a field's text when the system text size makes it taller than the box, so the
+// create-vault fields grow instead (FRONTEND.md 7.6: reflow, not clipping). At the desktop size the
+// content is shorter than 40px, so `min-h-10` renders the same height (personal-cfo-i93n3.25).
+describe("create-vault fields at the largest text size", () => {
+  test("the base currency select and the password fields grow rather than keep a fixed height", async () => {
+    mocks.buildInfo.mockResolvedValue(buildInfo(null));
+    renderWithClient(<CreateVaultScreen />);
+    await waitFor(() => expect(mocks.buildInfo).toHaveBeenCalled());
+    for (const field of [
+      screen.getByLabelText("Base currency"),
+      screen.getByLabelText("Master password"),
+      screen.getByLabelText("Confirm password"),
+    ]) {
+      expect(field).toHaveClass("min-h-10");
+      expect(field).not.toHaveClass("h-10");
+    }
+  });
+});
