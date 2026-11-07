@@ -4,7 +4,6 @@ import {
   ChevronRight,
   Eye,
   EyeOff,
-  Loader2,
   LockKeyhole,
   Plus,
   Search,
@@ -15,6 +14,7 @@ import { BrandLockup } from "@/brand/Brand";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
 import { describeIpcError, useVault } from "@/vault/useVault";
 import { PasswordStrengthMeter } from "@/vault/PasswordStrengthMeter";
 import { RestoreFromBackup } from "@/backup/RestoreFromBackup";
@@ -362,7 +362,7 @@ function UnlockVaultModal({
             className="mt-1 w-full"
             disabled={password.length === 0 || submitting}
           >
-            {submitting && <Loader2 className="animate-spin" aria-hidden />}
+            {submitting && <Spinner />}
             {submitting ? "Unlocking…" : "Unlock"}
           </Button>
         </form>
@@ -499,7 +499,7 @@ function CreateVaultModal({ onBack }: { onBack: () => void }) {
           )}
 
           <Button type="submit" className="w-full" disabled={!canSubmit}>
-            {submitting && <Loader2 className="animate-spin" aria-hidden />}
+            {submitting && <Spinner />}
             {submitting ? "Creating…" : "Create vault"}
           </Button>
         </form>

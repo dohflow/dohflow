@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Fingerprint, LockKeyhole } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,12 @@ export function UnlockScreen() {
   // What the last Touch ID attempt said, when it did not unlock (a cancelled prompt, ...).
   const [touchNote, setTouchNote] = useState<string | null>(null);
   const passwordInput = useRef<HTMLInputElement>(null);
+  // The damaged-vault message gets focus (personal-cfo-i93n3.26): the password field cannot fix it, so a
+  // screen reader should land on the message with the restore action next.
+  const damagedMessage = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (damaged) damagedMessage.current?.focus();
+  }, [damaged]);
 
   // The Touch ID call threw instead of answering: the outcome is not known (xuu repair round).
   const [touchUnknown, setTouchUnknown] = useState(false);
@@ -56,7 +62,7 @@ export function UnlockScreen() {
       setDamaged(failure === "VaultIntegrityCheckFailed");
       setPassword("");
       setSubmitting(false);
-      passwordInput.current?.focus();
+      if (failure !== "VaultIntegrityCheckFailed") passwordInput.current?.focus();
     }
   }
 
@@ -102,7 +108,7 @@ export function UnlockScreen() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={onSubmit} className="flex flex-col gap-4">
+          <form onSubmit={onSubmit} className="flex flex-col gap-4" aria-busy={submitting}>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="password">Master password</Label>
               <Input
@@ -118,7 +124,12 @@ export function UnlockScreen() {
             </div>
 
             {error && (
-              <p role="alert" className="text-sm text-loss">
+              <p
+                ref={damagedMessage}
+                tabIndex={damaged ? -1 : undefined}
+                role="alert"
+                className="text-sm text-loss focus-visible:outline-none"
+              >
                 {error}
               </p>
             )}

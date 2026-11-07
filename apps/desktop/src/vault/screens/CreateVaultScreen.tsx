@@ -73,7 +73,7 @@ export function CreateVaultScreen() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={onSubmit} className="@container flex flex-col gap-4">
+          <form onSubmit={onSubmit} className="@container flex flex-col gap-4" aria-busy={submitting}>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="password">Master password</Label>
               <Input

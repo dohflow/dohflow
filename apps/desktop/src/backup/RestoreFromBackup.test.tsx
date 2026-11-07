@@ -124,6 +124,81 @@ describe("Restore as a separate named vault", () => {
   });
 });
 
+/// A browser drops focus from an element the moment it is disabled; jsdom keeps it (and ignores `blur()`
+/// on a disabled button). Park focus on a throwaway element and remove it, which leaves focus on the body,
+/// as the browser would.
+function dropFocus() {
+  const sink = document.createElement("button");
+  document.body.append(sink);
+  sink.focus();
+  sink.remove();
+}
+
+describe("the native backup picker (personal-cfo-i93n3.26)", () => {
+  // The trigger is disabled while the picker is open, and a disabled element cannot hold focus, so a
+  // cancel or a failure used to leave focus on nothing (a keyboard or VoiceOver user lost their place).
+  it("returns focus to the trigger when the picker is cancelled", async () => {
+    mocks.open.mockResolvedValue(null);
+    renderRestore();
+    const trigger = screen.getByRole("button", { name: /restore from backup/i });
+    trigger.focus();
+    fireEvent.click(trigger);
+    dropFocus();
+    expect(trigger).not.toHaveFocus();
+    await waitFor(() => expect(mocks.open).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(trigger).not.toBeDisabled());
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("returns focus to the trigger when the picker fails, and keeps the error announced", async () => {
+    mocks.open.mockRejectedValue(new Error("no picker"));
+    renderRestore();
+    const trigger = screen.getByRole("button", { name: /restore from backup/i });
+    trigger.focus();
+    fireEvent.click(trigger);
+    dropFocus();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The backup file picker could not be opened. Please try again.",
+    );
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("does not steal focus when a file was chosen", async () => {
+    mocks.open.mockResolvedValue("/tmp/a.pcfobk");
+    renderRestore();
+    fireEvent.click(screen.getByRole("button", { name: /restore from backup/i }));
+    const password = await screen.findByLabelText(/backup password/i);
+    await waitFor(() => expect(password).toHaveFocus());
+  });
+
+  it("wraps a long chosen file name instead of truncating it", async () => {
+    const long = "/Users/someone/Library/Mobile Documents/com~apple~CloudDocs/DohFlow/personal-cfo-backup-2026-11-07-with-a-very-long-name.pcfobk";
+    mocks.open.mockResolvedValue(long);
+    renderRestore();
+    fireEvent.click(screen.getByRole("button", { name: /restore from backup/i }));
+    const name = await screen.findByText(long);
+    expect(name).toHaveClass("[overflow-wrap:anywhere]");
+    expect(name).not.toHaveClass("truncate");
+  });
+
+  it("shows the busy spinner only when motion is allowed: the static label is the indicator", async () => {
+    mocks.open.mockResolvedValue("/tmp/a.pcfobk");
+    let release: (value: ReturnType<typeof ok<{ state: string; account_count: number }>>) => void = () => undefined;
+    mocks.restoreBackup.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    renderRestore();
+    fireEvent.click(screen.getByRole("button", { name: /restore from backup/i }));
+    fireEvent.change(await screen.findByLabelText(/backup password/i), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    const button = await screen.findByRole("button", { name: "Restoring…" });
+    expect(screen.getByRole("status")).toHaveTextContent("Restoring backup…");
+    const spinner = button.querySelector("svg");
+    expect(spinner).not.toBeNull();
+    // Hidden under Reduce Motion; the words above are all that remains.
+    expect(spinner?.getAttribute("class")).toContain("motion-reduce:hidden");
+    release(ok({ state: "NoVault", account_count: 0 }));
+  });
+});
+
 describe("RestoreFromBackup", () => {
   // `Button` is `h-10 whitespace-nowrap`, so at the largest system text size the label ran past the card
   // and the screen edge on the create-vault screen. This call site lets it wrap and grow, and `cn()`
