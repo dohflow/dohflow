@@ -2361,7 +2361,9 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     //   sync-enable, persisted BEFORE the keys are installed and before anything is published:
     //   the start of the accepted epoch chain. `state` only moves forward (Persisted, Installed,
     //   Published); VaultKnown is the terminal state of a genesis the service refused because the
-    //   vault already exists, which is never published or re-minted.
+    //   vault already exists, which is never published or re-minted; GenesisResumeLost is the
+    //   terminal state of a genesis whose snapshot the service holds but whose saved container is
+    //   gone (persisted so that a restart never retries and burns a counter).
     Migration {
         version: 68,
         name: "sync_register_and_genesis",
@@ -2392,7 +2394,8 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                  membership_record BLOB NOT NULL CHECK (length(membership_record) > 0),
                  epoch_record      BLOB NOT NULL CHECK (length(epoch_record) > 0),
                  state             TEXT NOT NULL
-                                   CHECK (state IN ('Persisted', 'Installed', 'Published', 'VaultKnown')),
+                                   CHECK (state IN ('Persisted', 'Installed', 'Published', 'VaultKnown',
+                                                    'GenesisResumeLost')),
                  persisted_at      TEXT NOT NULL,
                  updated_at        TEXT NOT NULL
              );",
