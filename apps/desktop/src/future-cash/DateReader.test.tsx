@@ -273,4 +273,18 @@ describe("Read forecast by date with realized history (personal-cfo-i93n3.27)", 
     expect(select().value).toBe("2026-09-01");
     expect(document.querySelector('[aria-live="polite"]')!.textContent).toMatch(/^Showing /);
   });
+
+  it("with history, the first FORECAST date still says the forecast starts here, and the next date's opening is the first's closing", () => {
+    renderWithHistory("2026-09-01");
+    const reading = screen.getByRole("region", { name: /^forecast for/i });
+    // Not an empty opening: recorded balances are not summed into the forecast's groups.
+    expect(within(reading).getByText("The forecast starts here.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next day" }));
+    expect(select().value).toBe("2026-09-08");
+    const next = screen.getByRole("region", { name: /^forecast for/i });
+    const openingSection = within(next).getByText("Opening balance").parentElement!;
+    // The first forecast date's closing (Net $33,133.17) is this date's opening.
+    expect(within(openingSection).getByText("$33,133.17")).toBeInTheDocument();
+    expect(within(next).queryByText("The forecast starts here.")).toBeNull();
+  });
 });

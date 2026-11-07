@@ -66,7 +66,11 @@ export function DateReader({
   const closingOf = (closings: { date: string; closing: Band }[], on: string): Band | null =>
     closings.find((c) => c.date === on)?.closing ?? null;
   const groups = [...projection.groups].sort((a, b) => (TIER_ORDER[a.tier] ?? 99) - (TIER_ORDER[b.tier] ?? 99));
-  const previous = index > 0 ? spine[index - 1]! : null;
+  // The date before this one in its own series: a recorded date's opening is the previous RECORDED closing, and a forecast
+  // date's opening is the previous FORECAST closing. The first forecast date has none ("The forecast starts here."):
+  // recorded balances are never summed into the forecast's groups.
+  const sameKind = spine.filter((d) => forecastDates.has(d) === !recorded);
+  const previous = sameKind.indexOf(date) > 0 ? sameKind[sameKind.indexOf(date) - 1]! : null;
 
   const activities = projection.accounts.flatMap((account) =>
     account.days
