@@ -2414,6 +2414,71 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Version 69 (personal-cfo-0g528.2, S2c part 2; provisional: it is 70 if
+    // `personal-cfo-bxsbz.5`'s version-69 migration lands first):
+    // * `sync_artifacts` is the device-local mapping from a class-1b artifact's service address in
+    //   an epoch (`sync_artifact_id_e`) to the local identity that carries it, with the ciphertext
+    //   hash this device verified when it published the artifact or fetched it (the only hash a
+    //   producer may bind; a cache for the no-refetch rule that never decides a verdict) and, for
+    //   a producer, whether a durable receipt matched. It is class 3: never replicated, exported
+    //   or snapshotted.
+    // * For an attachment received from a peer, the `staged_*` columns hold the receiver-local
+    //   crypto fields (storage id, wrapped content key and nonces, algorithm, size, MIME type)
+    //   from the moment the bytes are materialized until the attach command's `apply` creates the
+    //   class-4 `attachments` row from them. The same transaction then sets them to NULL, so the
+    //   `attachments` row is the only long-lived copy of the key material. While staged they are
+    //   re-wrapped and re-addressed by a key rotation, like an `attachments` row (ADR 0083).
+    //   The CHECKs tie them to an attachment, all present or all absent.
+    Migration {
+        version: 69,
+        name: "sync_artifacts",
+        up: "CREATE TABLE sync_artifacts (
+                 key_epoch                  INTEGER NOT NULL CHECK (key_epoch >= 1),
+                 sync_artifact_id           BLOB NOT NULL CHECK (length(sync_artifact_id) = 32),
+                 ciphertext_sha256          BLOB NOT NULL CHECK (length(ciphertext_sha256) = 32),
+                 kind                       INTEGER NOT NULL CHECK (kind IN (1, 2)),
+                 logical_id                 BLOB NOT NULL CHECK (length(logical_id) = 16),
+                 part_index                 INTEGER,
+                 part_count                 INTEGER,
+                 receipt_at                 TEXT,
+                 staged_storage_id          TEXT,
+                 staged_wrapped_content_key BLOB,
+                 staged_content_key_nonce   BLOB,
+                 staged_content_nonce       BLOB,
+                 staged_content_alg         TEXT,
+                 staged_plaintext_size      INTEGER,
+                 staged_mime_type           TEXT,
+                 PRIMARY KEY (key_epoch, sync_artifact_id),
+                 CHECK (
+                     (kind = 1 AND part_index IS NULL AND part_count IS NULL)
+                     OR (kind = 2 AND part_index IS NOT NULL AND part_count IS NOT NULL
+                         AND part_count >= 1 AND part_index >= 0 AND part_index < part_count)
+                 ),
+                 CHECK (
+                     (staged_storage_id IS NULL AND staged_wrapped_content_key IS NULL
+                      AND staged_content_key_nonce IS NULL AND staged_content_nonce IS NULL
+                      AND staged_content_alg IS NULL AND staged_plaintext_size IS NULL
+                      AND staged_mime_type IS NULL)
+                     OR (kind = 1 AND staged_storage_id IS NOT NULL
+                         AND staged_wrapped_content_key IS NOT NULL
+                         AND staged_content_key_nonce IS NOT NULL
+                         AND staged_content_nonce IS NOT NULL
+                         AND staged_content_alg IS NOT NULL
+                         AND staged_plaintext_size IS NOT NULL AND staged_plaintext_size >= 0)
+                 )
+             );
+             CREATE INDEX idx_sync_artifacts_logical
+                 ON sync_artifacts (kind, logical_id, key_epoch);
+             CREATE UNIQUE INDEX idx_sync_artifacts_staged_storage
+                 ON sync_artifacts (staged_storage_id) WHERE staged_storage_id IS NOT NULL;",
+        down: Some(
+            "DROP INDEX idx_sync_artifacts_staged_storage;
+             DROP INDEX idx_sync_artifacts_logical;
+             DROP TABLE sync_artifacts;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
@@ -3848,7 +3913,8 @@ mod tests {
             ]
         );
 
-        assert_eq!(migrate_down(&mut conn, 67).unwrap(), 1);
+        // 69 (`sync_artifacts`) sits above 68: stepping to 67 reverts both.
+        assert_eq!(migrate_down(&mut conn, 67).unwrap(), 2);
         assert!(tables(&conn).is_empty(), "down drops all three");
 
         apply(&mut conn, MIGRATIONS).unwrap();
@@ -3857,6 +3923,138 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sync_genesis", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 0);
+    }
+
+    /// 69 adds the device-local artifact mapping; down drops it with its indexes, and up creates it
+    /// again empty.
+    #[test]
+    fn v69_down_drops_the_artifact_mapping_and_up_creates_it_empty() {
+        let objects = |conn: &Connection| -> Vec<String> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE name LIKE '%sync_artifacts%'
+                       AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(
+            objects(&conn),
+            [
+                "idx_sync_artifacts_logical",
+                "idx_sync_artifacts_staged_storage",
+                "sync_artifacts"
+            ]
+        );
+        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 1);
+        assert!(objects(&conn).is_empty());
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_artifacts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    /// The mapping's CHECKs: an attachment has no part, a part has an index inside its count, and
+    /// the staged crypto fields are all present on an attachment or all absent.
+    #[test]
+    fn the_artifact_mapping_refuses_a_row_that_is_not_one_of_its_two_shapes() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        // `n` makes the address unique; `staged` is the five-part crypto set or all NULLs.
+        let insert = |n: u8, id_len: usize, kind: i64, part: (&str, &str), staged: &str| {
+            conn.execute(
+                &format!(
+                    "INSERT INTO sync_artifacts
+                         (key_epoch, sync_artifact_id, ciphertext_sha256, kind, logical_id,
+                          part_index, part_count, staged_storage_id, staged_wrapped_content_key,
+                          staged_content_key_nonce, staged_content_nonce, staged_content_alg,
+                          staged_plaintext_size)
+                     VALUES (1, x'{}', zeroblob(32), {kind}, zeroblob(16), {}, {}, {staged})",
+                    format!("{n:02x}").repeat(id_len),
+                    part.0,
+                    part.1
+                ),
+                [],
+            )
+        };
+        const NONE: &str = "NULL, NULL, NULL, NULL, NULL, NULL";
+        const STAGED: &str = "'sb', x'aa', x'00', x'01', 'AES-256-GCM', 5";
+
+        // The two shapes: an attachment with no part, and a batch part inside its count.
+        assert!(insert(1, 32, 1, ("NULL", "NULL"), NONE).is_ok());
+        assert!(insert(2, 32, 2, ("0", "3"), NONE).is_ok());
+        assert!(insert(3, 32, 2, ("2", "3"), NONE).is_ok(), "the last part");
+
+        // Refused: an attachment with a part, a part at or past its count, a part with no index or
+        // no count, a count of zero, a negative index, an unknown kind, a short address.
+        for (n, (id_len, kind, part)) in [
+            (32, 1, ("0", "1")),
+            (32, 2, ("3", "3")),
+            (32, 2, ("NULL", "3")),
+            (32, 2, ("0", "NULL")),
+            (32, 2, ("0", "0")),
+            (32, 2, ("-1", "3")),
+            (32, 3, ("NULL", "NULL")),
+            (31, 1, ("NULL", "NULL")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(
+                insert(10 + n as u8, id_len, kind, part, NONE).is_err(),
+                "kind {kind}, part {part:?}, id length {id_len}"
+            );
+        }
+
+        // Staged crypto fields: all present on an attachment is fine; some missing, or on a batch
+        // part, is not; and a staged storage id names one blob.
+        assert!(insert(20, 32, 1, ("NULL", "NULL"), STAGED).is_ok());
+        assert!(
+            insert(
+                21,
+                32,
+                1,
+                ("NULL", "NULL"),
+                &STAGED.replace("x'aa'", "NULL")
+            )
+            .is_err(),
+            "a storage id with no key"
+        );
+        assert!(
+            insert(22, 32, 1, ("NULL", "NULL"), &STAGED.replace("'sb'", "NULL")).is_err(),
+            "a key with no storage id"
+        );
+        assert!(
+            insert(23, 32, 2, ("0", "1"), &STAGED.replace("'sb'", "'sc'")).is_err(),
+            "key material on a batch part"
+        );
+        assert!(
+            insert(24, 32, 1, ("NULL", "NULL"), STAGED).is_err(),
+            "two rows staged for one blob"
+        );
+        assert!(
+            insert(25, 32, 1, ("NULL", "NULL"), &STAGED.replace("'sb'", "'sd'")).is_ok(),
+            "another blob"
+        );
+
+        // Clearing the staging on its own is allowed (what the attach command's apply does).
+        let cleared = conn
+            .execute(
+                "UPDATE sync_artifacts SET staged_storage_id = NULL,
+                        staged_wrapped_content_key = NULL, staged_content_key_nonce = NULL,
+                        staged_content_nonce = NULL, staged_content_alg = NULL,
+                        staged_plaintext_size = NULL, staged_mime_type = NULL
+                  WHERE staged_storage_id = 'sb'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(cleared, 1);
     }
 
     fn hex_upper(bytes: &[u8]) -> String {

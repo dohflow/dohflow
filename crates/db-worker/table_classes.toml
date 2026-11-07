@@ -399,6 +399,15 @@ rebase_preservation = "preserve the row byte for byte across the swap; a rebase 
 reference_validation = "the records must verify as a chain for vault_id before any key is installed from them; a VaultKnown or GenesisResumeLost genesis is never published"
 
 [[table]]
+table = "sync_artifacts"
+class = "3"
+owner_bead = "personal-cfo-0g528"
+note = "Device-local mapping from a class-1b artifact's service address in an epoch (sync_artifact_id_e) to the local identity that carries it, with the ciphertext hash this device verified when it published the artifact or fetched it and, for a producer, whether a durable receipt matched. For an attachment received from a peer the staged_* columns hold the receiver-local crypto fields from materialization until the attach command's apply creates the attachments row from them, and are NULL afterwards. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "preserve every row byte for byte across the swap, staged crypto fields included, re-wrapped by a rotation like attachments rows; a rebase never re-materializes an artifact"
+reference_validation = "an id with a recorded hash that differs from the bound one and that the live closure does not hold is a cache miss, never a verdict; a staged row names a blob that exists, and its key unwraps under the DEK"
+
+[[table]]
 table = "vault_meta"
 class = "3"
 owner_bead = "personal-cfo-bxsbz"

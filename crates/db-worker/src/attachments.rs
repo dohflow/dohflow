@@ -304,7 +304,7 @@ pub(crate) fn list_for(
 
 /// Convert a stored nonce BLOB to a fixed-size array, rejecting a wrong length
 /// (corruption) rather than panicking.
-fn to_nonce(bytes: &[u8]) -> Result<[u8; NONCE_LEN], DbError> {
+pub(crate) fn to_nonce(bytes: &[u8]) -> Result<[u8; NONCE_LEN], DbError> {
     bytes
         .try_into()
         .map_err(|_| DbError::SelfTestFailed("attachment nonce has wrong length".into()))

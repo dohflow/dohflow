@@ -490,6 +490,13 @@ primary_key = ["id"]
 columns = ["id:uuid", "source_record_id:uuid", "proposed_account_id:uuid", "posted_at:text", "amount_minor:int", "currency:text", "normalized_merchant:text", "description:text", "txn_fingerprint:text", "dedupe_status:text", "commit_status:text", "committed_transaction_id:uuid", "created_at:text", "transaction_date:text", "imported_category:text", "row_ordinal:int"]
 
 [[table]]
+name = "sync_artifacts"
+class = "3"
+write_set = "none"
+primary_key = ["key_epoch", "sync_artifact_id"]
+columns = ["key_epoch:int", "sync_artifact_id:uuid", "ciphertext_sha256:bytes", "kind:int", "logical_id:uuid", "part_index:int", "part_count:int", "receipt_at:text", "staged_storage_id:text", "staged_wrapped_content_key:bytes", "staged_content_key_nonce:bytes", "staged_content_nonce:bytes", "staged_content_alg:text", "staged_plaintext_size:int", "staged_mime_type:text"]
+
+[[table]]
 name = "sync_base"
 class = "3"
 write_set = "none"
