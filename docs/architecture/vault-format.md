@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=35 -->
+<!-- vault-format: spec-version=36 -->
 <!-- vault-format: schema-version=68 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -272,6 +272,10 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 36` (personal-cfo-1cltt.4, part C) states how the genesis snapshot is named and
+  resumed (C.8 "The genesis snapshot's id and a resume": a derived id, the saved container is what
+  a resume sends, the persisted genesis is the authority). No wire layout, write-set rule, vector,
+  `engine_version` or schema change.
 - `spec-version = 35` (personal-cfo-1cltt.4, part B) states how a snapshot is published and where
   its plaintext is read from (C.8 "Publishing a snapshot": a genesis by `installEpoch`, a later
   snapshot by `publishSnapshot`, the live vault only for a genesis, no publish while halted or
@@ -2019,6 +2023,16 @@ service refuses the account credential at `stageSnapshot` once the genesis is in
 the state after a lost `installEpoch` response): the client goes on to `installEpoch` with the same
 bytes, and only that answer says the vault is known (`VaultExists`, R39), after which the genesis is
 never published or re-minted and nothing in the vault is discarded.
+
+**The genesis snapshot's id and a resume.** The genesis snapshot's `object_id` is not random: it is
+the first 16 bytes of `SHA-256("dohflow/genesis-snapshot-id/v1" ‖ genesis_epoch_record_id)` with the
+UUID version (4) and variant bits set, so a client that resumes after a crash or a lost response
+names the snapshot its first attempt named without persisting anything more. A resume sends the
+**saved container** of that snapshot (C.4 "Saved sealed snapshot") exactly as it was sealed, and
+reads nothing from the vault: if the vault changed in between, re-exporting would build a different
+snapshot under an id the service may already hold. Only when nothing usable is saved does the client
+export the live vault and seal again. The enable sequence persists the genesis records before it
+installs any key from them, and a vault that holds a persisted genesis never mints another.
 
 **Where the plaintext is read from.** Only a genesis is read from the live vault, at sync-enable,
 before any outbox row exists. The live vault holds the effects of local commands no envelope has

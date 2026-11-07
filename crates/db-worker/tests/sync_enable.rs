@@ -471,7 +471,9 @@ fn a_restored_register_stops_the_publish_with_nonce_state_lost() {
         matches!(
             result,
             Err(EnableError::Publish(PublishError::Snapshot(
-                SnapshotError::Nonce(NonceError::NonceStateLost(LostReason::RegisterBehindWitness))
+                SnapshotError::Nonce(NonceError::NonceStateLost(
+                    LostReason::RegisterBehindWitness
+                ))
             )))
         ),
         "{result:?}"
