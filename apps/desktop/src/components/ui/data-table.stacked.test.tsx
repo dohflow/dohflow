@@ -73,7 +73,8 @@ describe("DataTable on a phone (personal-cfo-i93n3.27 slice F)", () => {
     stubMatchMedia(true);
     render(table());
     const long = screen.getByText(/very long merchant name/);
-    expect(long.className).toContain("break-words");
+    // `anywhere`, not `break-word`: a long unbroken token must not widen the card past the screen.
+    expect(long.className).toContain("[overflow-wrap:anywhere]");
     const list = screen.getByRole("list");
     expect(list.outerHTML).not.toMatch(/truncate|overflow-x|whitespace-nowrap|min-w-\[/);
   });

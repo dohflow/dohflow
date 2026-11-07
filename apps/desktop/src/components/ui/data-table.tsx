@@ -405,7 +405,7 @@ function StackedRows<T>({
               >
                 <div className="flex flex-col gap-1.5 px-4 py-3">
                   {title && (
-                    <div className="min-w-0 break-words font-medium">
+                    <div className="min-w-0 font-medium [overflow-wrap:anywhere]">
                       {typeof title.header === "string" && <span className="sr-only">{title.header}: </span>}
                       {title.cell(row)}
                     </div>
@@ -414,11 +414,11 @@ function StackedRows<T>({
                     {rest.map((column) => (
                       <div key={column.key} className="flex items-baseline justify-between gap-4">
                         {typeof column.header === "string" && column.header !== "" ? (
-                          <dt className="min-w-0 break-words text-muted-foreground">{column.header}</dt>
+                          <dt className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">{column.header}</dt>
                         ) : (
                           <dt className="sr-only">{column.key}</dt>
                         )}
-                        <dd className={cn("min-w-0 break-words text-right tabular-nums", column.className)}>
+                        <dd className={cn("min-w-0 text-right tabular-nums [overflow-wrap:anywhere]", column.className)}>
                           {column.cell(row)}
                         </dd>
                       </div>
