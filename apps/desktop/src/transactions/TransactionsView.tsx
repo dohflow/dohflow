@@ -955,7 +955,7 @@ function CategoryCell({
   // color to show.
   const swatch = showIcons && !uncategorized && (meta?.icon || meta?.color) ? meta : null;
   return (
-    <div className="relative shrink-0">
+    <div className="relative shrink-0 compact:min-w-0 compact:max-w-full compact:shrink">
       {swatch && (
         <span
           aria-hidden
@@ -970,7 +970,7 @@ function CategoryCell({
         value={categoryId ?? ""}
         onChange={(event) => onSelect(event.target.value || null)}
         className={cn(
-          "max-w-[9rem] cursor-pointer appearance-none truncate rounded-full border py-0.5 pr-6 text-[0.6875rem] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "max-w-[9rem] compact:w-full compact:max-w-full cursor-pointer appearance-none truncate rounded-full border py-0.5 pr-6 text-[0.6875rem] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring",
           swatch ? "pl-7" : "pl-2.5",
           uncategorized
             ? "border-dashed border-warning/50 bg-warning/5 text-warning"

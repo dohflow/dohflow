@@ -288,6 +288,8 @@ describe("TransactionsView", () => {
       // At the largest text size a button's own label wraps instead of running off the screen.
       expect(screen.getByRole("button", { name: /Add transaction/ })).toHaveClass("compact:whitespace-normal", "compact:max-w-full");
       expect(screen.getByText("Checking")).toHaveClass("compact:whitespace-normal");
+      // The category picker may not be wider than the card.
+      expect(screen.getByRole("combobox", { name: "Category" })).toHaveClass("compact:w-full", "compact:max-w-full");
       const search = screen.getByRole("searchbox", { name: "Search transactions" });
       expect(search.parentElement).toHaveClass("compact:basis-full");
       expect(search.parentElement!.parentElement).toHaveClass("compact:flex-wrap");
