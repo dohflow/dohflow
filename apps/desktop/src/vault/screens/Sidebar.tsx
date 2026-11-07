@@ -46,22 +46,22 @@ export type Tab =
 
 /// The labelled nav groups, in render order (ADR 0049 §1). `utility` is pinned to the
 /// bottom and renders without a heading.
-const GROUPS = [
+export const GROUPS = [
   { key: "overview", label: "Overview" },
   { key: "planning", label: "Planning" },
   { key: "review", label: "Review" },
 ] as const;
 
-type NavGroup = (typeof GROUPS)[number]["key"] | "utility";
+export type NavGroup = (typeof GROUPS)[number]["key"] | "utility";
 
-type NavItem = {
+export type NavItem = {
   tab: Tab;
   label: string;
   icon: ReactNode;
   group: NavGroup;
 };
 
-const NAV: NavItem[] = [
+export const NAV: NavItem[] = [
   { tab: "dashboard", label: "Dashboard", icon: <LayoutDashboard aria-hidden />, group: "overview" },
   { tab: "accounts", label: "Accounts", icon: <Wallet aria-hidden />, group: "overview" },
   // Debt sits between Accounts and Transactions in Overview (ADR 0049 §1). Accounts is
