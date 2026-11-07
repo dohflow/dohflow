@@ -32,6 +32,7 @@
 //! **Rolling back reaches the base and no further.** [`DbWorker::rollback_to`] accepts only the
 //! recorded `base_seq`; any other target is a typed error, never a partial rollback.
 
+mod effects;
 mod execute;
 mod overlay;
 mod plan;
@@ -203,6 +204,13 @@ pub enum RebaseError {
     /// scratch vault is kept as the evidence (`RebaseBlockedLocalState`).
     #[error("{}", .0.describe())]
     BlockedLocalState(Box<RebaseBlockedLocalState>),
+    /// [`Scratch::apply_pulled_class3_effects`] before [`Scratch::overlay_class3`]: the effects
+    /// are run on the overlaid vault, because the overlay restores the rows they act on.
+    #[error("the pulled class-3 effects need the class-3 overlay carried first")]
+    EffectsBeforeOverlay,
+    /// The pulled class-3 effects were already run on this scratch vault.
+    #[error("the pulled class-3 effects were already run on this scratch vault")]
+    EffectsAlreadyApplied,
     /// The database or the filesystem failed.
     #[error(transparent)]
     Db(#[from] DbError),
@@ -265,6 +273,9 @@ pub struct PulledEnvelope<'a> {
     pub checked: CheckedEnvelope<'a>,
 }
 
+pub use effects::EffectsReport;
+#[cfg(test)]
+pub(crate) use effects::{effect_of, Class3Effect, CLASS3_APPLY_SITES};
 pub use execute::{Executed, LocalCommand, OutboxEntryState, Replayed};
 #[cfg(test)]
 pub(crate) use overlay::class_three_tables_handled;
@@ -304,6 +315,10 @@ pub struct Scratch<'a> {
     inherited: overlay::Inherited,
     /// Whether the class-3 overlay was carried onto this scratch vault.
     overlaid: bool,
+    /// The commands the scratch vault applied from the server's tail, in seq order.
+    pulled_commands: Vec<effects::PulledCommand>,
+    /// Whether the pulled commands' class-3 effects were run.
+    effects_applied: bool,
 }
 
 impl std::fmt::Debug for Scratch<'_> {
@@ -378,6 +393,8 @@ impl DbWorker {
             rebased: false,
             inherited,
             overlaid: false,
+            pulled_commands: Vec::new(),
+            effects_applied: false,
         })
     }
 
@@ -519,8 +536,13 @@ impl Scratch<'_> {
                 rebased_from: own.get(&command_id).copied(),
                 record_outbox: false,
             };
+            let applied = effects::PulledCommand {
+                meta: meta.clone(),
+                cmd: command.clone(),
+                own: own.contains_key(&command_id),
+            };
             match self.worker.dispatch_rebase_step(meta, &command, step) {
-                Ok(_) => {}
+                Ok(_) => self.pulled_commands.push(applied),
                 Err(RebaseError::Db(error)) if is_command_refusal(&error) => {
                     return Err(RebaseError::PulledEnvelopeRefused { seq, error });
                 }

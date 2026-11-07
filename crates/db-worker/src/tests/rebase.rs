@@ -3170,4 +3170,255 @@ mod overlay {
             "overlay rules for non-class-3 tables: {stray:?}"
         );
     }
+
+    /// Roll back, apply the remote command as envelope 6, rebase the local one, carry the overlay.
+    fn overlaid<'a>(
+        w: &'a World,
+        local: WriteCommand,
+        remote: &WriteCommand,
+    ) -> (Scratch<'a>, Uuid) {
+        let issued = executor::issue(&w.live, meta(), local);
+        let device_b = other_device(&w.live, &w.dir);
+        let sealed = seal(device_b.worker(), &meta(), remote);
+        let remote_id = Uuid::from_bytes(sealed.plaintext.meta.command_id);
+        let image = w.live.capture_preservation().unwrap();
+        let mut scratch = w.live.rollback_to(5, &w.scratch).unwrap();
+        scratch.apply_pulled(&[sealed.pulled(6)]).unwrap();
+        scratch.rebase_local(image.local()).unwrap();
+        scratch.overlay_class3(&image).unwrap();
+        assert_ne!(issued.meta.command_id, remote_id);
+        (scratch, remote_id)
+    }
+
+    fn cursors(worker: &DbWorker, connection: Uuid) -> i64 {
+        worker
+            .lock()
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM connector_link_cursors WHERE connection_id = ?1",
+                [connection],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn unmap(connection: Uuid) -> WriteCommand {
+        WriteCommand::SetConnectorLinkAccount {
+            connection_id: connection,
+            external_id: "acct-1".to_owned(),
+            account_id: None,
+        }
+    }
+
+    #[test]
+    fn a_pulled_mapping_change_clears_the_watermark_the_overlay_restored() {
+        let w = world();
+        drift(&w);
+        let (mut scratch, _remote) = overlaid(&w, other_account(), &unmap(w.a));
+        assert_eq!(
+            cursors(scratch.worker(), w.a),
+            1,
+            "the overlay brought the live watermark back"
+        );
+        let report = scratch.apply_pulled_class3_effects().unwrap();
+        assert_eq!(report.cursors_cleared, 1);
+        assert_eq!(cursors(scratch.worker(), w.a), 0);
+        // The credential and everything unrelated to the mapping stay.
+        assert_eq!(secret(scratch.worker(), w.a).as_deref(), Some(SECRET_A));
+    }
+
+    #[test]
+    fn a_pulled_delete_scrubs_the_restored_token_and_the_audit_row_keyed_by_the_command_survives() {
+        let w = world();
+        drift(&w);
+        let (mut scratch, remote_id) = overlaid(
+            &w,
+            other_account(),
+            &WriteCommand::DeleteConnectorConnection { id: w.a },
+        );
+        assert_eq!(
+            secret(scratch.worker(), w.a).as_deref(),
+            Some(SECRET_A),
+            "the overlay restored the token the stripped base did not have"
+        );
+        let report = scratch.apply_pulled_class3_effects().unwrap();
+        let s = scratch.worker();
+        assert_eq!(report.connections_scrubbed, 1);
+        assert_eq!(report.swept, 0, "the effect already did it");
+        assert_eq!(secret(s, w.a), None);
+        assert_eq!(cursors(s, w.a), 0);
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM connector_attention WHERE connection_id = x'{}'",
+                    hex(w.a)
+                )
+            ),
+            0
+        );
+        // The audit row is keyed by the pulled command; the live vault's own token-removed row
+        // (a stable audit row) was carried by the overlay and is still there.
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM audit_events WHERE event_type = '{CONNECTOR_SECRET_REMOVED_EVENT}'
+                      AND id = x'{}'",
+                    hex(remote_id)
+                )
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM audit_events WHERE event_type = '{CONNECTOR_SECRET_REMOVED_EVENT}'"
+                )
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn the_effects_run_once_and_only_after_the_overlay() {
+        let w = world();
+        drift(&w);
+        let image = w.live.capture_preservation().unwrap();
+        let mut scratch = w.live.rollback_to(5, &w.scratch).unwrap();
+        scratch.rebase_local(image.local()).unwrap();
+        assert!(matches!(
+            scratch.apply_pulled_class3_effects(),
+            Err(RebaseError::EffectsBeforeOverlay)
+        ));
+        scratch.overlay_class3(&image).unwrap();
+        scratch.apply_pulled_class3_effects().unwrap();
+        assert!(matches!(
+            scratch.apply_pulled_class3_effects(),
+            Err(RebaseError::EffectsAlreadyApplied)
+        ));
+    }
+
+    #[test]
+    fn the_sweep_scrubs_a_tombstoned_connection_no_pulled_command_named() {
+        let w = world();
+        drift(&w);
+        let (mut scratch, _remote) =
+            overlaid(&w, other_account(), &rename(w.account, "From device B"));
+        exec(
+            scratch.worker(),
+            "UPDATE connector_connections SET deleted_at = '2026-11-05T00:00:00Z' WHERE id = ?1",
+            params![w.a],
+        );
+        let report = scratch.apply_pulled_class3_effects().unwrap();
+        assert_eq!(report.swept, 1);
+        assert_eq!(secret(scratch.worker(), w.a), None);
+        assert_eq!(cursors(scratch.worker(), w.a), 0);
+        // Idempotent: the credential is gone, so a second sweep has nothing to do.
+        let guard = scratch.worker().lock();
+        let tx = guard.conn.unchecked_transaction().unwrap();
+        assert_eq!(crate::connectors::scrub_tombstoned_in(&tx).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_pulled_command_that_is_this_devices_own_accepted_one_does_not_clear_a_newer_watermark() {
+        let w = world();
+        drift(&w);
+        let (mut scratch, remote_id) = {
+            let issued = executor::issue(&w.live, meta(), other_account());
+            let device_b = other_device(&w.live, &w.dir);
+            let sealed = seal(device_b.worker(), &meta(), &unmap(w.a));
+            let remote_id = Uuid::from_bytes(sealed.plaintext.meta.command_id);
+            let image = w.live.capture_preservation().unwrap();
+            let mut scratch = w.live.rollback_to(5, &w.scratch).unwrap();
+            scratch.apply_pulled(&[sealed.pulled(6)]).unwrap();
+            scratch.rebase_local(image.local()).unwrap();
+            scratch.overlay_class3(&image).unwrap();
+            assert_ne!(issued.meta.command_id, remote_id);
+            (scratch, remote_id)
+        };
+        scratch.mark_pulled_own(remote_id);
+        let report = scratch.apply_pulled_class3_effects().unwrap();
+        assert_eq!(report.cursors_cleared, 0);
+        assert_eq!(
+            cursors(scratch.worker(), w.a),
+            1,
+            "the live vault already ran it; its newer watermark stands"
+        );
+    }
+
+    #[test]
+    fn the_classification_names_the_commands_that_touch_class_three() {
+        use crate::rebase::{effect_of, Class3Effect};
+        assert_eq!(
+            effect_of(&unmap(Uuid::nil())),
+            Class3Effect::ClearLinkCursor
+        );
+        assert_eq!(
+            effect_of(&WriteCommand::DeleteConnectorConnection { id: Uuid::nil() }),
+            Class3Effect::ScrubDeletedConnection
+        );
+        assert_eq!(
+            effect_of(&rename(AccountId::new(), "x")),
+            Class3Effect::None
+        );
+    }
+
+    #[test]
+    fn every_class_three_write_in_apply_has_an_effect() {
+        use crate::rebase::CLASS3_APPLY_SITES;
+        const MANIFEST: &str = include_str!("../../table_classes.toml");
+        let mut class_three = std::collections::BTreeSet::new();
+        for block in MANIFEST.split("[[table]]").skip(1) {
+            let field = |name: &str| {
+                block.lines().find_map(|line| {
+                    let (key, value) = line.split_once('=')?;
+                    (key.trim() == name).then(|| value.trim().trim_matches('"').to_owned())
+                })
+            };
+            if field("class").as_deref() == Some("3")
+                && field("kind").as_deref().unwrap_or("sqlite_table") == "sqlite_table"
+            {
+                class_three.insert(field("table").unwrap());
+            }
+        }
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/apply");
+        let mut found = std::collections::BTreeSet::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let code = source.split("#[cfg(test)]").next().unwrap();
+            let words: Vec<&str> = code
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| !w.is_empty())
+                .collect();
+            for (i, word) in words.iter().enumerate() {
+                let table = match *word {
+                    "INTO" | "UPDATE" => words.get(i + 1),
+                    "FROM" if i > 0 && words[i - 1] == "DELETE" => words.get(i + 1),
+                    _ => None,
+                };
+                if let Some(table) = table {
+                    if class_three.contains(*table) {
+                        found.insert((
+                            path.file_name().unwrap().to_str().unwrap().to_owned(),
+                            (*table).to_owned(),
+                        ));
+                    }
+                }
+            }
+        }
+        let listed: std::collections::BTreeSet<(String, String)> = CLASS3_APPLY_SITES
+            .iter()
+            .map(|(file, table, _)| ((*file).to_owned(), (*table).to_owned()))
+            .collect();
+        assert_eq!(
+            found, listed,
+            "an apply arm writes a class-3 table the registry does not cover (or the list is stale)"
+        );
+    }
 }
