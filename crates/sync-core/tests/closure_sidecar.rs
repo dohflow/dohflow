@@ -45,6 +45,7 @@ fn name(error: ClosureSidecarError) -> &'static str {
         ClosureSidecarError::TooManyIds => "TooManyIds",
         ClosureSidecarError::NotWholeIds => "NotWholeIds",
         ClosureSidecarError::NotAscending => "NotAscending",
+        ClosureSidecarError::CountMismatch => "CountMismatch",
     }
 }
 

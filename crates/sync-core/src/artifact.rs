@@ -21,7 +21,7 @@ use thiserror::Error;
 
 use crate::canonical_json::{parse_canonical_node, Node};
 use crate::cbe::{Reader, WireError, Writer};
-use crate::envelope::manifest_bytes_bounded;
+use crate::envelope::{manifest_bytes_bounded, manifest_preimage_head};
 use crate::header::{ManifestCommitment, PROTOCOL_VERSION};
 
 /// The label of the transport plaintext.
@@ -599,6 +599,144 @@ pub enum ClosureSidecarError {
     /// An id is not greater than the one before it (a duplicate, or out of order).
     #[error("the closure sidecar is not strictly ascending")]
     NotAscending,
+    /// The body held more or fewer ids than the count it was declared with (the length the request
+    /// stated): a transport-level disagreement, not a malformed closure.
+    #[error("the closure sidecar does not hold the number of ids declared")]
+    CountMismatch,
+}
+
+/// The commitment of a closure sidecar computed **as the body streams**, holding no ids: one hash
+/// state, the previous id and at most one partial id (personal-cfo-v98vd AC36). It is the incremental
+/// form of [`ClosureManifest::commitment`] and gives exactly its value, so a service that never holds
+/// the whole closure (at most 32 MiB, beside the stream it came from) checks the same C.3 commitment
+/// the client sealed, with the same refusals as [`ClosureManifest::from_sidecar`]: the length first,
+/// then order, across chunk boundaries and inside split ids. A chunk's size is the caller's.
+///
+/// An error is sticky: after one, `push` and `finish` answer it again.
+pub struct ClosureCommitter {
+    hasher: Sha256,
+    declared: u64,
+    seen: u64,
+    previous: Option<[u8; 32]>,
+    pending: [u8; CLOSURE_SIDECAR_ID_LEN],
+    pending_len: usize,
+    failed: Option<ClosureSidecarError>,
+}
+
+impl ClosureCommitter {
+    /// A committer for a body of `body_len` bytes, judged by length exactly as
+    /// [`ClosureManifest::from_sidecar`] judges it first: over 2^20 ids is
+    /// [`ClosureSidecarError::TooManyIds`], a length that is not whole ids is
+    /// [`ClosureSidecarError::NotWholeIds`]. The count is `body_len / 32`.
+    ///
+    /// # Errors
+    /// [`ClosureSidecarError::TooManyIds`] or [`ClosureSidecarError::NotWholeIds`].
+    pub fn for_body_len(body_len: u64) -> Result<Self, ClosureSidecarError> {
+        if body_len > MAX_CLOSURE_SIDECAR_LEN as u64 {
+            return Err(ClosureSidecarError::TooManyIds);
+        }
+        if !body_len.is_multiple_of(CLOSURE_SIDECAR_ID_LEN as u64) {
+            return Err(ClosureSidecarError::NotWholeIds);
+        }
+        Ok(Self::with_count(body_len / CLOSURE_SIDECAR_ID_LEN as u64))
+    }
+
+    /// A committer for a closure of exactly `count` ids.
+    ///
+    /// # Errors
+    /// [`ClosureSidecarError::TooManyIds`] above 2^20.
+    pub fn new(count: u64) -> Result<Self, ClosureSidecarError> {
+        if count > MAX_SNAPSHOT_CLOSURE as u64 {
+            return Err(ClosureSidecarError::TooManyIds);
+        }
+        Ok(Self::with_count(count))
+    }
+
+    fn with_count(count: u64) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(manifest_preimage_head(
+            u32::try_from(count).expect("a count within 2^20 fits a u32"),
+        ));
+        Self {
+            hasher,
+            declared: count,
+            seen: 0,
+            previous: None,
+            pending: [0; CLOSURE_SIDECAR_ID_LEN],
+            pending_len: 0,
+            failed: None,
+        }
+    }
+
+    fn take(&mut self, id: [u8; 32]) -> Result<(), ClosureSidecarError> {
+        if self.seen == self.declared {
+            return Err(ClosureSidecarError::CountMismatch);
+        }
+        if self.previous.is_some_and(|before| before >= id) {
+            return Err(ClosureSidecarError::NotAscending);
+        }
+        self.hasher.update(id);
+        self.previous = Some(id);
+        self.seen += 1;
+        Ok(())
+    }
+
+    /// Feeds the next bytes of the body, of any size: a chunk may end inside an id.
+    ///
+    /// # Errors
+    /// [`ClosureSidecarError::NotAscending`] for an id that does not follow its predecessor,
+    /// [`ClosureSidecarError::CountMismatch`] for an id past the declared count.
+    pub fn push(&mut self, mut chunk: &[u8]) -> Result<(), ClosureSidecarError> {
+        if let Some(error) = self.failed {
+            return Err(error);
+        }
+        let result = (|| {
+            if self.pending_len > 0 {
+                let take = (CLOSURE_SIDECAR_ID_LEN - self.pending_len).min(chunk.len());
+                self.pending[self.pending_len..self.pending_len + take]
+                    .copy_from_slice(&chunk[..take]);
+                self.pending_len += take;
+                chunk = &chunk[take..];
+                if self.pending_len < CLOSURE_SIDECAR_ID_LEN {
+                    return Ok(());
+                }
+                self.pending_len = 0;
+                self.take(self.pending)?;
+            }
+            let (whole, rest) = chunk.as_chunks::<CLOSURE_SIDECAR_ID_LEN>();
+            for id in whole {
+                self.take(*id)?;
+            }
+            self.pending[..rest.len()].copy_from_slice(rest);
+            self.pending_len = rest.len();
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.failed = Some(error);
+        }
+        result
+    }
+
+    /// The closure commitment, once the body has ended.
+    ///
+    /// # Errors
+    /// [`ClosureSidecarError::NotWholeIds`] when the body ended inside an id,
+    /// [`ClosureSidecarError::CountMismatch`] when it held fewer ids than declared, or the error that
+    /// stopped an earlier `push`.
+    pub fn finish(self) -> Result<ManifestCommitment, ClosureSidecarError> {
+        if let Some(error) = self.failed {
+            return Err(error);
+        }
+        if self.pending_len != 0 {
+            return Err(ClosureSidecarError::NotWholeIds);
+        }
+        if self.seen != self.declared {
+            return Err(ClosureSidecarError::CountMismatch);
+        }
+        Ok(ManifestCommitment::from_derived(
+            self.hasher.finalize().into(),
+        ))
+    }
 }
 
 /// A snapshot's full artifact closure: strictly ascending, at most [`MAX_SNAPSHOT_CLOSURE`] ids.
