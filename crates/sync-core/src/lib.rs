@@ -25,6 +25,8 @@
 
 pub mod accepted;
 pub mod artifact;
+pub mod artifact_closure;
+pub mod artifact_transport;
 pub mod canonical_json;
 pub mod cbe;
 pub mod claim;
@@ -37,6 +39,7 @@ pub mod row_digest;
 pub mod service;
 pub mod snapshot;
 pub mod snapshot_service;
+pub mod source_batch;
 pub mod status;
 pub mod void;
 pub mod write_set;

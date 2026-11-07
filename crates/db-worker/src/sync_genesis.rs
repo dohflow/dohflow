@@ -2,7 +2,7 @@
 //!
 //! Enabling Sync on the founding device is `prepare_genesis`, then **persist the records**, then
 //! `install_genesis`, then publish. The records are the start of the accepted epoch chain, and the
-//! row in `sync_genesis` (class 3, migration 67) is the authority for them: a vault that holds one
+//! row in `sync_genesis` (class 3, migration 68) is the authority for them: a vault that holds one
 //! never mints a second genesis, a retry installs from these exact bytes, and a lost `K_1` or `S` is
 //! restored by unsealing them with the device's agreement key.
 //!
