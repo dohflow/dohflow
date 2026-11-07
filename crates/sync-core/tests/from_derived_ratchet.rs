@@ -74,12 +74,13 @@ fn from_derived_is_called_only_by_the_derivations() {
             .map(|line| line.split("//").next().unwrap_or(""))
             .collect::<Vec<_>>()
             .join("\n");
-        if code.contains("from_derived(") && !ALLOWED.contains(&relative.as_str()) {
+        // The token, not only a call: `.map(ArtifactId::from_derived)` passes it point-free.
+        if code.contains("from_derived") && !ALLOWED.contains(&relative.as_str()) {
             offenders.push(relative);
         }
     }
     assert!(
         offenders.is_empty(),
-        "from_derived( called outside the derivations: {offenders:?}"
+        "from_derived used outside the derivations: {offenders:?}"
     );
 }

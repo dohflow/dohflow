@@ -104,6 +104,8 @@ impl DeltaArtifact {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LiveClosure {
     bound: BTreeMap<LogicalRef, BTreeMap<ArtifactId, [u8; 32]>>,
+    /// Each id of the closure with its hash, for the lookup every fetched artifact makes.
+    hashes: BTreeMap<ArtifactId, [u8; 32]>,
     /// Each source record of a live batch, with the batch that holds it.
     records: BTreeMap<[u8; 16], [u8; 16]>,
 }
@@ -122,12 +124,13 @@ impl LiveClosure {
             .entry(logical)
             .or_default()
             .insert(id, ciphertext_sha256);
+        self.hashes.insert(id, ciphertext_sha256);
     }
 
     /// The hash the live closure binds to `id`, if the closure holds the id at all.
     #[must_use]
     pub fn hash_of(&self, id: &ArtifactId) -> Option<[u8; 32]> {
-        self.bound.values().find_map(|ids| ids.get(id).copied())
+        self.hashes.get(id).copied()
     }
 
     /// Record that live batch `batch` holds source record `record`.

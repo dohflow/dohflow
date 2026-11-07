@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 
 use platform_traits::{CounterContext, RollbackWitness};
 use sha2::{Digest, Sha256};
-use sync_core::artifact::ArtifactId;
+use sync_core::artifact::{ArtifactId, MAX_SNAPSHOT_CLOSURE};
 use sync_core::envelope::{binding_commitment, ArtifactManifest, BoundArtifact};
 use sync_core::header::{
     encode_container, parse_container, BindingCommitment, ClearHeader, Fingerprint,
@@ -134,9 +134,6 @@ pub struct ClosureCommitments {
     pub binding: BindingCommitment,
 }
 
-/// The most entries a snapshot's closure binds (C.3).
-const MAX_CLOSURE_BINDINGS: usize = 1 << 20;
-
 fn hex32(hex: &str) -> Option<[u8; 32]> {
     if hex.len() != 64 {
         return None;
@@ -182,7 +179,7 @@ pub fn closure_commitments_of(plaintext: &[u8]) -> Result<ClosureCommitments, Sn
         manifest: ArtifactManifest::new(ids)
             .map_err(|_| SnapshotSealError::PlaintextInvalid)?
             .commitment(),
-        binding: binding_commitment(&hashes, MAX_CLOSURE_BINDINGS)
+        binding: binding_commitment(&hashes, MAX_SNAPSHOT_CLOSURE)
             .map_err(|_| SnapshotSealError::PlaintextInvalid)?,
     })
 }

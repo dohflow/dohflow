@@ -226,8 +226,7 @@ pub fn refs(records: &[Vec<u8>]) -> Vec<&[u8]> {
     records.iter().map(Vec::as_slice).collect()
 }
 
-/// A valid snapshot plaintext (C.8) with one small table whose file carries `marker`, and the
-/// closure `artifacts` (strictly ascending). Distinct markers give distinct plaintexts.
+/// The artifact `id` bound to a hash derived from it, as the snapshot tests bind their closures.
 pub fn bound(id: [u8; 32]) -> sync_core::envelope::BoundArtifact {
     sync_core::envelope::BoundArtifact {
         id,
@@ -235,6 +234,8 @@ pub fn bound(id: [u8; 32]) -> sync_core::envelope::BoundArtifact {
     }
 }
 
+/// A valid snapshot plaintext (C.8) with one small table whose file carries `marker`, and the
+/// closure `artifacts` (strictly ascending). Distinct markers give distinct plaintexts.
 pub fn snapshot_plaintext(artifacts: &[[u8; 32]], marker: &str) -> Vec<u8> {
     let artifacts: Vec<_> = artifacts.iter().map(|id| bound(*id)).collect();
     use sync_core::snapshot::{build, ColumnEntry, Header, TableFile};
