@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -7,6 +7,7 @@ import type {
   ForecastEventDto,
   MultiSeriesForecastDto,
 } from "@/bindings";
+import { COMPACT_QUERY } from "@/lib/compact";
 import { ProjectedActivityTable } from "./ProjectedActivityTable";
 
 // A bill row's expand panel renders the mark-paid control, which reads accounts + bills. Mock
@@ -409,5 +410,46 @@ describe("ProjectedActivityTable", () => {
     await vi.waitFor(() =>
       expect(mocks.deleteForecastAssumption).toHaveBeenCalledWith("assump-1"),
     );
+  });
+});
+
+describe("the account columns picker on a phone (personal-cfo-i93n3.27 slice B)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  function stub(compact: boolean) {
+    vi.stubGlobal("matchMedia", ((query: string) => ({
+      matches: compact && query === COMPACT_QUERY,
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia);
+  }
+
+  it("opens in the shared dialog, keeps the group name and the selection count, and applies at once", async () => {
+    stub(true);
+    renderWithClient(<ProjectedActivityTable projection={projection()} />);
+    const trigger = screen.getByRole("button", { name: /accounts/i });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "Account columns" });
+    // Only the sheet: no desktop popover is also in the page behind it.
+    expect(document.querySelectorAll('[aria-label="Account columns"][role="group"]')).toHaveLength(1);
+    const group = within(dialog).getByRole("group", { name: "Account columns" });
+    const first = within(group).getAllByRole("checkbox")[0]!;
+    fireEvent.click(first);
+    expect(first).toBeChecked();
+    expect(within(dialog).queryByRole("button", { name: /apply/i })).toBeNull();
+    // Close keeps the choice, shows its count on the trigger, and returns focus to it.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(trigger).toHaveTextContent("1");
+  });
+
+  it("keeps the desktop popover on a desktop window", () => {
+    stub(false);
+    renderWithClient(<ProjectedActivityTable projection={projection()} />);
+    fireEvent.click(screen.getByRole("button", { name: /accounts/i }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("group", { name: "Account columns" })).toBeInTheDocument();
   });
 });

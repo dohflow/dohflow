@@ -3,8 +3,10 @@ import { Check, SlidersHorizontal } from "lucide-react";
 
 import type { AccountSeriesDto } from "@/bindings";
 import { Button } from "@/components/ui/button";
+import { useCompactLayout } from "@/lib/compact";
 import { cn } from "@/lib/utils";
 
+import { PickerSheet } from "./PickerSheet";
 import { accountLabel, accountSeriesKey, seriesAsLabelled } from "./seriesKeys";
 
 /// The aggregate tiers the picker offers, in the owner's hierarchy order. Net cash is
@@ -31,9 +33,13 @@ export function SeriesPicker({
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // On a phone the choice opens in a bottom sheet (a different element tree: `useCompactLayout`), not a popover.
+  const compact = useCompactLayout();
 
   useEffect(() => {
-    if (!open) return;
+    // The popover closes on an outside tap or Escape; the phone's dialog does that itself.
+    if (!open || compact) return;
     function onPointerDown(event: PointerEvent) {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
         setOpen(false);
@@ -48,7 +54,7 @@ export function SeriesPicker({
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, compact]);
 
   const accountsFor = (childTier: string) =>
     accounts.filter((a) => a.account_id !== null && a.tier === childTier);
@@ -74,20 +80,56 @@ export function SeriesPicker({
     onChange(next);
   }
 
+  const list = (
+    <ul className="flex max-h-72 flex-col overflow-y-auto compact:max-h-none">
+      {TIERS.map((tier) => {
+        const kids = tier.childTier ? accountsFor(tier.childTier) : [];
+        const childKeys = kids.map((a) => accountSeriesKey(a.account_id ?? ""));
+        return (
+          <li key={tier.key} className="flex flex-col">
+            <Row
+              label={tier.label}
+              checked={has(tier.key)}
+              onToggle={() => toggleTier(tier.key, childKeys)}
+              bold
+              wrap={compact}
+            />
+            {kids.map((a) => {
+              const key = accountSeriesKey(a.account_id ?? "");
+              return (
+                <Row
+                  key={key}
+                  label={accountLabel(seriesAsLabelled(a), offered.map(seriesAsLabelled))}
+                  checked={has(key)}
+                  onToggle={() => toggleAccount(tier.key, key)}
+                  indent
+                  wrap={compact}
+                />
+              );
+            })}
+          </li>
+        );
+      })}
+    </ul>
+  );
+
   return (
     <div ref={rootRef} className="relative">
       <Button
+        ref={triggerRef}
         type="button"
         size="sm"
         variant="outline"
-        aria-haspopup="true"
+        // iOS exposes `aria-haspopup` as a pop-up (menu) button; on a phone this opens a dialog, so
+        // `aria-expanded` alone carries the state.
+        aria-haspopup={compact ? undefined : "true"}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
         <SlidersHorizontal aria-hidden />
         Series
       </Button>
-      {open && (
+      {open && !compact && (
         <div
           role="dialog"
           aria-label="Choose which series to plot"
@@ -96,35 +138,19 @@ export function SeriesPicker({
           <p className="px-1 pb-1.5 text-xs text-muted-foreground">
             Plot a tier or its individual accounts.
           </p>
-          <ul className="flex max-h-72 flex-col overflow-y-auto">
-            {TIERS.map((tier) => {
-              const kids = tier.childTier ? accountsFor(tier.childTier) : [];
-              const childKeys = kids.map((a) => accountSeriesKey(a.account_id ?? ""));
-              return (
-                <li key={tier.key} className="flex flex-col">
-                  <Row
-                    label={tier.label}
-                    checked={has(tier.key)}
-                    onToggle={() => toggleTier(tier.key, childKeys)}
-                    bold
-                  />
-                  {kids.map((a) => {
-                    const key = accountSeriesKey(a.account_id ?? "");
-                    return (
-                      <Row
-                        key={key}
-                        label={accountLabel(seriesAsLabelled(a), offered.map(seriesAsLabelled))}
-                        checked={has(key)}
-                        onToggle={() => toggleAccount(tier.key, key)}
-                        indent
-                      />
-                    );
-                  })}
-                </li>
-              );
-            })}
-          </ul>
+          {list}
         </div>
+      )}
+      {compact && (
+        <PickerSheet
+          open={open}
+          onOpenChange={setOpen}
+          title="Choose which series to plot"
+          description="Plot a tier or its individual accounts."
+          restoreFocusTo={triggerRef}
+        >
+          {list}
+        </PickerSheet>
       )}
     </div>
   );
@@ -136,12 +162,15 @@ function Row({
   onToggle,
   bold,
   indent,
+  wrap,
 }: {
   label: string;
   checked: boolean;
   onToggle: () => void;
   bold?: boolean;
   indent?: boolean;
+  /// A phone shows the whole account name (it wraps) instead of cutting it off.
+  wrap?: boolean;
 }) {
   return (
     <button
@@ -164,7 +193,7 @@ function Row({
       >
         {checked && <Check className="size-3" />}
       </span>
-      <span className="min-w-0 truncate">{label}</span>
+      <span className={cn("min-w-0", wrap ? "break-words" : "truncate")}>{label}</span>
     </button>
   );
 }
