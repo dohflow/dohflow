@@ -36,7 +36,7 @@ export function NoResetWarning({
           </p>
         )}
       </div>
-      <label className="flex min-w-0 items-start gap-2 text-xs text-foreground">
+      <label className="flex min-w-0 items-start gap-2 text-xs text-foreground compact:@max-[15rem]:flex-col">
         <input
           type="checkbox"
           checked={acknowledged}

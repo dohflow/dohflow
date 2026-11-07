@@ -511,6 +511,9 @@ on a desktop window, and a test proves each.
   clips it. Where the column beside an icon gets too narrow to read at that size, the row stacks on a
   container query (`compact:@max-[15rem]:flex-col` inside an `@container`), and prose takes
   `compact:hyphens-auto` so words break at syllables instead of mid-syllable.
+  The shared `Button` is `h-10 whitespace-nowrap`, so a button whose label can outgrow the column at that
+  size takes `h-auto min-h-10 whitespace-normal [overflow-wrap:anywhere]` at its call site (`cn()` drops the
+  primitive's `h-10` and `whitespace-nowrap`); the primitive itself changes with the touch-target slice.
 - **Touch targets (44 pt hit regions) and sheets** are specified with their slice; until then the
   existing sizes apply.
 

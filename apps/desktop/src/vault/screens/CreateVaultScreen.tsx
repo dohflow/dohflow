@@ -133,7 +133,11 @@ export function CreateVaultScreen() {
               </p>
             )}
 
-            <Button type="submit" disabled={!canSubmit}>
+            <Button
+              type="submit"
+              disabled={!canSubmit}
+              className="h-auto min-h-10 whitespace-normal py-2 [overflow-wrap:anywhere] compact:hyphens-auto"
+            >
               {submitting ? "Creating…" : "Create vault"}
             </Button>
           </form>

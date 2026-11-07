@@ -67,6 +67,7 @@ describe("NoResetWarning", () => {
     // when the card is narrow, and the words break at syllables rather than mid-syllable.
     expect(warning.closest(".\\@container")).not.toBeNull();
     expect(warning.parentElement).toHaveClass("compact:@max-[15rem]:flex-col");
+    expect(label).toHaveClass("compact:@max-[15rem]:flex-col");
     for (const element of [warning, acknowledgement]) {
       expect(element).toHaveClass("compact:hyphens-auto");
     }

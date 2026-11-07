@@ -84,4 +84,16 @@ describe("create-vault fields at the largest text size", () => {
       expect(field).toHaveClass("h-auto");
     }
   });
+
+  // `Button` is `h-10 whitespace-nowrap`; at the largest size "Create vault" spilled out of its own
+  // button, so the primary action wraps and grows here and `cn()` drops the primitive's two classes.
+  test("the Create vault button wraps and grows rather than spilling out of itself", async () => {
+    mocks.buildInfo.mockResolvedValue(buildInfo(null));
+    renderWithClient(<CreateVaultScreen />);
+    await waitFor(() => expect(mocks.buildInfo).toHaveBeenCalled());
+    const button = screen.getByRole("button", { name: "Create vault" });
+    expect(button).toHaveClass("h-auto", "min-h-10", "whitespace-normal", "[overflow-wrap:anywhere]");
+    expect(button).not.toHaveClass("h-10");
+    expect(button).not.toHaveClass("whitespace-nowrap");
+  });
 });

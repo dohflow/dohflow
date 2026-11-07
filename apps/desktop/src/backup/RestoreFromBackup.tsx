@@ -101,7 +101,7 @@ export function RestoreFromBackup({
           <Button
             ref={pickerButton}
             variant="outline"
-            className="self-start"
+            className="h-auto min-h-10 max-w-full self-start whitespace-normal py-2 [overflow-wrap:anywhere] compact:hyphens-auto"
             onClick={() => void onPick()}
             disabled={picking}
           >
