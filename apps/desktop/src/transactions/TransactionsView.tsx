@@ -404,6 +404,7 @@ export function TransactionsView({
       key: "activity",
       header: "Activity",
       className: "min-w-0 align-top",
+      phoneTitle: true,
       cell: (txn) => (
         <div className="flex items-center gap-3">
           {/* Unreviewed indicator (personal-cfo-4d8.7): a dot until reviewed; the space
@@ -421,7 +422,7 @@ export function TransactionsView({
             onClick={() => setSelected(txn)}
             className="flex min-w-0 flex-1 flex-col items-start text-left"
           >
-            <span className="max-w-full truncate font-medium">
+            <span className="max-w-full truncate font-medium compact:overflow-visible compact:whitespace-normal compact:text-clip compact:[overflow-wrap:anywhere]">
               {/* The account is its OWN column, so falling back to it here would print
                   the same name twice on one row. */}
               {txn.memo ?? txn.counterparty ?? txn.note ?? "—"}
@@ -457,17 +458,17 @@ export function TransactionsView({
       className: "align-top text-muted-foreground",
       cell: (txn) =>
         txn.counter_account_name ? (
-          <span className="flex min-w-0 items-center gap-1 whitespace-nowrap">
-            <span className="truncate">
+          <span className="flex min-w-0 items-center gap-1 whitespace-nowrap compact:flex-wrap compact:justify-end compact:whitespace-normal">
+            <span className="truncate compact:overflow-visible compact:text-clip compact:[overflow-wrap:anywhere]">
               {txn.amount.minor_units < 0 ? txn.account_name : txn.counter_account_name}
             </span>
             <ArrowRight aria-hidden className="size-3 shrink-0" />
-            <span className="truncate">
+            <span className="truncate compact:overflow-visible compact:text-clip compact:[overflow-wrap:anywhere]">
               {txn.amount.minor_units < 0 ? txn.counter_account_name : txn.account_name}
             </span>
           </span>
         ) : (
-          <span className="truncate">{txn.account_name}</span>
+          <span className="truncate compact:overflow-visible compact:text-clip compact:[overflow-wrap:anywhere]">{txn.account_name}</span>
         ),
     },
     {
@@ -811,6 +812,7 @@ export function TransactionsView({
                 columns={transactionColumns}
                 rows={rows}
                 rowKey={(txn) => txn.transaction_id}
+                phoneLayout="stacked"
                 minWidth="min-w-[900px]"
                 // The table owns its own loading and empty treatments (ADR 0053 §1) —
                 // this screen used to hand-roll a centred spinner and a bespoke card,

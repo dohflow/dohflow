@@ -169,4 +169,21 @@ describe("DataTable on a phone (personal-cfo-i93n3.27 slice F)", () => {
     expect(item.firstElementChild!.firstElementChild).toHaveTextContent("Northhollow Health Payroll");
     expect([...item.querySelectorAll("dt")].map((t) => t.textContent)).toEqual(["Date", "Amount"]);
   });
+
+  it("puts control columns (an empty header) in the heading row, before or after the title, and never labels them", () => {
+    stubMatchMedia(true);
+    const columns: DataTableColumn<Row>[] = [
+      { key: "select", header: "", cell: () => <input type="checkbox" aria-label="Select row" /> },
+      { key: "name", header: "Activity", cell: (r) => r.name },
+      { key: "date", header: "Date", cell: (r) => r.date },
+      { key: "expand", header: "", cell: () => <button type="button">Show details</button> },
+    ];
+    render(table({ columns }));
+    const item = within(screen.getByRole("list")).getAllByRole("listitem")[0]!;
+    const heading = item.firstElementChild!.firstElementChild!;
+    const order = [...heading.querySelectorAll("input, button, .flex-1")].map((e) => e.tagName.toLowerCase() + ":" + (e.getAttribute("aria-label") ?? e.textContent?.slice(0, 12)));
+    expect(order[0]).toBe("input:Select row");
+    expect(order.at(-1)).toBe("button:Show details");
+    expect([...item.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["Date"]);
+  });
 });

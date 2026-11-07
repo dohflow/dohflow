@@ -342,8 +342,15 @@ function StackedRows<T>({
   label?: string;
 }) {
   const sortable = columns.filter((column) => column.sortable && typeof column.header === "string");
-  const title = columns.find((column) => column.phoneTitle) ?? columns[0];
-  const rest = columns.filter((column) => column !== title);
+  // A control column (an empty header: a select checkbox, an expander) has no label to read, so it is not a labeled
+  // pair: it sits in the card's heading row, before or after the title in its column order. The title is the column
+  // marked `phoneTitle`, else the first column with a header.
+  const isControl = (column: DataTableColumn<T>) => column.header === "" || column.header === null || column.header === undefined;
+  const title = columns.find((column) => column.phoneTitle) ?? columns.find((column) => !isControl(column)) ?? columns[0];
+  const titleIndex = title ? columns.indexOf(title) : 0;
+  const controlsBefore = columns.filter((column, index) => isControl(column) && column !== title && index < titleIndex);
+  const controlsAfter = columns.filter((column, index) => isControl(column) && column !== title && index > titleIndex);
+  const rest = columns.filter((column) => column !== title && !isControl(column));
 
   return (
     <div className={className}>
@@ -419,19 +426,27 @@ function StackedRows<T>({
               >
                 <div className="flex flex-col gap-1.5 px-4 py-3">
                   {title && (
-                    <div className="min-w-0 font-medium [overflow-wrap:anywhere]">
-                      {typeof title.header === "string" && <span className="sr-only">{title.header}: </span>}
-                      {title.cell(row)}
+                    <div className="flex items-start gap-3">
+                      {controlsBefore.map((column) => (
+                        <div key={column.key} className="shrink-0">
+                          {column.cell(row)}
+                        </div>
+                      ))}
+                      <div className="min-w-0 flex-1 font-medium [overflow-wrap:anywhere]">
+                        {typeof title.header === "string" && <span className="sr-only">{title.header}: </span>}
+                        {title.cell(row)}
+                      </div>
+                      {controlsAfter.map((column) => (
+                        <div key={column.key} className="shrink-0">
+                          {column.cell(row)}
+                        </div>
+                      ))}
                     </div>
                   )}
                   <dl className="flex flex-col gap-1 text-sm">
                     {rest.map((column) => (
                       <div key={column.key} className="flex items-baseline justify-between gap-4">
-                        {typeof column.header === "string" && column.header !== "" ? (
-                          <dt className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">{column.header}</dt>
-                        ) : (
-                          <dt className="sr-only">{column.key}</dt>
-                        )}
+                        <dt className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">{column.header}</dt>
                         <dd className={cn("min-w-0 text-right tabular-nums [overflow-wrap:anywhere]", column.className)}>
                           {column.cell(row)}
                         </dd>
