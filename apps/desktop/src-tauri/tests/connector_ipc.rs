@@ -917,7 +917,7 @@ fn the_adapters_listing_carries_the_registry_and_no_secret_fields() {
     assert_eq!(ids, ["simplefin", "lunchflow"]);
 
     let lunchflow = &listing[1];
-    assert!(!lunchflow.enabled, "implemented but not released");
+    assert!(lunchflow.enabled, "released in v0.4.0 (personal-cfo-p3f7r)");
     let referral = lunchflow
         .referral
         .as_ref()
@@ -992,28 +992,50 @@ fn the_adapters_listing_includes_disabled_providers_flagged() {
 }
 
 // ---------------------------------------------------------------------------
-// LunchFlow (personal-cfo-r2pow): registered, disabled, refused before link
+// LunchFlow (personal-cfo-r2pow, released by personal-cfo-p3f7r): registered,
+// enabled, accepted through the registry path
 // ---------------------------------------------------------------------------
 
+/// The real registry entry's metadata with a fixture transport, so no request
+/// leaves the machine: the production adapter uses the network, and this test
+/// is about the registry's gate, not the wire.
+fn released_lunchflow(_: &str) -> Option<&'static ConnectorRegistration> {
+    static REGISTRATION: std::sync::OnceLock<&'static ConnectorRegistration> =
+        std::sync::OnceLock::new();
+    Some(*REGISTRATION.get_or_init(|| {
+        let real = connector_core::registration_by_id("lunchflow").expect("lunchflow registered");
+        let adapter: &'static lunchflow_adapter::LunchFlowAdapter<EchoingLunchFlow> =
+            Box::leak(Box::new(lunchflow_adapter::LunchFlowAdapter::new(
+                EchoingLunchFlow {
+                    routes: &[("/accounts", 200), ("/accounts/101/balance", 200)],
+                },
+                echo_now,
+            )));
+        Box::leak(Box::new(ConnectorRegistration {
+            adapter,
+            metadata: real.metadata,
+        }))
+    }))
+}
+
 #[test]
-fn lunchflow_is_refused_while_disabled_through_the_real_registry() {
+fn lunchflow_is_accepted_through_the_real_registry_gate_once_released() {
+    // The shipped entry is enabled, so the gate that refused it before v0.4.0
+    // (`connector_link_registered_impl`) lets it through.
+    let shipped = connector_core::registration_by_id("lunchflow").expect("lunchflow registered");
+    assert!(shipped.metadata.enabled);
     let (_dir, state) = open_state();
-    // The production resolver. The refusal fires before the adapter's link,
-    // so no request is ever made with this key.
-    let err = connector_link_registered_impl(
+    let linked = connector_link_registered_impl(
         &state,
-        connector_core::registration_by_id,
+        released_lunchflow,
         ConnectorLinkInput {
             adapter_id: "lunchflow".to_owned(),
-            setup_token: "lf-not-a-real-key".to_owned(),
+            setup_token: ECHO_KEY.to_owned(),
         },
     )
-    .unwrap_err();
-    assert!(
-        matches!(&err, app_lib::ipc::IpcError::Validation(msg) if msg.contains("not available")),
-        "got {err:?}"
-    );
-    assert!(connector_connections_impl(&state).unwrap().is_empty());
+    .unwrap();
+    assert_eq!(linked.accounts.len(), 1);
+    assert_eq!(connector_connections_impl(&state).unwrap().len(), 1);
 }
 
 #[test]

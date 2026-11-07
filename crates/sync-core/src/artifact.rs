@@ -21,7 +21,7 @@ use thiserror::Error;
 
 use crate::canonical_json::{parse_canonical_node, Node};
 use crate::cbe::{Reader, WireError, Writer};
-use crate::envelope::manifest_bytes_bounded;
+use crate::envelope::{manifest_bytes_bounded, manifest_preimage_head};
 use crate::header::{ManifestCommitment, PROTOCOL_VERSION};
 
 /// The label of the transport plaintext.
@@ -42,6 +42,10 @@ pub const MAX_LOGICAL_METADATA: usize = 65_536;
 pub const MAX_ARTIFACT_CONTAINER: usize = 67_108_864;
 /// The most ids in a snapshot's full closure (C.3).
 pub const MAX_SNAPSHOT_CLOSURE: usize = 1 << 20;
+/// The bytes of one id in a closure sidecar body (sync-service-protocol 4.14): the id's 32 raw bytes.
+pub const CLOSURE_SIDECAR_ID_LEN: usize = 32;
+/// The most bytes a closure sidecar body holds (sync-service-protocol 7.1): 2^20 ids of 32 bytes.
+pub const MAX_CLOSURE_SIDECAR_LEN: usize = MAX_SNAPSHOT_CLOSURE * CLOSURE_SIDECAR_ID_LEN;
 /// The most ids in an envelope's delta manifest (C.3).
 pub const MAX_DELTA: usize = crate::envelope::MAX_MANIFEST_ENTRIES;
 /// The most bytes in one source batch part's blob (C.9).
@@ -386,6 +390,10 @@ pub fn encode_container(ciphertext: &[u8]) -> Vec<u8> {
 
 /// The ciphertext of a container.
 ///
+/// There is **one** frame reader, [`read_frame`]: this function is that reader over an input that is
+/// the whole object, and [`peek_container`] is the same reader over a prefix, so the two agree on every
+/// error (the artifact counterpart of `header::peek_container`).
+///
 /// # Errors
 /// [`ArtifactError::ContainerTooLarge`] above `max_len` (checked before anything is parsed),
 /// [`WireError::BadMagic`], [`WireError::UnsupportedContainer`], [`WireError::Truncated`],
@@ -395,28 +403,120 @@ pub fn parse_container(bytes: &[u8], max_len: usize) -> Result<&[u8], ArtifactEr
     if bytes.len() > max_len {
         return Err(ArtifactError::ContainerTooLarge);
     }
-    if bytes.len() < 4 {
-        return Err(WireError::Truncated.into());
+    match read_frame(bytes, bytes.len() as u64) {
+        Ok(_) => Ok(&bytes[CONTAINER_FRAME_LEN..]),
+        Err(PeekError::Refused(error)) => Err(error),
+        // `read_frame` reports a shortage as `Truncated` when it holds the whole object.
+        Err(PeekError::PrefixTooShort { .. }) => Err(WireError::Truncated.into()),
     }
-    if &bytes[..4] != CONTAINER_MAGIC {
-        return Err(WireError::BadMagic.into());
+}
+
+/// The fixed frame of a container: `magic "DFSA" ‖ u16 container_version ‖ u64 ciphertext_len`.
+pub const CONTAINER_FRAME_LEN: usize = 4 + 2 + 8;
+
+/// What [`peek_container`] reads from the front of a container: the ciphertext's length, proven to be
+/// exactly what the container's total length leaves after the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerPeek {
+    /// The ciphertext's length in bytes.
+    pub ciphertext_len: u64,
+}
+
+/// Why [`peek_container`] has no answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeekError {
+    /// The prefix ends before the frame does. `needed` is the least prefix length that lets the next
+    /// step run: [`CONTAINER_FRAME_LEN`], or less when the container itself is shorter.
+    PrefixTooShort {
+        /// Bytes of prefix required to continue.
+        needed: u64,
+    },
+    /// The container is malformed; the error is the one [`parse_container`] gives for the whole object.
+    Refused(ArtifactError),
+}
+
+/// Read a container's frame from its first bytes, given the container's total length and the largest
+/// container the service stores.
+///
+/// A transport knows the length of a request body before it reads it, so the 14-byte frame and the
+/// length decide whether the container is well formed without reading one ciphertext byte: the
+/// ciphertext length must equal `total_len - 14`, with every difference checked, so a length near
+/// `u64::MAX` is an error and not an overflow. `total_len` above `max_len` is
+/// [`ArtifactError::ContainerTooLarge`] before anything is parsed. A `prefix` longer than `total_len`
+/// is [`WireError::LengthExceedsInput`]; bytes past the frame are never read.
+///
+/// # Errors
+/// [`PeekError::PrefixTooShort`] when the prefix ends before the answer is decidable, and
+/// [`PeekError::Refused`] with the error [`parse_container`] would give.
+pub fn peek_container(
+    prefix: &[u8],
+    total_len: u64,
+    max_len: usize,
+) -> Result<ContainerPeek, PeekError> {
+    if total_len > max_len as u64 {
+        return Err(PeekError::Refused(ArtifactError::ContainerTooLarge));
     }
-    let mut r = Reader::new(&bytes[4..]);
-    if r.u16()? != CONTAINER_VERSION {
-        return Err(WireError::UnsupportedContainer.into());
+    read_frame(prefix, total_len).map(|ciphertext_len| ContainerPeek { ciphertext_len })
+}
+
+/// The one reader of a container's frame. `avail` is the bytes in hand and `total_len` the container's
+/// length; `avail.len() == total_len` is the whole object, where a shortage is [`WireError::Truncated`],
+/// and anything shorter reports [`PeekError::PrefixTooShort`]. Returns the ciphertext length.
+fn read_frame(avail: &[u8], total_len: u64) -> Result<u64, PeekError> {
+    let have = avail.len() as u64;
+    let refuse = |error: WireError| PeekError::Refused(error.into());
+    if have > total_len {
+        return Err(refuse(WireError::LengthExceedsInput));
     }
-    let length = usize::try_from(r.u64()?).map_err(|_| WireError::LengthExceedsInput)?;
-    if length > r.remaining() {
-        return Err(WireError::LengthExceedsInput.into());
+    let whole = have == total_len;
+    let lack = |needed: u64| {
+        if whole {
+            refuse(WireError::Truncated)
+        } else {
+            PeekError::PrefixTooShort {
+                needed: needed.min(total_len),
+            }
+        }
+    };
+    let frame = CONTAINER_FRAME_LEN as u64;
+    // The magic and the version are judged as soon as their bytes are in hand.
+    let magic_len = CONTAINER_MAGIC.len();
+    if avail.len() < magic_len {
+        if avail != &CONTAINER_MAGIC[..avail.len()] {
+            return Err(refuse(WireError::BadMagic));
+        }
+        return Err(lack(frame));
     }
-    if length < r.remaining() {
-        return Err(WireError::TrailingBytes.into());
+    if &avail[..magic_len] != CONTAINER_MAGIC {
+        return Err(refuse(WireError::BadMagic));
     }
-    if length < MIN_CIPHERTEXT_LEN {
-        return Err(WireError::CiphertextTooShort.into());
+    if avail.len() < magic_len + 2 {
+        return Err(lack(frame));
     }
-    let start = bytes.len() - length;
-    Ok(&bytes[start..])
+    if u16::from_be_bytes([avail[4], avail[5]]) != CONTAINER_VERSION {
+        return Err(refuse(WireError::UnsupportedContainer));
+    }
+    // A container shorter than its own frame can never be well formed, whatever the prefix.
+    if total_len < frame {
+        return Err(refuse(WireError::Truncated));
+    }
+    if have < frame {
+        return Err(lack(frame));
+    }
+    let mut field = [0_u8; 8];
+    field.copy_from_slice(&avail[6..CONTAINER_FRAME_LEN]);
+    let ciphertext_len = u64::from_be_bytes(field);
+    let remaining = total_len - frame;
+    if ciphertext_len > remaining {
+        return Err(refuse(WireError::LengthExceedsInput));
+    }
+    if ciphertext_len < remaining {
+        return Err(refuse(WireError::TrailingBytes));
+    }
+    if ciphertext_len < MIN_CIPHERTEXT_LEN as u64 {
+        return Err(refuse(WireError::CiphertextTooShort));
+    }
+    Ok(ciphertext_len)
 }
 
 /// `ArtifactReceiptV1` (C.9): `label ‖ uuid vault_id ‖ u64 key_epoch ‖ digest sync_artifact_id ‖
@@ -486,6 +586,159 @@ impl ArtifactReceipt {
     }
 }
 
+/// Why a closure sidecar body (sync-service-protocol 4.14) is not a closure. Each maps to a protocol
+/// code: [`Self::TooManyIds`] is `SnapshotTooLarge`, the others `MalformedObject`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ClosureSidecarError {
+    /// The body is longer than 2^20 ids. Decided from the length alone, before a byte is read.
+    #[error("the closure sidecar holds more than 2^20 ids")]
+    TooManyIds,
+    /// The body's length is not a whole number of 32-byte ids.
+    #[error("the closure sidecar is not a whole number of ids")]
+    NotWholeIds,
+    /// An id is not greater than the one before it (a duplicate, or out of order).
+    #[error("the closure sidecar is not strictly ascending")]
+    NotAscending,
+    /// The body held more or fewer ids than the count it was declared with (the length the request
+    /// stated): a transport-level disagreement, not a malformed closure.
+    #[error("the closure sidecar does not hold the number of ids declared")]
+    CountMismatch,
+}
+
+/// The commitment of a closure sidecar computed **as the body streams**, holding no ids: one hash
+/// state, the previous id and at most one partial id (personal-cfo-v98vd AC36). It is the incremental
+/// form of [`ClosureManifest::commitment`] and gives exactly its value, so a service that never holds
+/// the whole closure (at most 32 MiB, beside the stream it came from) checks the same C.3 commitment
+/// the client sealed, with the same refusals as [`ClosureManifest::from_sidecar`]: the length first,
+/// then order, across chunk boundaries and inside split ids. A chunk's size is the caller's.
+///
+/// An error is sticky: after one, `push` and `finish` answer it again.
+pub struct ClosureCommitter {
+    hasher: Sha256,
+    declared: u64,
+    seen: u64,
+    previous: Option<[u8; 32]>,
+    pending: [u8; CLOSURE_SIDECAR_ID_LEN],
+    pending_len: usize,
+    failed: Option<ClosureSidecarError>,
+}
+
+impl ClosureCommitter {
+    /// A committer for a body of `body_len` bytes, judged by length exactly as
+    /// [`ClosureManifest::from_sidecar`] judges it first: over 2^20 ids is
+    /// [`ClosureSidecarError::TooManyIds`], a length that is not whole ids is
+    /// [`ClosureSidecarError::NotWholeIds`]. The count is `body_len / 32`.
+    ///
+    /// # Errors
+    /// [`ClosureSidecarError::TooManyIds`] or [`ClosureSidecarError::NotWholeIds`].
+    pub fn for_body_len(body_len: u64) -> Result<Self, ClosureSidecarError> {
+        if body_len > MAX_CLOSURE_SIDECAR_LEN as u64 {
+            return Err(ClosureSidecarError::TooManyIds);
+        }
+        if !body_len.is_multiple_of(CLOSURE_SIDECAR_ID_LEN as u64) {
+            return Err(ClosureSidecarError::NotWholeIds);
+        }
+        Ok(Self::with_count(body_len / CLOSURE_SIDECAR_ID_LEN as u64))
+    }
+
+    /// A committer for a closure of exactly `count` ids.
+    ///
+    /// # Errors
+    /// [`ClosureSidecarError::TooManyIds`] above 2^20.
+    pub fn new(count: u64) -> Result<Self, ClosureSidecarError> {
+        if count > MAX_SNAPSHOT_CLOSURE as u64 {
+            return Err(ClosureSidecarError::TooManyIds);
+        }
+        Ok(Self::with_count(count))
+    }
+
+    fn with_count(count: u64) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(manifest_preimage_head(
+            u32::try_from(count).expect("a count within 2^20 fits a u32"),
+        ));
+        Self {
+            hasher,
+            declared: count,
+            seen: 0,
+            previous: None,
+            pending: [0; CLOSURE_SIDECAR_ID_LEN],
+            pending_len: 0,
+            failed: None,
+        }
+    }
+
+    fn take(&mut self, id: [u8; 32]) -> Result<(), ClosureSidecarError> {
+        if self.seen == self.declared {
+            return Err(ClosureSidecarError::CountMismatch);
+        }
+        if self.previous.is_some_and(|before| before >= id) {
+            return Err(ClosureSidecarError::NotAscending);
+        }
+        self.hasher.update(id);
+        self.previous = Some(id);
+        self.seen += 1;
+        Ok(())
+    }
+
+    /// Feeds the next bytes of the body, of any size: a chunk may end inside an id.
+    ///
+    /// # Errors
+    /// [`ClosureSidecarError::NotAscending`] for an id that does not follow its predecessor,
+    /// [`ClosureSidecarError::CountMismatch`] for an id past the declared count.
+    pub fn push(&mut self, mut chunk: &[u8]) -> Result<(), ClosureSidecarError> {
+        if let Some(error) = self.failed {
+            return Err(error);
+        }
+        let result = (|| {
+            if self.pending_len > 0 {
+                let take = (CLOSURE_SIDECAR_ID_LEN - self.pending_len).min(chunk.len());
+                self.pending[self.pending_len..self.pending_len + take]
+                    .copy_from_slice(&chunk[..take]);
+                self.pending_len += take;
+                chunk = &chunk[take..];
+                if self.pending_len < CLOSURE_SIDECAR_ID_LEN {
+                    return Ok(());
+                }
+                self.pending_len = 0;
+                self.take(self.pending)?;
+            }
+            let (whole, rest) = chunk.as_chunks::<CLOSURE_SIDECAR_ID_LEN>();
+            for id in whole {
+                self.take(*id)?;
+            }
+            self.pending[..rest.len()].copy_from_slice(rest);
+            self.pending_len = rest.len();
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.failed = Some(error);
+        }
+        result
+    }
+
+    /// The closure commitment, once the body has ended.
+    ///
+    /// # Errors
+    /// [`ClosureSidecarError::NotWholeIds`] when the body ended inside an id,
+    /// [`ClosureSidecarError::CountMismatch`] when it held fewer ids than declared, or the error that
+    /// stopped an earlier `push`.
+    pub fn finish(self) -> Result<ManifestCommitment, ClosureSidecarError> {
+        if let Some(error) = self.failed {
+            return Err(error);
+        }
+        if self.pending_len != 0 {
+            return Err(ClosureSidecarError::NotWholeIds);
+        }
+        if self.seen != self.declared {
+            return Err(ClosureSidecarError::CountMismatch);
+        }
+        Ok(ManifestCommitment::from_derived(
+            self.hasher.finalize().into(),
+        ))
+    }
+}
+
 /// A snapshot's full artifact closure: strictly ascending, at most [`MAX_SNAPSHOT_CLOSURE`] ids.
 /// Its commitment (header field 17 of a snapshot) is the same function of the list as an envelope
 /// delta's, with the label and bytes of C.3; only the bound differs.
@@ -512,6 +765,34 @@ impl ClosureManifest {
     #[must_use]
     pub fn ids(&self) -> &[[u8; 32]] {
         &self.0
+    }
+
+    /// The closure as a sidecar body (sync-service-protocol 4.14): the ids' raw bytes, strictly
+    /// ascending, with no framing, so its length is 32 times the number of ids.
+    #[must_use]
+    pub fn to_sidecar(&self) -> Vec<u8> {
+        self.0.concat()
+    }
+
+    /// A closure from a sidecar body. Strict: a body that is out of order is refused, never put in
+    /// order, because the sidecar's order is part of what the commitment binds. The service and the
+    /// client both call this, so they cannot disagree on what a well-formed sidecar is.
+    ///
+    /// # Errors
+    /// [`ClosureSidecarError`], checked in the order of its variants: the length first.
+    pub fn from_sidecar(bytes: &[u8]) -> Result<Self, ClosureSidecarError> {
+        if bytes.len() > MAX_CLOSURE_SIDECAR_LEN {
+            return Err(ClosureSidecarError::TooManyIds);
+        }
+        if !bytes.len().is_multiple_of(CLOSURE_SIDECAR_ID_LEN) {
+            return Err(ClosureSidecarError::NotWholeIds);
+        }
+        let (whole, _) = bytes.as_chunks::<CLOSURE_SIDECAR_ID_LEN>();
+        let ids: Vec<[u8; 32]> = whole.to_vec();
+        if ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(ClosureSidecarError::NotAscending);
+        }
+        Ok(Self(ids))
     }
 
     /// `SHA-256(label "dohflow/sync-artifact-manifest/v1" ‖ list(digest, 2^20))` (C.3).

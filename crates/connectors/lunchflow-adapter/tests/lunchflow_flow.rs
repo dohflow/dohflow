@@ -894,10 +894,10 @@ fn multi_megabyte_provider_ids_are_refused_quickly_and_never_quoted() {
 }
 
 #[test]
-fn the_adapter_is_registered_disabled_under_its_schema_token() {
+fn the_adapter_is_registered_enabled_under_its_schema_token() {
     let registration =
         connector_core::registration_by_id("lunchflow").expect("lunchflow registered");
     assert_eq!(registration.adapter.display_name(), "LunchFlow");
-    assert!(!registration.metadata.enabled);
+    assert!(registration.metadata.enabled, "released in v0.4.0");
     assert!(!registration.adapter.capabilities().holdings);
 }
