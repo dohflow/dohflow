@@ -172,7 +172,7 @@ describe("Read forecast by date (personal-cfo-i93n3.27 slice C)", () => {
   it("gives the date control its own full-width row on a phone, above Previous day and Next day", () => {
     renderReader();
     const control = select().parentElement!;
-    expect(control).toHaveClass("compact:order-first", "compact:basis-full");
+    expect(control).toHaveClass("compact:order-first", "compact:basis-full", "compact:w-full", "compact:max-w-full");
     expect(screen.getByRole("button", { name: "Previous day" })).toHaveClass("compact:flex-1");
     expect(screen.getByRole("button", { name: "Next day" })).toHaveClass("compact:flex-1");
   });
