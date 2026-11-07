@@ -101,7 +101,7 @@ export function RestoreFromBackup({
           <Button
             ref={pickerButton}
             variant="outline"
-            className="h-auto min-h-10 max-w-full self-start whitespace-normal py-2 [overflow-wrap:anywhere] compact:@max-[15rem]:px-1"
+            className="h-auto min-h-10 max-w-full self-start whitespace-normal py-2 [overflow-wrap:anywhere] compact:@max-[15rem]:flex-col compact:@max-[15rem]:px-1"
             onClick={() => void onPick()}
             disabled={picking}
           >

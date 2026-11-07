@@ -140,6 +140,8 @@ describe("RestoreFromBackup", () => {
       "whitespace-normal",
       "[overflow-wrap:anywhere]",
       "compact:@max-[15rem]:px-1",
+      // The icon moves above the label, or it takes the width the word "Restore" needs ("Resto-re").
+      "compact:@max-[15rem]:flex-col",
     );
     // A label this short is not hyphenated ("Cre-ate"); the button gives up padding instead.
     expect(button).not.toHaveClass("compact:hyphens-auto");
