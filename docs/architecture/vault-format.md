@@ -1917,9 +1917,8 @@ ascending; a vault whose closure is larger fails with `SnapshotTooLarge`); its c
 the header's `artifact_manifest_commitment`, and the commitment of the closure's `ciphertext_sha256`
 values in the same order is the header's `artifact_binding_commitment` (field 18). The snapshot opener
 recomputes both commitments from `manifest.json` and refuses the snapshot as deterministically invalid
-on any difference from the header: a member acting alone cannot publish a snapshot whose header the
-service accepts and whose manifest does not match it, which would leave every bootstrap "not
-determinable" for ever. The set of files must equal the set
+on any difference from the header: such a snapshot is deterministically invalid at every opener,
+never "not determinable", so a member acting alone cannot leave every bootstrap stuck. The set of files must equal the set
 the manifest names, with none missing and none extra.
 
 The household timezone travels as the `household_timezone` column of the class-1 `households`
