@@ -3774,7 +3774,7 @@ mod tests {
     #[test]
     fn v67_down_drops_the_issue_time_and_keeps_the_rows() {
         let mut conn = Connection::open_in_memory().unwrap();
-        apply(&mut conn, MIGRATIONS).unwrap();
+        apply(&mut conn, &MIGRATIONS[..67]).unwrap();
         conn.execute(
             "INSERT INTO sync_outbox
                (command_id, op_seq, state, write_set_keys, created_at, issued_at)
@@ -3808,6 +3808,45 @@ mod tests {
             issued, None,
             "a row from before the column has no issue time"
         );
+    }
+
+    /// 68 adds the counter register, the saved snapshot record and the persisted genesis; down
+    /// drops the three, and up creates them again empty.
+    #[test]
+    fn v68_down_drops_the_register_and_genesis_tables_and_up_creates_them_empty() {
+        let tables = |conn: &Connection| -> Vec<String> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN
+                     ('sync_counter_register', 'sync_saved_snapshot', 'sync_genesis')
+                     ORDER BY name",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(
+            tables(&conn),
+            [
+                "sync_counter_register",
+                "sync_genesis",
+                "sync_saved_snapshot"
+            ]
+        );
+
+        assert_eq!(migrate_down(&mut conn, 67).unwrap(), 1);
+        assert!(tables(&conn).is_empty(), "down drops all three");
+
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(tables(&conn).len(), 3);
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_genesis", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     fn hex_upper(bytes: &[u8]) -> String {
