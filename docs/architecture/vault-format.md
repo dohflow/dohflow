@@ -297,7 +297,7 @@ synthetic no-app recovery test before any such public claim.
   fields, which the attach command's `apply` consumes and clears in its own transaction, so no
   second long-lived copy of key material exists. The C.4 header vectors change and binding vectors are added **with the code that implements this**; the
   engine moves to `dohflow-engine-3` (C.13). The service's check is `personal-cfo-v98vd` AC31. `envelope-version` stays `1`: this is a pre-release amendment of the header and the
-  plaintext, and no object of the old shape exists in any release. This commit changes no code.
+  plaintext, and no object of the old shape exists in any release. The spec landed first; the code that implements it follows in the same PR stack (the header field and the closure and receive stages, the device-local mapping at schema version 69, and the engine pin).
 - `spec-version = 36` (personal-cfo-1cltt.4, part C) states how the genesis snapshot is named and
   resumed (C.8 "The genesis snapshot's id and a resume": a derived id, the saved container is what
   a resume sends, a fresh container is sent only when the service does not hold the id, the persisted
@@ -350,7 +350,7 @@ synthetic no-app recovery test before any such public claim.
   reserved. (4) C.9: the delta is every class-1b artifact the payload references, a receiver
   fetches and verifies all of them, runs stage 9 of C.4's "found invalid" (split by determinism; set
   equality), then materializes them, then applies, so an invalid envelope binds nothing; an
-  already-held id is not fetched again; one binding per logical artifact per epoch, judged against the
+  already-held id may be left unfetched (C.9); one binding per logical artifact per epoch, judged against the
   live closure at the preceding position and never against the local mapping; receiver bounds by
   object type; the seal checks the transport plaintext digest before it encrypts. (5) C.11: `ArtifactRebootstrapRequired` is defined and
   `ArtifactClosureMismatch` is added. No other wire layout and no other vector changes. The service
@@ -2229,12 +2229,14 @@ apply, so junk cannot be pinned through a valid envelope. The producer runs the 
 its local artifacts before it uploads. The check is part of what the engine version names (C.13),
 from the engine that implements it. A snapshot's closure is fetched the same way at bootstrap.
 
-*An id already held is not fetched again.* An id that is already in the receiver's mapping for this
+*An id already held MAY be left unfetched.* An id that is already in the receiver's mapping for this
 epoch counts as verified **when the hash recorded for it equals the hash bound for it**, because an
-artifact is immutable by its address; only its binding enters the set-equality check. A mapping
+artifact is immutable by its address; only its binding enters the set-equality check. A receiver MAY
+then skip the fetch, but only when it can still run every stage-9 check from what it holds (a cache
+saves a fetch, never a decode); a receiver that keeps no plaintext fetches, and that is correct. A mapping
 entry whose recorded hash differs, and that the live closure at the preceding position does not hold,
 is a cache miss: the receiver fetches the bytes and judges them as any fetcher would (they hash to
-the bound value or they are not determinable; they authenticate or the producer is at fault). A commit that references a 12-part batch does not download it again.
+the bound value or they are not determinable; they authenticate or the producer is at fault). A commit that references a 12-part batch need not download it again.
 
 *One binding per logical artifact per epoch.* Within an epoch a logical batch is bound to exactly one
 set of part ids and a logical attachment to exactly one id. "Already bound" is judged against the
@@ -2278,7 +2280,7 @@ fault (9(b), voidable), and bytes that do not match are the service's or the tra
 retried), so a malicious member cannot make "not determinable" last forever on its own. A producer
 binds **only a hash it verified** when it published the artifact or fetched it, which it records per
 id in its device-local mapping; it never binds a transport or blob plaintext digest. An id already in
-the mapping with a recorded hash equal to the bound one counts as verified and is not fetched again; the live closure is what decides a verdict about an id's hash. This closes the collusion
+the mapping with a recorded hash equal to the bound one counts as verified, and the fetch may be skipped (C.9); the live closure is what decides a verdict about an id's hash. This closes the collusion
 residual of C.6's malicious-member class for artifacts. What it does not close: a member that holds
 `K_e` and can predict the blob an honest device will publish can squat that artifact's id with other
 bytes first, and so block that device's command. That is a member denial of service in C.6's residual
