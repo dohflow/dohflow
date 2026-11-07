@@ -1288,7 +1288,7 @@ server can produce the failure. C.11 failures that only a client can detect
 | `ProtocolFork` | 409 | An identity matches an accepted envelope but not the whole of it. `details` names the command (section 4.6). Halt it; keep both envelopes. |
 | `NonceTupleReused` | 409 | The same nonce tuple arrived with different bytes. Never retried unchanged. |
 | `ObjectConflict` | 409 | Different bytes for an existing artifact address or snapshot id. |
-| `ArtifactMissing` | 409 | A manifest names an object with no durable receipt. `details.missing` lists the ids. Upload, then retry. |
+| `ArtifactMissing` | 409 | A manifest names an object with no durable receipt. `details.missing` lists the ids: all of them when there are at most 4096, otherwise the first 4096 in ascending order (a closure can hold 2^20 ids, section 4.14). Upload those, then retry; if more are missing the answer lists the next 4096. |
 | `AckBeyondHead` | 409 | The acked `seq` is above the head. |
 | `PartOutOfSequence` | 409 | A snapshot part other than the next one expected. `details.next_part` is the one to send. |
 | `UploadIncomplete` | 409 | A snapshot upload was completed before every part arrived. `details.next_part` is the first missing one. |

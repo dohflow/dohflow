@@ -254,6 +254,7 @@ need "closure: 11.4 names the 2.4 correction" "Section 2.4's list of operations 
 need "closure: the commitment check is the exact one" 'The commitment check is the exact one of `installEpoch` step 8'
 need "closure: a staged closure means an empty request list" 'this request then carries an empty'
 need "closure: ArtifactMissing is bounded" 'the first 4096 in ascending order'
+need "closure: the error registry states the same cap for every operation that returns ArtifactMissing" 'otherwise the first 4096 in ascending order (a closure can hold 2^20 ids, section 4.14)'
 need "closure: getLatestSnapshot says null for a large closure" 'is `null` otherwise'
 need "closure: 11.4 lists the addition" '| 2026-11-06 | `personal-cfo-v98vd` (AC30) | addition |'
 need "closure: 11.4 lists the pre-release amendment" '| 2026-11-06 | `personal-cfo-v98vd` (AC30) | pre-release amendment |'
