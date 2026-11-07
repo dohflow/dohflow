@@ -133,7 +133,27 @@ pub fn export_genesis_plaintext(
     conn: &Connection,
     input: &ExportInput<'_>,
 ) -> Result<Vec<u8>, ExportError> {
+    Ok(export_genesis_with_mark(conn, input)?.0)
+}
+
+/// [`export_genesis_plaintext`] and the `operation_log` high-water mark (the largest `op_seq`, `0`
+/// for an empty log) of the **same** read transaction: the mark is the first statement of the
+/// transaction, so it describes exactly the state the plaintext was built from. The enable sequence
+/// persists it with the genesis (C.8) and compares the log against it once the genesis is published.
+///
+/// # Errors
+/// [`ExportError`], as [`export_genesis_plaintext`].
+pub fn export_genesis_with_mark(
+    conn: &Connection,
+    input: &ExportInput<'_>,
+) -> Result<(Vec<u8>, u64), ExportError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Deferred)?;
+    let high_water: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(op_seq), 0) FROM operation_log",
+        [],
+        |r| r.get(0),
+    )?;
+    let high_water = u64::try_from(high_water).unwrap_or(0);
     let (created_at, schema_version): (String, i64) = tx.query_row(
         "SELECT created_at, schema_version FROM vault_metadata WHERE singleton = 1",
         [],
@@ -162,7 +182,7 @@ pub fn export_genesis_plaintext(
         voids: input.voids,
         artifacts: input.artifacts,
     };
-    Ok(build(&header, files)?)
+    Ok((build(&header, files)?, high_water))
 }
 
 /// Every exported row of a table, as stored, with the replicated-key filter applied.

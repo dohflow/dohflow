@@ -19,6 +19,9 @@
 //! **Nothing here persists the outcome.** The caller records it in the vault's class-3 Sync state
 //! (the genesis state, the base).
 
+use sha2::{Digest, Sha256};
+use sync_core::artifact::ArtifactId;
+use sync_core::header::parse_container;
 use sync_core::snapshot_service::{
     EpochInstall, InstalledEpoch, PublishedSnapshot, ServiceError, SnapshotService, SnapshotSource,
 };
@@ -28,7 +31,10 @@ use thiserror::Error;
 use platform_traits::RollbackWitness;
 
 use crate::sync_counter::RegisterStore;
-use crate::sync_snapshot::{closure_ids_of, SnapshotError, SnapshotFields, SnapshotSealer};
+use crate::sync_snapshot::{
+    closure_ids_of, SnapshotError, SnapshotFields, SnapshotOpener, SnapshotSealError,
+    SnapshotSealer,
+};
 
 /// What is being published.
 #[derive(Clone, Copy)]
@@ -86,6 +92,12 @@ pub enum PublishOutcome {
     /// published, the saved container is dropped, and nothing in the vault changed: the caller
     /// records that the genesis was refused and bootstraps as a replica.
     VaultKnown,
+    /// An earlier attempt of this genesis reached the service (it staged a snapshot under the
+    /// derived id, or the genesis is installed) and the container that attempt sent is no longer
+    /// saved, so the container just sealed is not what the service holds. Nothing was published,
+    /// nothing is minted or discarded, and the caller records the terminal state: a retry would
+    /// seal again and burn a counter to reach the same answer.
+    GenesisResumeLost,
 }
 
 /// Why a snapshot was not published. Where the error comes from the service, the request changed
@@ -148,8 +160,19 @@ impl From<SnapshotError> for PublishError {
     }
 }
 
+/// The refusals that come before anything is sealed or sent (Addendum D rule 5).
+fn refuse_locally(status: &SyncStatus) -> Result<(), PublishError> {
+    match status {
+        SyncStatus::Healthy => Ok(()),
+        SyncStatus::Halted(_) => Err(PublishError::Halted),
+        _ => Err(PublishError::Stopped),
+    }
+}
+
 /// Publish a snapshot. See the module comment for the order and for what is refused before
-/// anything is sealed or sent.
+/// anything is sealed or sent. The saved container is dropped as soon as the answer says the
+/// publish is accepted (or a genesis is refused); [`publish_keeping_saved`] leaves that to the
+/// caller.
 ///
 /// # Errors
 /// A [`PublishError`]; on any error nothing may be recorded as published.
@@ -164,12 +187,43 @@ where
     Witness: RollbackWitness,
     Service: SnapshotService,
 {
+    publish_inner(service, sealer, status, request, true)
+}
+
+/// [`publish`] without dropping the saved container: the caller records the outcome first and then
+/// calls `SnapshotSealer::discard`, so a crash between the two leaves the outcome recorded and a
+/// leftover file, never a dropped container with the outcome lost.
+///
+/// # Errors
+/// As [`publish`].
+pub fn publish_keeping_saved<Store, Witness, Service>(
+    service: &Service,
+    sealer: &SnapshotSealer<'_, Store, Witness>,
+    status: &SyncStatus,
+    request: &PublishRequest<'_>,
+) -> Result<PublishOutcome, PublishError>
+where
+    Store: RegisterStore,
+    Witness: RollbackWitness,
+    Service: SnapshotService,
+{
+    publish_inner(service, sealer, status, request, false)
+}
+
+fn publish_inner<Store, Witness, Service>(
+    service: &Service,
+    sealer: &SnapshotSealer<'_, Store, Witness>,
+    status: &SyncStatus,
+    request: &PublishRequest<'_>,
+    drop_saved: bool,
+) -> Result<PublishOutcome, PublishError>
+where
+    Store: RegisterStore,
+    Witness: RollbackWitness,
+    Service: SnapshotService,
+{
     // Addendum D rule 5, before anything else: no counter, no file, no request.
-    match status {
-        SyncStatus::Healthy => {}
-        SyncStatus::Halted(_) => return Err(PublishError::Halted),
-        _ => return Err(PublishError::Stopped),
-    }
+    refuse_locally(status)?;
     match (&request.kind, request.source) {
         (PublishKind::ReSnapshot, SnapshotSource::LiveVault) => {
             return Err(PublishError::LiveVaultSource)
@@ -195,17 +249,157 @@ where
     let manifest = closure_ids_of(request.plaintext)
         .map_err(|e| PublishError::Snapshot(SnapshotError::Seal(e)))?;
     let sealed = sealer.seal(&request.fields, request.plaintext)?;
-    let vault_id = sealer.key.vault_id();
-    let snapshot_id = request.fields.object_id;
+    deliver(
+        service,
+        sealer,
+        &Delivery {
+            kind: &request.kind,
+            snapshot_id: &request.fields.object_id,
+            base_seq: request.fields.base_seq,
+            container: &sealed.container,
+            manifest: &manifest,
+            // A container sealed just now is one the service has never been sent; the saved
+            // container of the same publish (found by the sealer) is one it may hold.
+            fresh: !sealed.reused,
+            drop_saved,
+        },
+    )
+}
 
-    let outcome = match request.kind {
+/// Send the snapshot `snapshot_id` again from its **saved container**, if one is saved and can still
+/// be sent, without exporting or sealing anything: a resume after a crash or a lost response sends
+/// exactly the bytes it sent before, whatever the vault holds now. `Ok(None)` means nothing usable
+/// is saved, and the caller exports and calls [`publish`].
+///
+/// # Errors
+/// A [`PublishError`], as [`publish`]. [`PublishError::GenesisSource`] if a genesis resume finds a
+/// saved container that does not start at position `0`.
+pub fn resume_saved<Store, Witness, Service>(
+    service: &Service,
+    sealer: &SnapshotSealer<'_, Store, Witness>,
+    status: &SyncStatus,
+    kind: &PublishKind<'_>,
+    snapshot_id: &[u8; 16],
+) -> Result<Option<PublishOutcome>, PublishError>
+where
+    Store: RegisterStore,
+    Witness: RollbackWitness,
+    Service: SnapshotService,
+{
+    resume_inner(service, sealer, status, kind, snapshot_id, true)
+}
+
+/// [`resume_saved`] without dropping the saved container (see [`publish_keeping_saved`]).
+///
+/// # Errors
+/// As [`resume_saved`].
+pub fn resume_saved_keeping<Store, Witness, Service>(
+    service: &Service,
+    sealer: &SnapshotSealer<'_, Store, Witness>,
+    status: &SyncStatus,
+    kind: &PublishKind<'_>,
+    snapshot_id: &[u8; 16],
+) -> Result<Option<PublishOutcome>, PublishError>
+where
+    Store: RegisterStore,
+    Witness: RollbackWitness,
+    Service: SnapshotService,
+{
+    resume_inner(service, sealer, status, kind, snapshot_id, false)
+}
+
+fn resume_inner<Store, Witness, Service>(
+    service: &Service,
+    sealer: &SnapshotSealer<'_, Store, Witness>,
+    status: &SyncStatus,
+    kind: &PublishKind<'_>,
+    snapshot_id: &[u8; 16],
+    drop_saved: bool,
+) -> Result<Option<PublishOutcome>, PublishError>
+where
+    Store: RegisterStore,
+    Witness: RollbackWitness,
+    Service: SnapshotService,
+{
+    refuse_locally(status)?;
+    let Some(sealed) = sealer.saved(snapshot_id)? else {
+        return Ok(None);
+    };
+    // The saved bytes are this device's own, so they open through the receiver path; the closure
+    // sidecar the service wants is read from what they hold, never from anything remembered.
+    let parsed = parse_container(&sealed.container)
+        .map_err(|_| PublishError::Snapshot(SnapshotError::Seal(SnapshotSealError::Unencodable)))?;
+    let plaintext = SnapshotOpener::new(sealer.key, sealer.chain)
+        .open(&parsed)
+        .map_err(|e| PublishError::Snapshot(SnapshotError::NotOpenable(e)))?;
+    let manifest =
+        closure_ids_of(&plaintext).map_err(|e| PublishError::Snapshot(SnapshotError::Seal(e)))?;
+    let base_seq = parsed.header.base_seq;
+    if matches!(kind, PublishKind::Genesis { .. }) && base_seq != 0 {
+        return Err(PublishError::GenesisSource);
+    }
+    deliver(
+        service,
+        sealer,
+        &Delivery {
+            kind,
+            snapshot_id,
+            base_seq,
+            container: &sealed.container,
+            manifest: &manifest,
+            fresh: false,
+            drop_saved,
+        },
+    )
+    .map(Some)
+}
+
+/// What [`deliver`] sends and how to read the service's answers.
+struct Delivery<'a, 'k> {
+    kind: &'a PublishKind<'k>,
+    snapshot_id: &'a [u8; 16],
+    base_seq: u64,
+    container: &'a [u8],
+    manifest: &'a [ArtifactId],
+    /// The container was sealed in this call, so the service has never been sent it: if the service
+    /// already holds something under the id, that something is not this container.
+    fresh: bool,
+    /// Drop the saved container once the answer is final; otherwise the caller does it, after it
+    /// has recorded the outcome.
+    drop_saved: bool,
+}
+
+/// Stage and send one sealed container, then (unless the caller keeps it) drop the saved copy once
+/// the answer is final: accepted, a genesis refused as `VaultKnown`, or `GenesisResumeLost`. Any
+/// other answer keeps the saved container for an exact-byte retry.
+fn deliver<Store, Witness, Service>(
+    service: &Service,
+    sealer: &SnapshotSealer<'_, Store, Witness>,
+    delivery: &Delivery<'_, '_>,
+) -> Result<PublishOutcome, PublishError>
+where
+    Store: RegisterStore,
+    Witness: RollbackWitness,
+    Service: SnapshotService,
+{
+    let vault_id = sealer.key.vault_id();
+    let Delivery {
+        kind,
+        snapshot_id,
+        base_seq,
+        container,
+        manifest,
+        fresh,
+        drop_saved,
+    } = *delivery;
+    let outcome = match *kind {
         PublishKind::ReSnapshot => {
-            service.stage_snapshot(vault_id, &snapshot_id, &sealed.container)?;
+            service.stage_snapshot(vault_id, snapshot_id, container)?;
             PublishOutcome::Published(service.publish_snapshot(
                 vault_id,
-                &snapshot_id,
-                request.fields.base_seq,
-                &manifest,
+                snapshot_id,
+                base_seq,
+                manifest,
             )?)
         }
         PublishKind::Genesis {
@@ -216,45 +410,93 @@ where
                 base_seq: 0,
                 membership_record: Some(membership_record),
                 epoch_record,
-                snapshot_id: Some(snapshot_id),
-                artifact_manifest: &manifest,
+                snapshot_id: Some(*snapshot_id),
+                artifact_manifest: manifest,
             };
-            match install_genesis(service, vault_id, &snapshot_id, &sealed.container, &install) {
-                Ok(installed) => PublishOutcome::GenesisInstalled(installed),
+            match install_genesis(service, vault_id, snapshot_id, container, &install, fresh) {
+                Ok(GenesisReply::Installed(installed)) => {
+                    PublishOutcome::GenesisInstalled(installed)
+                }
+                Ok(GenesisReply::ResumeLost) => PublishOutcome::GenesisResumeLost,
                 Err(ServiceError::VaultExists) => PublishOutcome::VaultKnown,
                 Err(other) => return Err(other.into()),
             }
         }
     };
-    // The service has answered: the saved container could only send this snapshot again.
-    sealer.discard(&snapshot_id)?;
+    if drop_saved {
+        // The service has answered: the saved container could only send this snapshot again.
+        sealer.discard(snapshot_id)?;
+    }
     Ok(outcome)
+}
+
+/// The id of a vault's genesis snapshot, derived from its genesis epoch record's id so that a
+/// resume after a crash names the same snapshot the first attempt did, with no extra state to
+/// persist: the first 16 bytes of `SHA-256("dohflow/genesis-snapshot-id/v1" ‖ epoch_record_id)`,
+/// with the UUID version (4) and variant bits set.
+#[must_use]
+pub fn genesis_snapshot_id(epoch_record_id: &[u8; 32]) -> [u8; 16] {
+    let digest = Sha256::new()
+        .chain_update(b"dohflow/genesis-snapshot-id/v1")
+        .chain_update(epoch_record_id)
+        .finalize();
+    let mut id = [0_u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    id[6] = (id[6] & 0x0f) | 0x40;
+    id[8] = (id[8] & 0x3f) | 0x80;
+    id
+}
+
+/// How a genesis publish answered, short of an error.
+enum GenesisReply {
+    /// The genesis is installed with the snapshot that was sent.
+    Installed(InstalledEpoch),
+    /// The service holds a genesis snapshot that this container is not.
+    ResumeLost,
 }
 
 /// Stage and install a genesis. A refused stage is **never** read as the vault being known or as a
 /// failure: once a genesis is installed the service refuses the account credential at
 /// `stageSnapshot`, which is exactly the state after a lost `installEpoch` response, and the vault
 /// being known is `installEpoch`'s answer alone. So a refusal at the stage goes on to
-/// `installEpoch` with the same bytes; if that says the snapshot was never staged, the stage is
-/// made to succeed and the install is tried once more.
+/// `installEpoch` with the same bytes, and `installEpoch`'s answer decides; if that says the
+/// snapshot was never staged, the stage is made to succeed and the install is tried once more.
+///
+/// What the service holds under the id depends on whose bytes they are. A **saved** container is the
+/// one sent before, so whatever the stage answers (a refusal, `ObjectConflict`, already published)
+/// the install decides. A **fresh** container has never been sent: if the stage says a different
+/// byte string is held (`ObjectConflict`), or `installEpoch` says the genesis is already installed,
+/// the service holds an earlier attempt's snapshot that this device can no longer send, and the
+/// answer is [`GenesisReply::ResumeLost`], never `Installed`.
 fn install_genesis<Service: SnapshotService>(
     service: &Service,
     vault_id: &[u8; 16],
     snapshot_id: &[u8; 16],
     container: &[u8],
     install: &EpochInstall<'_>,
-) -> Result<InstalledEpoch, ServiceError> {
+    fresh: bool,
+) -> Result<GenesisReply, ServiceError> {
     match service.stage_snapshot(vault_id, snapshot_id, container) {
         Ok(_) | Err(ServiceError::Forbidden | ServiceError::VaultExists) => {}
+        Err(ServiceError::ObjectConflict) if fresh => return Ok(GenesisReply::ResumeLost),
+        Err(ServiceError::ObjectConflict) => {}
         Err(other) => return Err(other),
     }
-    match service.install_epoch(vault_id, install) {
+    let installed = match service.install_epoch(vault_id, install) {
         Err(ServiceError::SnapshotNotFound) => {
-            service.stage_snapshot(vault_id, snapshot_id, container)?;
-            service.install_epoch(vault_id, install)
+            match service.stage_snapshot(vault_id, snapshot_id, container) {
+                Ok(_) => {}
+                Err(ServiceError::ObjectConflict) if fresh => return Ok(GenesisReply::ResumeLost),
+                Err(other) => return Err(other),
+            }
+            service.install_epoch(vault_id, install)?
         }
-        other => other,
+        other => other?,
+    };
+    if fresh && installed.already_installed {
+        return Ok(GenesisReply::ResumeLost);
     }
+    Ok(GenesisReply::Installed(installed))
 }
 
 /// Whether the service holds `snapshot_id` as its newest published snapshot: the idempotent

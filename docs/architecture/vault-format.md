@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=35 -->
+<!-- vault-format: spec-version=36 -->
 <!-- vault-format: schema-version=68 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -272,6 +272,11 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 36` (personal-cfo-1cltt.4, part C) states how the genesis snapshot is named and
+  resumed (C.8 "The genesis snapshot's id and a resume": a derived id, the saved container is what
+  a resume sends, a fresh container is sent only when the service does not hold the id, the persisted
+  genesis is the authority, a vault that has synced before never mints one, and a vault that changed after the export is `EnabledWithLocalChanges`, never `Enabled`). One vector
+  (`genesis_snapshot_id`). No wire layout, write-set rule, `engine_version` or schema change.
 - `spec-version = 35` (personal-cfo-1cltt.4, part B) states how a snapshot is published and where
   its plaintext is read from (C.8 "Publishing a snapshot": a genesis by `installEpoch`, a later
   snapshot by `publishSnapshot`, the live vault only for a genesis, no publish while halted or
@@ -2032,6 +2037,47 @@ the state after a lost `installEpoch` response): the client goes on to `installE
 bytes, and only that answer says the vault is known (`VaultExists`, R39), after which the genesis is
 never published or re-minted and nothing in the vault is discarded.
 
+**The genesis snapshot's id and a resume.** The genesis snapshot's `object_id` is not random: it is
+the first 16 bytes of `SHA-256("dohflow/genesis-snapshot-id/v1" ‖ genesis_epoch_record_id)` with the
+UUID version (4) and variant bits set, so a client that resumes after a crash or a lost response
+names the snapshot its first attempt named without persisting anything more.
+`genesis_epoch_record_id` is the identifier of the vault's genesis epoch record (C.6 "Signed record
+container": `SHA-256` of the record's body bytes, 32 raw bytes). The body carries the `vault_id`, so
+the id binds the vault: no two vaults share one. This is the **one** `object_id` that is not drawn
+from a CSPRNG: C.5's rule is about idempotency keys, and an `object_id` is only an identifier the
+service stores. The derived id is version-4 formatted for the wire and is unpredictable to anyone
+without the genesis epoch record, which the service already holds, so it reveals nothing new. The
+vector `genesis_snapshot_id` (C.14) pins one input and its 16 bytes. A resume sends the
+**saved container** of that snapshot (C.4 "Saved sealed snapshot") exactly as it was sealed, and
+reads nothing from the vault: if the vault changed in between, re-exporting would build a different
+snapshot under an id the service may already hold. The client exports the live vault and seals again
+**only when the service does not hold the id**. A container sealed in this attempt has never been
+sent, so if the service answers `ObjectConflict` at the stage (an earlier attempt staged another
+container under the derived id), or answers `installEpoch` with an exact retry of a genesis it has
+already installed (the `200` of protocol 4.4), the service holds an earlier attempt's snapshot that
+this device can no longer send, and publishing the new one would either be refused or leave the
+service's snapshot installed while the origin holds changes no envelope carries. The client then
+stops in the persisted terminal state `GenesisResumeLost` (vault-format B.2, `sync_genesis`):
+nothing is published, minted or discarded, a restart does not retry (every retry would seal again
+and burn a counter), and Sync status shows it with the support path. A resume that sends the **saved**
+container is different: it is the container the service already holds, so a refused stage, an
+`ObjectConflict` or an already-published answer all go on to `installEpoch`, whose `200` decides. The
+client records the outcome (`Published`, `VaultKnown` or `GenesisResumeLost`) **before** it drops the
+saved container. The enable sequence persists the genesis records before it installs any key from
+them, and a vault that holds a persisted genesis never mints another. A vault that holds a sync base
+or any outbox row and no persisted genesis never mints a genesis; it joins as a replica. And no
+genesis is exported from the live vault once it holds either.
+
+**The vault after the export.** The genesis snapshot is exactly the state the export read, and the
+`operation_log` high-water mark of that same read transaction is persisted with the genesis
+(`export_high_water`, B.2 `sync_genesis`) before anything is sealed. A command taken after the
+export is not in the genesis, and until the device is armed (a `sync_base` row exists) it is not
+recorded in the outbox either, so no envelope will ever carry it. Once the genesis is published the
+client therefore compares the log with the mark: equal is `Enabled`; a log that has grown past it is
+`EnabledWithLocalChanges`, never `Enabled`, and the device is not armed while that is so. The
+reconciliation (a base built from the genesis plaintext, and the commands after the mark enqueued as
+unpushed work over the genesis head) is the replica bootstrap's (`personal-cfo-1cltt.5`).
+
 **Where the plaintext is read from.** Only a genesis is read from the live vault, at sync-enable,
 before any outbox row exists. The live vault holds the effects of local commands no envelope has
 sequenced, so every other snapshot is read from a state equal to the log at the snapshot's head,
@@ -2624,6 +2670,7 @@ written `N x 0xNN`.
 | Idempotency key | `4a3b2c1d-9e8f-4a7b-8c6d-5e4f3a2b1c0d` as 16 raw bytes |
 | Command metadata | `command_id` `01938f2e-7c1a-7b3d-9a4e-123456789abc`; `correlation_id` 16 x `0x22`; `causation_id` absent; `actor_type` 1; `actor_id` `device-a-user`; `issued_at` 1_790_000_000_000_000; `device_id` = device A |
 | Sample header fields | `base_seq` 41; `payload_schema_version` 1; `engine_version` `dohflow-0.3.0`; `schema_version` 55; `invocation_counter` 0; the snapshot's `object_id` 16 x `0x33`; `nonce_domain` and fingerprint as derived for device A |
+| Genesis snapshot id | `genesis_epoch_record_id` 32 x `0x5a` (the input of `genesis_snapshot_id`, C.8) |
 | Envelope plaintext | `write_set_hash` 32 x `0x44`; payload `{"amount_minor":"-1250","currency":"USD"}`; the delta manifest is the two sample artifact ids in ascending byte order |
 | Local storage ids | 32 x `0x5a` and 32 x `0x6b`; the manifest commitment covers the two epoch-1 artifact ids |
 | Sample artifact | `artifact_kind` 1; plaintext `synthetic document` (18 bytes); `logical_metadata` `{"mime_type":"text/plain"}`; the address and keys of the first storage id at epoch 1 |
@@ -2725,6 +2772,7 @@ the canonical manifest whose bytes the export vectors seal.
 <!-- sync-vector: artifact_id_epoch1=d250092c040686d891c21151a01b44a593e22451b71f872fbf367c9327fd90de -->
 <!-- sync-vector: artifact_id_epoch2=b8532c2b8f48fc07410d0fcaab93293882b32a0dc4cbb6d9263ddd4d5b708273 -->
 <!-- sync-vector: artifact_id_readdress_epoch2=684c15bc0b06fbaa3d36a0ee22f46e32c230390ab1b98f934c004016d0dba999 -->
+<!-- sync-vector: genesis_snapshot_id=2485cd189d53493584d44603bc2083d4 -->
 <!-- sync-vector: artifact_manifest_commitment=e9f048d0e627a918249c19bd2df94315be7373469a5af23869cd32c65cd88631 -->
 <!-- sync-vector: write_set_hash_sample=5e2ef15d19742bcf1f39b0071f115a9c5b1f427f11eb3eb3468cf08bbdfe3f11 -->
 <!-- sync-vector: artifact_object_key=57441986f4b6610011f5efa0aa280eb3dd5f415d6275d4e823e03048851944e1 -->

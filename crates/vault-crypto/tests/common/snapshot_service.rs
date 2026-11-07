@@ -59,9 +59,15 @@ struct State {
     calls: Vec<&'static str>,
 }
 
+/// The operation a hook waits for, and what it runs.
+type Hook = (&'static str, Box<dyn FnOnce() + Send>);
+
 pub struct FakeSnapshotService {
     credential: Mutex<Credential>,
     state: Mutex<State>,
+    /// Runs once, just before the named operation does anything: what happens on the client's
+    /// device while a request is in flight.
+    hook: Mutex<Option<Hook>>,
 }
 
 impl FakeSnapshotService {
@@ -69,7 +75,13 @@ impl FakeSnapshotService {
         Self {
             credential: Mutex::new(credential),
             state: Mutex::new(State::default()),
+            hook: Mutex::new(None),
         }
+    }
+
+    /// Run `action` once, just before the next call of `operation` does anything.
+    pub fn before(&self, operation: &'static str, action: impl FnOnce() + Send + 'static) {
+        *self.hook.lock().unwrap() = Some((operation, Box::new(action)));
     }
 
     pub fn set_credential(&self, credential: Credential) {
@@ -108,6 +120,7 @@ impl FakeSnapshotService {
                 position: 0,
                 membership_head: [0; 32],
                 epoch_record_id: [0; 32],
+                already_installed: false,
             },
             key_epoch: 1,
             head: 0,
@@ -147,6 +160,20 @@ impl FakeSnapshotService {
         op: impl FnOnce(&mut State, Credential) -> Result<R, ServiceError>,
     ) -> Result<R, ServiceError> {
         let credential = *self.credential.lock().unwrap();
+        let hook = {
+            let mut slot = self.hook.lock().unwrap();
+            if slot
+                .as_ref()
+                .is_some_and(|(operation, _)| *operation == name)
+            {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, action)) = hook {
+            action();
+        }
         let mut state = self.state.lock().unwrap();
         state.calls.push(name);
         match state.faults.pop_front() {
@@ -294,7 +321,10 @@ impl SnapshotService for FakeSnapshotService {
                 let same = install.membership_record == Some(vault.genesis_membership.as_slice())
                     && install.epoch_record == vault.genesis_epoch.as_slice();
                 return if same {
-                    Ok(vault.installed)
+                    Ok(InstalledEpoch {
+                        already_installed: true,
+                        ..vault.installed
+                    })
                 } else {
                     Err(ServiceError::VaultExists)
                 };
@@ -349,6 +379,7 @@ impl SnapshotService for FakeSnapshotService {
                 epoch_record_id: chain
                     .epoch_head_id()
                     .ok_or(ServiceError::EpochRecordInvalid)?,
+                already_installed: false,
             };
             state.pins.extend(install.artifact_manifest.iter().copied());
             state.published.push(PublishedSnapshot {
