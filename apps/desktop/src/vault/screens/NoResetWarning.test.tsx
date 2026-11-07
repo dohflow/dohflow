@@ -1,6 +1,7 @@
 import { fireEvent, screen } from "@testing-library/react";
 import { compile } from "tailwindcss";
 
+import { COMPACT_QUERY } from "@/lib/compact";
 import { renderWithClient } from "@/test/renderWithClient";
 
 import { NoResetWarning } from "./NoResetWarning";
@@ -78,7 +79,7 @@ describe("NoResetWarning", () => {
   it("compiles the narrow-card stack and the hyphenation to the rules they stand for", async () => {
     const css = (
       await compile(
-        "@custom-variant compact (@media (max-width: 639px) and (pointer: coarse));\n@tailwind utilities;",
+        `@custom-variant compact (@media ${COMPACT_QUERY});\n@tailwind utilities;`,
       )
     ).build([
       "@container",
@@ -89,7 +90,7 @@ describe("NoResetWarning", () => {
     expect(css).toContain("container-type: inline-size");
     expect(css).toMatch(/@container \(width < 15rem\)/);
     expect(css).toMatch(/flex-direction: column/);
-    expect(css).toMatch(/@media \(max-width: 639px\) and \(pointer: coarse\)/);
+    expect(css).toContain(`@media ${COMPACT_QUERY}`);
     expect(css).toContain("hyphens: auto");
     expect(css).toContain("overflow-wrap: anywhere");
   });
