@@ -2345,6 +2345,75 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // SYNC-3d device-local state (personal-cfo-1cltt.4; vault-format.md C.4 "Counter register and
+    // nonce state", C.6 freshness rule 5). Three more class-3 tables: never replicated, never part
+    // of a snapshot or a write set.
+    //
+    // * `sync_counter_register` is the durable `next_counter` of every
+    //   `(vault_id, key_epoch, fingerprint, object_type)` context. A row is never 0 (the first
+    //   advance goes to 1), so a witness at exactly 0 can only mean "no counter was handed out".
+    //   The advance is a compare-and-set, and it is written under the writer lock, so a backup
+    //   restore rolls it back: that rollback is what the independent witness detects.
+    // * `sync_saved_snapshot` is the sealed snapshot saved for an exact-byte retransmission, one per
+    //   context, with the hashes that say which publish it belongs to. The container bytes are a
+    //   file beside the vault, not a column.
+    // * `sync_genesis` is a singleton holding the genesis records this device minted at
+    //   sync-enable, persisted BEFORE the keys are installed and before anything is published:
+    //   the start of the accepted epoch chain. `state` only moves forward (Persisted, Installed,
+    //   Published); VaultKnown is the terminal state of a genesis the service refused because the
+    //   vault already exists, which is never published or re-minted; GenesisResumeLost is the
+    //   terminal state of a genesis whose snapshot the service holds but whose saved container is
+    //   gone (persisted so that a restart never retries and burns a counter). `export_high_water`
+    //   is the `operation_log` high-water mark (the largest `op_seq`, 0 for an empty log) read in
+    //   the transaction that exported the genesis snapshot: NULL until an export is made, and
+    //   replaced by a later export only while nothing has been sealed. After the genesis is
+    //   published, a log that has grown past the mark holds local commands the genesis does not
+    //   carry and no envelope has sequenced.
+    Migration {
+        version: 68,
+        name: "sync_register_and_genesis",
+        up: "CREATE TABLE sync_counter_register (
+                 vault_id     BLOB NOT NULL CHECK (length(vault_id) = 16),
+                 key_epoch    INTEGER NOT NULL CHECK (key_epoch >= 1),
+                 fingerprint  BLOB NOT NULL CHECK (length(fingerprint) = 32),
+                 object_type  INTEGER NOT NULL CHECK (object_type IN (1, 2)),
+                 next_counter INTEGER NOT NULL CHECK (next_counter >= 1),
+                 PRIMARY KEY (vault_id, key_epoch, fingerprint, object_type)
+             );
+             CREATE TABLE sync_saved_snapshot (
+                 vault_id         BLOB NOT NULL CHECK (length(vault_id) = 16),
+                 key_epoch        INTEGER NOT NULL CHECK (key_epoch >= 1),
+                 fingerprint      BLOB NOT NULL CHECK (length(fingerprint) = 32),
+                 object_type      INTEGER NOT NULL CHECK (object_type IN (1, 2)),
+                 object_id        BLOB NOT NULL CHECK (length(object_id) = 16),
+                 base_seq         INTEGER NOT NULL CHECK (base_seq >= 0),
+                 plaintext_sha256 BLOB NOT NULL CHECK (length(plaintext_sha256) = 32),
+                 container_sha256 BLOB NOT NULL CHECK (length(container_sha256) = 32),
+                 container_len    INTEGER NOT NULL CHECK (container_len >= 0),
+                 counter          INTEGER NOT NULL CHECK (counter >= 0),
+                 PRIMARY KEY (vault_id, key_epoch, fingerprint, object_type)
+             );
+             CREATE TABLE sync_genesis (
+                 singleton         INTEGER PRIMARY KEY CHECK (singleton = 1),
+                 vault_id          BLOB NOT NULL CHECK (length(vault_id) = 16),
+                 membership_record BLOB NOT NULL CHECK (length(membership_record) > 0),
+                 epoch_record      BLOB NOT NULL CHECK (length(epoch_record) > 0),
+                 state             TEXT NOT NULL
+                                   CHECK (state IN ('Persisted', 'Installed', 'Published', 'VaultKnown',
+                                                    'GenesisResumeLost')),
+                 export_high_water INTEGER
+                                   CHECK (export_high_water IS NULL OR export_high_water >= 0),
+                 persisted_at      TEXT NOT NULL,
+                 updated_at        TEXT NOT NULL
+             );",
+        down: Some(
+            "DROP TABLE sync_genesis;
+             DROP TABLE sync_saved_snapshot;
+             DROP TABLE sync_counter_register;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
@@ -3715,7 +3784,7 @@ mod tests {
     #[test]
     fn v67_down_drops_the_issue_time_and_keeps_the_rows() {
         let mut conn = Connection::open_in_memory().unwrap();
-        apply(&mut conn, MIGRATIONS).unwrap();
+        apply(&mut conn, &MIGRATIONS[..67]).unwrap();
         conn.execute(
             "INSERT INTO sync_outbox
                (command_id, op_seq, state, write_set_keys, created_at, issued_at)
@@ -3749,6 +3818,45 @@ mod tests {
             issued, None,
             "a row from before the column has no issue time"
         );
+    }
+
+    /// 68 adds the counter register, the saved snapshot record and the persisted genesis; down
+    /// drops the three, and up creates them again empty.
+    #[test]
+    fn v68_down_drops_the_register_and_genesis_tables_and_up_creates_them_empty() {
+        let tables = |conn: &Connection| -> Vec<String> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN
+                     ('sync_counter_register', 'sync_saved_snapshot', 'sync_genesis')
+                     ORDER BY name",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(
+            tables(&conn),
+            [
+                "sync_counter_register",
+                "sync_genesis",
+                "sync_saved_snapshot"
+            ]
+        );
+
+        assert_eq!(migrate_down(&mut conn, 67).unwrap(), 1);
+        assert!(tables(&conn).is_empty(), "down drops all three");
+
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(tables(&conn).len(), 3);
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_genesis", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     fn hex_upper(bytes: &[u8]) -> String {

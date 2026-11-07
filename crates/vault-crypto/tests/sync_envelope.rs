@@ -5,7 +5,7 @@
 
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
-use sync_core::envelope::{ArtifactManifest, EnvelopePlaintext, IdempotencyKey, ImmutableMeta};
+use sync_core::envelope::{EnvelopePlaintext, IdempotencyKey, ImmutableMeta};
 use sync_core::header::{
     encode_container, parse_container, ClearHeader, Fingerprint, IdempotencyKeyTag,
     ManifestCommitment, NonceDomain, ObjectKind, OBJECT_ENVELOPE,

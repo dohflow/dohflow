@@ -2,9 +2,7 @@
 //! applying the server's envelopes with their write-set hashes verified, and the fork. Fake data
 //! only.
 
-use sync_core::envelope::{
-    check_envelope, ArtifactManifest, EnvelopePlaintext, IdempotencyKey, ImmutableMeta,
-};
+use sync_core::envelope::{check_envelope, EnvelopePlaintext, IdempotencyKey, ImmutableMeta};
 use sync_core::header::{
     ClearHeader, Fingerprint, IdempotencyKeyTag, NonceDomain, ObjectKind, OBJECT_ENVELOPE,
 };
@@ -99,7 +97,7 @@ fn seal(origin: &DbWorker, meta: &CommandMeta, cmd: &WriteCommand) -> Sealed {
         plaintext: EnvelopePlaintext {
             meta: immutable,
             write_set_hash: hash.try_into().unwrap(),
-            delta_manifest: ArtifactManifest::new(Vec::new()).unwrap(),
+            delta_manifest: sync_core::envelope::BoundManifest::empty(),
             payload,
         },
     }

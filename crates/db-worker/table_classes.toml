@@ -372,6 +372,33 @@ rebase_preservation = "preserve every record byte for byte across the swap; a re
 reference_validation = "command_id, correlation_id and origin node id are well-formed; the envelope and audit evidence are present"
 
 [[table]]
+table = "sync_counter_register"
+class = "3"
+owner_bead = "personal-cfo-1cltt"
+note = "Device-local counter register: the durable next_counter of every (vault_id, key_epoch, fingerprint, object_type) context, advanced by compare-and-set before anything is encrypted. A row is never 0. Written under the writer lock so a backup restore rolls it back, which the independent anti-rollback witness detects (NonceStateLost). Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "preserve every row byte for byte across the swap; a rebase never lowers, resets or re-creates a counter, because a reused counter under one key is a reused nonce"
+reference_validation = "next_counter is at least 1; the row is checked against the witness before the context encrypts, and a row with no witness entry (or the reverse) is NonceStateLost"
+
+[[table]]
+table = "sync_saved_snapshot"
+class = "3"
+owner_bead = "personal-cfo-1cltt"
+note = "Device-local record of the sealed snapshot saved for an exact-byte retransmission, one per counter context, with the hashes of the plaintext and container it was sealed from. The container bytes are a file beside the vault, not a column. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "preserve every row byte for byte across the swap; a retry of a publish resends exactly these bytes or burns a counter"
+reference_validation = "container_sha256 and container_len must match the saved file before the bytes are resent; a mismatch discards the saved record and the next seal takes a new counter"
+
+[[table]]
+table = "sync_genesis"
+class = "3"
+owner_bead = "personal-cfo-1cltt"
+note = "Device-local singleton: the genesis membership and epoch records this device minted at sync-enable, persisted before any key is installed from them and before anything is published, with how far enabling got (Persisted, Installed, Published, VaultKnown when the service refused the genesis because the vault already exists, or GenesisResumeLost when the service holds this genesis's snapshot and the container that was sent is gone), and the operation-log high-water mark read in the transaction that exported the genesis snapshot. The records never change; the state only moves forward. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "preserve the row byte for byte across the swap; a rebase neither re-mints nor discards a genesis"
+reference_validation = "the records must verify as a chain for vault_id before any key is installed from them; a VaultKnown or GenesisResumeLost genesis is never published"
+
+[[table]]
 table = "vault_meta"
 class = "3"
 owner_bead = "personal-cfo-bxsbz"

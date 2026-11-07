@@ -932,6 +932,7 @@ dependencies = [
  "importer-core",
  "job-runtime",
  "pay-schedule",
+ "platform-traits",
  "rusqlite",
  "serde",
  "serde_json",

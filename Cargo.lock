@@ -426,6 +426,8 @@ dependencies = [
  "importer-core",
  "job-runtime",
  "pay-schedule",
+ "platform-mock",
+ "platform-traits",
  "proptest",
  "rusqlite",
  "serde",

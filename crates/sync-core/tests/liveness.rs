@@ -9,8 +9,8 @@ use sync_core::accepted::PushIdentity;
 use sync_core::accepted::{decide_push, InMemoryIndex, PushDecision};
 use sync_core::cbe::WireError;
 use sync_core::envelope::{
-    canonical_envelope_digest, check_envelope, ArtifactManifest, EnvelopePlaintext, IdempotencyKey,
-    ImmutableMeta, ReceiverError,
+    canonical_envelope_digest, check_envelope, EnvelopePlaintext, IdempotencyKey, ImmutableMeta,
+    ReceiverError,
 };
 use sync_core::header::{
     encode_container, parse_container, ClearHeader, Fingerprint, IdempotencyKeyTag,
@@ -253,10 +253,13 @@ fn every_inconsistent_sealing_is_refused_with_its_reason_and_nothing_is_approved
             Box::new(|h, p| {
                 if let ObjectKind::Envelope {
                     artifact_manifest_commitment,
+                    artifact_binding_commitment,
                     ..
                 } = &mut h.object
                 {
+                    // Fields 17 and 18 travel together; the manifest check is the first to fail.
                     *artifact_manifest_commitment = Some(p.delta_manifest.commitment());
+                    *artifact_binding_commitment = Some(p.delta_manifest.binding());
                 }
             }),
             ReceiverError::ManifestCommitmentMismatch,
@@ -273,10 +276,12 @@ fn every_inconsistent_sealing_is_refused_with_its_reason_and_nothing_is_approved
                 .unwrap();
                 if let ObjectKind::Envelope {
                     artifact_manifest_commitment,
+                    artifact_binding_commitment,
                     ..
                 } = &mut h.object
                 {
                     *artifact_manifest_commitment = Some(ManifestCommitment::from_derived([9; 32]));
+                    *artifact_binding_commitment = Some(p.delta_manifest.binding());
                 }
             }),
             ReceiverError::ManifestCommitmentMismatch,

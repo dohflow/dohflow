@@ -94,6 +94,9 @@ mod scenarios;
 mod schedule_sources;
 mod spend_by_category;
 mod staged_import;
+pub mod sync_enable;
+pub mod sync_genesis;
+pub mod sync_register;
 pub mod sync_state;
 
 pub use assumptions::{
@@ -2126,6 +2129,37 @@ impl DbWorker {
         } else {
             Err(DbError::CheckpointBusy)
         }
+    }
+
+    /// Run `f` in one transaction on the writer connection, under the writer lock, and commit it if
+    /// `f` returns `Ok`. This is how the device-local Sync state (`sync_register`, `sync_genesis`)
+    /// is read and written: under the same lock as every other write, so a backup restore rolls it
+    /// back with the vault, which is what the independent witness detects. A closure that needs the
+    /// transaction of a command (the register advance beside the operation-log row) takes it from
+    /// that command's own transaction instead.
+    ///
+    /// `f` runs while the writer lock is held, so it must not call another method of this worker
+    /// that takes the lock (`vault_id`, a dispatch): read what it needs first.
+    ///
+    /// # Errors
+    /// `f`'s error (the transaction is rolled back), or [`DbError::WorkerUnavailable`] /
+    /// [`DbError::Sqlite`] as `E` when the worker is not healthy or the transaction cannot start or
+    /// commit.
+    pub fn write_sync_state<R, E: From<DbError>>(
+        &self,
+        f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<R, E>,
+    ) -> Result<R, E> {
+        let guard = self.lock();
+        if guard.state != WorkerState::Healthy {
+            return Err(DbError::WorkerUnavailable(guard.state).into());
+        }
+        let tx = guard
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| E::from(DbError::from(e)))?;
+        let out = f(&tx)?;
+        tx.commit().map_err(|e| E::from(DbError::from(e)))?;
+        Ok(out)
     }
 
     /// Run `PRAGMA integrity_check` on the vault at `path` with `dek`, **before** the worker is

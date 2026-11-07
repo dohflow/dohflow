@@ -22,7 +22,7 @@
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use sync_core::envelope::{ArtifactManifest, EnvelopePlaintext, IdempotencyKey, ImmutableMeta};
+use sync_core::envelope::{EnvelopePlaintext, IdempotencyKey, ImmutableMeta};
 use sync_core::header::{
     encode_container, parse_container, ClearHeader, Fingerprint, IdempotencyKeyTag, NonceDomain,
     ObjectKind, OBJECT_ENVELOPE,

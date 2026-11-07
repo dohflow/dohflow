@@ -23,6 +23,10 @@ const ALLOWED: &[&str] = &[
     // The first-publication and chained re-address ids (C.3) are derived from `K_e` here and nowhere
     // else (personal-cfo-0g528.2).
     "crates/vault-crypto/src/sync_artifact.rs",
+    // The snapshot opener and sealer read the closure's artifact ids off a snapshot manifest they
+    // have just verified (strictly ascending, hex of 32 bytes) and wrap them as service addresses
+    // for the closure sidecar (personal-cfo-1cltt.4, personal-cfo-0g528.2).
+    "crates/vault-crypto/src/sync_snapshot.rs",
     // 6b adds the commitment derivations here, and vault-crypto adds the tag and domain
     // derivations; list each file when it lands.
 ];

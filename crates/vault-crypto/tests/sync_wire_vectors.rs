@@ -1040,6 +1040,11 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         ("artifact_id_epoch1", art_1.to_vec()),
         ("artifact_id_epoch2", art_1_e2.to_vec()),
         ("artifact_id_readdress_epoch2", art_1_readdress_e2.to_vec()),
+        // The genesis snapshot's object id (C.8) for a fixed genesis epoch record id.
+        (
+            "genesis_snapshot_id",
+            vault_crypto::sync_snapshot_flow::genesis_snapshot_id(&[0x5a; 32]).to_vec(),
+        ),
         ("artifact_manifest_commitment", man_commit.to_vec()),
         // The sample delta's binding commitment: the hashes 0x31 and 0x32 repeated, in id order.
         ("artifact_binding_commitment", bind_commit.to_vec()),
