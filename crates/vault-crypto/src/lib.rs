@@ -43,6 +43,7 @@ pub mod sync_keys;
 pub mod sync_keyset;
 pub mod sync_records;
 pub mod sync_snapshot;
+pub mod sync_snapshot_flow;
 
 pub use attachment::{
     decrypt_blob, encrypt_blob, generate_content_key, storage_id, unwrap_content_key,
