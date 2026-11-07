@@ -318,6 +318,27 @@ test("inline batch edit saves through assertBalance with the as-of date (persona
   expect(arg.as_of_date).toBeTruthy();
 });
 
+// personal-cfo-i93n3.28: the Accounts list at the largest text size on a phone. Everything wraps instead of running off
+// the screen (found by measuring the populated screen with the accessibility tree); a desktop window is unchanged.
+test("the Accounts list wraps its summary, section header, rows and toolbar on a phone (compact-only classes)", async () => {
+  renderWithClient(<AccountsView />);
+  const name = await screen.findByText("Checking");
+  // The summary grid fits as many columns as the text size allows (one at the largest).
+  const stat = screen.getByText("Net worth").closest("div.grid")!;
+  expect(stat.className).toContain("compact:grid-cols-[repeat(auto-fit,minmax(min(100%,10rem),1fr))]");
+  // A row: the name takes its own line, the balance and actions wrap below it, and the text wraps.
+  const row = name.closest("li")!;
+  expect(row.firstElementChild).toHaveClass("compact:flex-wrap");
+  expect(name.closest("button")).toHaveClass("compact:basis-full");
+  expect(name).toHaveClass("compact:whitespace-normal", "compact:[overflow-wrap:anywhere]");
+  // A section header wraps its label, count and subtotal.
+  const header = screen.getByRole("button", { name: /Cash section/ });
+  expect(header).toHaveClass("compact:flex-wrap", "compact:basis-full");
+  expect(header.parentElement).toHaveClass("compact:flex-wrap");
+  // The Update balances button wraps its label instead of overflowing.
+  expect(screen.getByRole("button", { name: /update balances/i })).toHaveClass("compact:whitespace-normal", "compact:max-w-full");
+});
+
 describe("saving several balances reports each row truthfully (g3m.37)", () => {
   const UNKNOWN =
     "Couldn’t confirm whether this balance was saved. Save again and it won’t be added twice.";
