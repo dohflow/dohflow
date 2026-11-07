@@ -4,6 +4,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { VaultStatusDto } from "@/bindings";
 import { useVault, VaultProvider, type TouchIdUnlockResult } from "./useVault";
 
+// v0.4.1 ships with the Touch ID controls off (`vault/touchIdEnabled.ts`); these cases are about the controls themselves, so
+// they run with the flag on. `touchIdHidden.test.tsx` pins the shipped value.
+vi.mock("@/vault/touchIdEnabled", () => ({ TOUCH_ID_ENABLED: true }));
+
 // personal-cfo-xuu (4 of 4): the provider's Touch ID unlock moves the vault status exactly as a
 // password unlock does, and only when the host says the vault is open.
 
