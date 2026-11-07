@@ -293,6 +293,15 @@ pub fn take_staged(
     let Some(staged) = stored.staged else {
         return Ok(None);
     };
+    clear_staged(conn, key_epoch, artifact_id)?;
+    Ok(Some(staged))
+}
+
+fn clear_staged(
+    conn: &Connection,
+    key_epoch: u64,
+    artifact_id: &[u8; 32],
+) -> Result<(), MappingError> {
     let epoch = i64::try_from(key_epoch).map_err(|_| MappingError::Corrupt)?;
     conn.execute(
         "UPDATE sync_artifacts
@@ -302,5 +311,82 @@ pub fn take_staged(
           WHERE key_epoch = ?1 AND sync_artifact_id = ?2",
         params![epoch, artifact_id.as_slice()],
     )?;
-    Ok(Some(staged))
+    Ok(())
+}
+
+/// Why an `attachments` row could not be created from a staged artifact. In every case nothing was
+/// written and the staging is untouched; the caller's transaction is rolled back with its command.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum CreateAttachmentError {
+    /// Nothing is staged for the artifact: no mapping, a batch part, or the staging was already
+    /// consumed. The attach command's `apply` reports `ArtifactMissing` (C.9).
+    #[error("no staged attachment for this artifact")]
+    ArtifactMissing,
+    /// The mapping binds a different logical attachment than the command names.
+    #[error("the artifact binds another attachment than the one named")]
+    WrongAttachment,
+    /// An `attachments` row with this id already exists.
+    #[error("the attachment already exists")]
+    AlreadyExists,
+    /// Another attachment already stores a blob under this name (`attachments.storage_id` is
+    /// unique), so a second row cannot share it.
+    #[error("another attachment already stores this blob")]
+    StorageIdHeld,
+    /// The mapping could not be read or written.
+    #[error(transparent)]
+    Mapping(#[from] MappingError),
+    /// The database refused the insert.
+    #[error("the attachments row could not be written")]
+    Store(#[from] crate::DbError),
+}
+
+/// Create the class-4 `attachments` row for `attachment_id` from the crypto fields staged for
+/// `(key_epoch, artifact_id)` and clear the staging, **in the caller's transaction** (the attach
+/// command's `apply`): afterwards the `attachments` row is the only long-lived copy of the key
+/// material (C.9, B.2 `sync_artifacts`). `created_at` is the caller's, so a replay is deterministic.
+///
+/// # Errors
+/// [`CreateAttachmentError`]; the caller rolls the transaction back, which leaves the staging.
+pub fn create_attachment_from_staged(
+    conn: &Connection,
+    key_epoch: u64,
+    artifact_id: &[u8; 32],
+    attachment_id: core_ledger::AttachmentId,
+    original_filename: Option<&str>,
+    created_at: &str,
+) -> Result<(), CreateAttachmentError> {
+    let stored =
+        lookup(conn, key_epoch, artifact_id)?.ok_or(CreateAttachmentError::ArtifactMissing)?;
+    let staged = stored
+        .staged
+        .ok_or(CreateAttachmentError::ArtifactMissing)?;
+    if stored.mapping.kind != ArtifactKind::Attachment
+        || stored.mapping.logical_id != *attachment_id.as_uuid().as_bytes()
+    {
+        return Err(CreateAttachmentError::WrongAttachment);
+    }
+    if crate::attachments::row_exists(conn, attachment_id)? {
+        return Err(CreateAttachmentError::AlreadyExists);
+    }
+    if crate::attachments::find_id_by_storage_id(conn, &staged.storage_id)?.is_some() {
+        return Err(CreateAttachmentError::StorageIdHeld);
+    }
+    crate::attachments::insert_attachment_fields(
+        conn,
+        attachment_id,
+        &crate::attachments::AttachmentFields {
+            storage_id: &staged.storage_id,
+            wrapped_content_key: &staged.wrapped_content_key,
+            content_key_nonce: &staged.content_key_nonce,
+            content_nonce: &staged.content_nonce,
+            content_alg: &staged.content_alg,
+            plaintext_size: staged.plaintext_size,
+            mime_type: staged.mime_type.as_deref(),
+            original_filename,
+            created_at,
+        },
+    )?;
+    clear_staged(conn, key_epoch, artifact_id)?;
+    Ok(())
 }

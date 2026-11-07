@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use common::{create_account_cmd, meta};
 use db_worker::logical_export::{export_genesis_plaintext, ExportInput};
 use db_worker::sync_artifacts::{
-    lookup, record, record_receipt, take_staged, ArtifactKind, Mapping, StagedAttachment,
+    create_attachment_from_staged, lookup, record, record_receipt, take_staged, ArtifactKind,
+    CreateAttachmentError, Mapping, StagedAttachment,
 };
 use db_worker::{verify_rekeyed_copy, DbWorker};
 use vault_crypto::{
@@ -210,6 +211,18 @@ fn the_genesis_export_excludes_the_mapping() {
 /// staging, as materialization leaves them before the attach command's `apply` has run: the blob is
 /// on disk, and no `attachments` row names it.
 fn vault_with_a_staged_attachment() -> (tempfile::TempDir, PathBuf, Dek, DbWorker, String) {
+    let (dir, path, dek, worker, storage_id, _) = vault_with_a_staged_attachment_and_id();
+    (dir, path, dek, worker, storage_id)
+}
+
+fn vault_with_a_staged_attachment_and_id() -> (
+    tempfile::TempDir,
+    PathBuf,
+    Dek,
+    DbWorker,
+    String,
+    core_ledger::AttachmentId,
+) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("vault.db");
     let dek = generate_dek().unwrap();
@@ -230,7 +243,10 @@ fn vault_with_a_staged_attachment() -> (tempfile::TempDir, PathBuf, Dek, DbWorke
         .unwrap();
     record(
         &conn,
-        &attachment_mapping(ID, 1),
+        &Mapping {
+            logical_id: *id.as_uuid().as_bytes(),
+            ..attachment_mapping(ID, 1)
+        },
         Some(&StagedAttachment {
             storage_id: storage_id.clone(),
             wrapped_content_key: wrapped,
@@ -250,7 +266,7 @@ fn vault_with_a_staged_attachment() -> (tempfile::TempDir, PathBuf, Dek, DbWorke
     .unwrap();
     conn.execute("DELETE FROM attachments WHERE id = ?1", [id.as_uuid()])
         .unwrap();
-    (dir, path, dek, worker, storage_id)
+    (dir, path, dek, worker, storage_id, id)
 }
 
 #[test]
@@ -307,8 +323,14 @@ fn a_rotation_rewraps_and_readdresses_a_staged_attachment_and_nothing_stays_wrap
         ciphertext: fs::read(blobs.join(&fields.storage_id)).unwrap(),
     };
     assert_eq!(decrypt_blob(&content_key, &blob).unwrap(), PDF);
-    // The rest of the row is untouched.
-    assert_eq!(stored.mapping, attachment_mapping(ID, 1));
+    // The rest of the row is untouched: the same address, hash and kind, and the same attachment.
+    assert_eq!(
+        stored.mapping,
+        Mapping {
+            logical_id: stored.mapping.logical_id,
+            ..attachment_mapping(ID, 1)
+        }
+    );
     assert_eq!(fields.plaintext_size, PDF.len() as u64);
     assert_eq!(fields.mime_type.as_deref(), Some("application/pdf"));
 }
@@ -338,4 +360,209 @@ fn a_staged_blob_that_an_attachment_also_holds_is_renamed_once() {
     assert_eq!(renames.len(), 1, "one file, one rename");
     assert_eq!(renames[0].old, old_storage_id);
     drop(dir);
+}
+
+// ---- the receiver's attach: the staging becomes the attachments row ---------------------------------
+
+fn attachment_rows(conn: &rusqlite::Connection) -> i64 {
+    conn.query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn the_attachments_row_is_created_from_the_staging_and_it_becomes_the_only_copy_of_the_key() {
+    let (_dir, _path, _dek, worker, storage_id, id) = vault_with_a_staged_attachment_and_id();
+    let conn = worker.read_connection().unwrap();
+    let before = lookup(&conn, 1, &ID).unwrap().unwrap().staged.unwrap();
+    assert_eq!(attachment_rows(&conn), 0, "apply has not run");
+
+    let tx = conn.unchecked_transaction().unwrap();
+    create_attachment_from_staged(&tx, 1, &ID, id, Some("one.pdf"), "2026-11-08T00:00:00Z")
+        .unwrap();
+    tx.commit().unwrap();
+
+    // The row carries exactly the staged fields.
+    let column = |name: &str| -> rusqlite::types::Value {
+        conn.query_row(
+            &format!("SELECT {name} FROM attachments WHERE id = ?1"),
+            [id.as_uuid()],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let text = |name: &str| match column(name) {
+        rusqlite::types::Value::Text(t) => Some(t),
+        rusqlite::types::Value::Null => None,
+        other => panic!("{name}: {other:?}"),
+    };
+    let blob = |name: &str| match column(name) {
+        rusqlite::types::Value::Blob(b) => b,
+        other => panic!("{name}: {other:?}"),
+    };
+    let integer = |name: &str| match column(name) {
+        rusqlite::types::Value::Integer(i) => i,
+        other => panic!("{name}: {other:?}"),
+    };
+    let stored_storage = text("storage_id").unwrap();
+    let wrapped = blob("wrapped_content_key");
+    let key_nonce = blob("content_key_nonce");
+    let content_nonce = blob("content_nonce");
+    let size = integer("plaintext_size");
+    let mime = text("mime_type");
+    let filename = text("original_filename");
+    let refs = integer("ref_count");
+    let created = text("created_at").unwrap();
+    assert_eq!(stored_storage, storage_id);
+    assert_eq!(wrapped, before.wrapped_content_key);
+    assert_eq!(key_nonce, before.content_key_nonce);
+    assert_eq!(content_nonce, before.content_nonce);
+    assert_eq!(size, before.plaintext_size as i64);
+    assert_eq!(mime.as_deref(), Some("application/pdf"));
+    assert_eq!(filename.as_deref(), Some("one.pdf"));
+    assert_eq!(refs, 0);
+    assert_eq!(created, "2026-11-08T00:00:00Z");
+    // The bytes read back through the normal attachment path.
+    assert_eq!(worker.read_attachment_bytes(id).unwrap(), PDF);
+
+    // Single copy: no column of the mapping row holds the wrapped key or a storage id any more.
+    let staged_left: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_artifacts WHERE staged_storage_id IS NOT NULL
+                OR staged_wrapped_content_key IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(staged_left, 0);
+    let copies: i64 = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM attachments WHERE wrapped_content_key = ?1)
+                  + (SELECT COUNT(*) FROM sync_artifacts WHERE staged_wrapped_content_key = ?1)",
+            [&wrapped],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(copies, 1, "exactly one long-lived copy of the wrapped key");
+    // The mapping itself stays (hash, receipt, kind): it is the no-refetch cache.
+    assert!(lookup(&conn, 1, &ID).unwrap().is_some());
+}
+
+#[test]
+fn a_rolled_back_attach_leaves_the_staging_and_no_row() {
+    let (_dir, _path, _dek, worker, _storage, id) = vault_with_a_staged_attachment_and_id();
+    let conn = worker.read_connection().unwrap();
+    let staged_before = lookup(&conn, 1, &ID).unwrap().unwrap().staged;
+    {
+        let tx = conn.unchecked_transaction().unwrap();
+        create_attachment_from_staged(&tx, 1, &ID, id, None, "t").unwrap();
+        tx.rollback().unwrap();
+    }
+    assert_eq!(attachment_rows(&conn), 0);
+    assert_eq!(
+        lookup(&conn, 1, &ID).unwrap().unwrap().staged,
+        staged_before
+    );
+    // And it can be done again.
+    create_attachment_from_staged(&conn, 1, &ID, id, None, "t").unwrap();
+    assert_eq!(attachment_rows(&conn), 1);
+}
+
+#[test]
+fn every_refusal_writes_nothing_and_keeps_the_staging() {
+    let (_dir, _path, _dek, worker, storage_id, id) = vault_with_a_staged_attachment_and_id();
+    let conn = worker.read_connection().unwrap();
+    let staged_before = lookup(&conn, 1, &ID).unwrap().unwrap().staged;
+    let unchanged = |what: &str| {
+        assert_eq!(attachment_rows(&conn), 0, "{what}: no row");
+        assert_eq!(
+            lookup(&conn, 1, &ID).unwrap().unwrap().staged,
+            staged_before,
+            "{what}: the staging"
+        );
+    };
+
+    // No mapping for the address.
+    assert!(matches!(
+        create_attachment_from_staged(&conn, 1, &OTHER, id, None, "t"),
+        Err(CreateAttachmentError::ArtifactMissing)
+    ));
+    // Another attachment than the one the artifact binds.
+    let other_attachment = core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes([9; 16]));
+    assert!(matches!(
+        create_attachment_from_staged(&conn, 1, &ID, other_attachment, None, "t"),
+        Err(CreateAttachmentError::WrongAttachment)
+    ));
+    unchanged("wrong attachment");
+
+    // Another attachment already stores this blob name.
+    conn.execute(
+        "INSERT INTO attachments (id, storage_id, wrapped_content_key, content_key_nonce,
+                content_nonce, content_alg, plaintext_size, ref_count, created_at)
+         VALUES (zeroblob(16), ?1, x'00', x'00', x'00', 'AES-256-GCM', 1, 0, 't')",
+        [&storage_id],
+    )
+    .unwrap();
+    assert!(matches!(
+        create_attachment_from_staged(&conn, 1, &ID, id, None, "t"),
+        Err(CreateAttachmentError::StorageIdHeld)
+    ));
+    assert_eq!(
+        lookup(&conn, 1, &ID).unwrap().unwrap().staged,
+        staged_before,
+        "storage id held: the staging"
+    );
+    conn.execute("DELETE FROM attachments", []).unwrap();
+
+    // An attachments row with the id exists already.
+    conn.execute(
+        "INSERT INTO attachments (id, storage_id, wrapped_content_key, content_key_nonce,
+                content_nonce, content_alg, plaintext_size, ref_count, created_at)
+         VALUES (?1, 'another', x'00', x'00', x'00', 'AES-256-GCM', 1, 0, 't')",
+        [id.as_uuid()],
+    )
+    .unwrap();
+    assert!(matches!(
+        create_attachment_from_staged(&conn, 1, &ID, id, None, "t"),
+        Err(CreateAttachmentError::AlreadyExists)
+    ));
+    assert_eq!(
+        attachment_rows(&conn),
+        1,
+        "only the row that was already there"
+    );
+    assert_eq!(
+        lookup(&conn, 1, &ID).unwrap().unwrap().staged,
+        staged_before
+    );
+    conn.execute("DELETE FROM attachments", []).unwrap();
+
+    // After a success, a second call has nothing staged.
+    create_attachment_from_staged(&conn, 1, &ID, id, None, "t").unwrap();
+    assert!(matches!(
+        create_attachment_from_staged(&conn, 1, &ID, id, None, "t"),
+        Err(CreateAttachmentError::ArtifactMissing)
+    ));
+    assert_eq!(attachment_rows(&conn), 1);
+}
+
+#[test]
+fn a_batch_part_has_no_attachment_to_create() {
+    let dir = tempfile::tempdir().unwrap();
+    let worker =
+        DbWorker::open_with_raw_key(dir.path().join("vault.db"), generate_dek().unwrap()).unwrap();
+    let conn = worker.read_connection().unwrap();
+    record(
+        &conn,
+        &Mapping {
+            kind: ArtifactKind::BatchPart { index: 0, count: 1 },
+            ..attachment_mapping(ID, 1)
+        },
+        None,
+    )
+    .unwrap();
+    let id = core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes([7; 16]));
+    assert!(matches!(
+        create_attachment_from_staged(&conn, 1, &ID, id, None, "t"),
+        Err(CreateAttachmentError::ArtifactMissing)
+    ));
 }

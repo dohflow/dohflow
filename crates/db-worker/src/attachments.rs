@@ -111,6 +111,18 @@ pub(crate) fn remove_blob(dir: &Path, storage_id: &str) -> Result<(), DbError> {
     }
 }
 
+/// Whether an `attachments` row with `id` exists.
+pub(crate) fn row_exists(conn: &Connection, id: AttachmentId) -> Result<bool, DbError> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM attachments WHERE id = ?1",
+            params![id.as_uuid()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
 /// The attachment id already storing `storage_id`, if any (dedup lookup).
 pub(crate) fn find_id_by_storage_id(
     conn: &Connection,
@@ -126,7 +138,50 @@ pub(crate) fn find_id_by_storage_id(
     Ok(id.map(AttachmentId::from_uuid))
 }
 
-/// Insert a new attachment metadata row (ref_count starts at 0; links bump it).
+/// The columns of an `attachments` row that its writers supply (`ref_count` starts at 0; links
+/// bump it).
+pub(crate) struct AttachmentFields<'a> {
+    pub storage_id: &'a str,
+    pub wrapped_content_key: &'a [u8],
+    pub content_key_nonce: &'a [u8],
+    pub content_nonce: &'a [u8],
+    pub content_alg: &'a str,
+    pub plaintext_size: u64,
+    pub mime_type: Option<&'a str>,
+    pub original_filename: Option<&'a str>,
+    pub created_at: &'a str,
+}
+
+/// Insert a new attachment metadata row (ref_count starts at 0; links bump it). The one statement
+/// that creates an `attachments` row: the import path and the receiver's staged path share it.
+pub(crate) fn insert_attachment_fields(
+    conn: &Connection,
+    id: AttachmentId,
+    fields: &AttachmentFields<'_>,
+) -> Result<(), DbError> {
+    conn.execute(
+        "INSERT INTO attachments (
+            id, storage_id, wrapped_content_key, content_key_nonce, content_nonce,
+            content_alg, plaintext_size, mime_type, original_filename, ref_count,
+            created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)",
+        params![
+            id.as_uuid(),
+            fields.storage_id,
+            fields.wrapped_content_key,
+            fields.content_key_nonce,
+            fields.content_nonce,
+            fields.content_alg,
+            i64::try_from(fields.plaintext_size).unwrap_or(i64::MAX),
+            fields.mime_type,
+            fields.original_filename,
+            fields.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Insert a new attachment metadata row for freshly imported bytes (ref_count starts at 0).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn insert_attachment(
     conn: &Connection,
@@ -138,26 +193,21 @@ pub(crate) fn insert_attachment(
     mime_type: Option<&str>,
     original_filename: Option<&str>,
 ) -> Result<(), DbError> {
-    conn.execute(
-        "INSERT INTO attachments (
-            id, storage_id, wrapped_content_key, content_key_nonce, content_nonce,
-            content_alg, plaintext_size, mime_type, original_filename, ref_count,
-            created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)",
-        params![
-            id.as_uuid(),
-            storage_id.as_str(),
-            wrapped.ciphertext,
-            wrapped.nonce.as_slice(),
-            content_nonce.as_slice(),
-            CONTENT_ALG,
-            i64::try_from(plaintext_size).unwrap_or(i64::MAX),
+    insert_attachment_fields(
+        conn,
+        id,
+        &AttachmentFields {
+            storage_id: storage_id.as_str(),
+            wrapped_content_key: &wrapped.ciphertext,
+            content_key_nonce: wrapped.nonce.as_slice(),
+            content_nonce: content_nonce.as_slice(),
+            content_alg: CONTENT_ALG,
+            plaintext_size,
             mime_type,
             original_filename,
-            Utc::now().to_rfc3339(),
-        ],
-    )?;
-    Ok(())
+            created_at: &Utc::now().to_rfc3339(),
+        },
+    )
 }
 
 /// Insert a link from a domain entity to an attachment.
