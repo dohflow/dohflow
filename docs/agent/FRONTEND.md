@@ -571,8 +571,10 @@ on a desktop window, and a test proves each.
   Within-session state lifting (a destination keeping its filters across a visit elsewhere) is
   `personal-cfo-i93n3.27`, not this.
 
-- **Dashboard and Cash Flow on a phone** (personal-cfo-i93n3.27, slice A: layout). Structure that differs on a compact
-  screen is done with the `compact:` variant (CSS), not a hook: the Cash Flow chart card's header stacks (the
+- **Dashboard and Cash Flow on a phone** (personal-cfo-i93n3.27, slice A: layout). The rule, stated once: **rearranging the same
+  elements** (stacking, wrapping, widths) uses the `compact:` variant (CSS); **a different element tree** (a swapped
+  component, like the sidebar versus `CompactNavBar`) uses `useCompactLayout()`; neither adds a second width
+  query. Here the Cash Flow chart card's header stacks (the
   controls under the title and description, not in a narrow column beside them), the scenario bar's label sits over a
   full-width select with full-width action buttons, the page title and horizon control wrap when they do not fit,
   the Forecast readiness card's next action takes its own line and **wraps instead of truncating**, and the
