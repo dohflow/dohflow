@@ -28,7 +28,10 @@ import { ConnectionAttentionNotice } from "@/settings/connections/ConnectionAtte
 import { useAccounts } from "@/accounts/useAccounts";
 import { useVault } from "@/vault/useVault";
 import { GlobalSearch } from "@/search/GlobalSearch";
+import { useCompactLayout } from "@/lib/compact";
 import { SAFE_AREA_PADDING } from "@/lib/safeArea";
+import { cn } from "@/lib/utils";
+import { CompactNavBar } from "./CompactNav";
 import { Sidebar, type Tab } from "./Sidebar";
 
 /// The unlocked app shell: a collapsible left sidebar (personal-cfo-sbm3) over the
@@ -45,6 +48,9 @@ export function UnlockedHome() {
   // from the Scenarios tab (ADR 0051 §5).
   const [cashFlowScenario, setCashFlowScenario] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  // A narrow touch screen swaps the persistent sidebar for the compact navigation (slice C of
+  // personal-cfo-i93n3.25): a Sections / Search / Lock bar above the page and a full-screen Sections dialog.
+  const compact = useCompactLayout();
   // The inbox count feeds the sidebar badge (ADR 0049 §1). Cache-shared with the inbox
   // surface's own query (same key), so this adds no extra round-trip.
   const { items: inboxItems } = useMoneyInbox();
@@ -112,22 +118,39 @@ export function UnlockedHome() {
     // (h-dvh + overflow-hidden), so the sidebar stays full-height and its
     // bottom-pinned items never get pushed below a tall content pane (personal-cfo-4d8.9).
     <NoticeProvider>
-    <div className={`flex h-dvh overflow-hidden bg-background ${SAFE_AREA_PADDING}`}>
-      <Sidebar
-        tab={tab}
-        onSelect={setTab}
-        collapsed={collapsed}
-        onToggleCollapse={() => setCollapsed((value) => !value)}
-        onOpenSearch={() => setSearching(true)}
-        onLock={onLock}
-        locking={locking}
-        inboxCount={inboxItems?.length ?? 0}
-      />
+    <div
+      className={cn(
+        "flex h-dvh overflow-hidden bg-background",
+        compact && "flex-col",
+        SAFE_AREA_PADDING,
+      )}
+    >
+      {compact ? (
+        <CompactNavBar
+          tab={tab}
+          onSelect={setTab}
+          onOpenSearch={() => setSearching(true)}
+          onLock={onLock}
+          locking={locking}
+          inboxCount={inboxItems?.length ?? 0}
+        />
+      ) : (
+        <Sidebar
+          tab={tab}
+          onSelect={setTab}
+          collapsed={collapsed}
+          onToggleCollapse={() => setCollapsed((value) => !value)}
+          onOpenSearch={() => setSearching(true)}
+          onLock={onLock}
+          locking={locking}
+          inboxCount={inboxItems?.length ?? 0}
+        />
+      )}
       {/* `relative` makes this scroll pane the containing block for absolutely positioned
           descendants. Without it, an `sr-only` label (position: absolute) has no positioned ancestor,
           escapes this pane's clipping, and stretches the DOCUMENT's scroll area: Settings with linked
           accounts then showed a second scrollbar and moved the sidebar (personal-cfo-twpo.1). */}
-      <main className="relative flex-1 overflow-y-auto px-6 py-8">
+      <main className={cn("relative flex-1 overflow-y-auto px-6 py-8", compact && "px-4 py-4")}>
         {/* First in main: the tab order reaches an Undo before the page content (FRONTEND.md 6.2). */}
         <NotificationsRegion />
         <ConnectionAttentionNotice />

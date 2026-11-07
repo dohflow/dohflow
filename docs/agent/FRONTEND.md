@@ -550,6 +550,27 @@ on a desktop window, and a test proves each.
   are migrated to the shared `Dialog` under `personal-cfo-4d8.6.2`, not here; until then they
   stay centered cards that still get the 44 pt floor.
 
+- **Compact navigation.** On a compact screen the persistent sidebar is replaced (`UnlockedHome` reads
+  `useCompactLayout()`; structure that differs uses the hook, never a second width query) by
+  `CompactNavBar` (`src/vault/screens/CompactNav.tsx`): a bar above the page with **Sections**, **Search**
+  and **Lock**, and a full-screen **Sections** dialog (the shared `Dialog` with `COMPACT_FULLSCREEN`, so
+  the page behind it is inert and hidden from assistive technology). The dialog lists every destination
+  in the sidebar's groups and order (`GROUPS`, `NAV`, exported from `Sidebar.tsx`: Overview, Planning,
+  Review, then Settings); the current one carries a check mark, a selected surface and
+  `aria-current="page"`; the Money Inbox row speaks its pending count. Focus starts at Close; Escape or
+  Close dismiss WITHOUT navigating and return focus to the Sections button; choosing a destination
+  dismisses, changes the destination and focuses that destination's heading (`focusDestinationHeading`,
+  the first `h1` or `h2` in `main`, made programmatically focusable). At an ordinary text size the bar
+  holds word buttons; at an accessibility text size (the root font size, `useLargeText()`, 28px and up: it
+  cannot be a media query, because `rem` there is the browser's default, not the root size set for
+  Dynamic Type) it holds icon buttons in at least 48-point targets (`min-h-12 min-w-12`) named Sections,
+  Search and Lock. The page keeps its own scroll pane and a narrower padding. Desktop is unchanged: the
+  sidebar, no bar. The Sections button carries `aria-expanded` but **never** `aria-haspopup="dialog"`: iOS
+  exposes that as a pop-up (menu) button, which is announced as one and is not found as a button by assistive
+  technology or a UI test (found on the simulator; a test pins it). The new copy is the word "Sections" and the generic Close; nothing else was added.
+  Within-session state lifting (a destination keeping its filters across a visit elsewhere) is
+  `personal-cfo-i93n3.27`, not this.
+
 ## 8. Testing
 
 - Each view gets a **Vitest + Testing Library** behavioral test that mocks

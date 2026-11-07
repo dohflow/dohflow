@@ -47,3 +47,17 @@ export const COMPACT_DRAWER_CLEARS_CHROME = [
   "compact:pr-(--safe-area-right)",
   "compact:pb-[max(var(--safe-area-bottom),var(--keyboard-inset))]",
 ].join(" ");
+
+/// A full-screen presentation of the shared dialog on a compact screen, for the navigation dialog
+/// (personal-cfo-i93n3.25 slice C): pass it as `className` to `DialogContent`, after `COMPACT_SHEET`'s
+/// classes, so each of these wins over the sheet's (same variant, same property; tailwind-merge keeps
+/// the last). It fills the screen, with the device chrome cleared on every edge (the sheet already
+/// pads the sides and the bottom; this adds the top) and no rounded corners.
+export const COMPACT_FULLSCREEN = [
+  "compact:top-0",
+  "compact:h-dvh",
+  "compact:max-h-dvh",
+  "compact:rounded-none",
+  "compact:border-0",
+  "compact:pt-(--safe-area-top)",
+].join(" ");
