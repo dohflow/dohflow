@@ -196,6 +196,7 @@ export function DebtPayoffCompare({ accountIds }: { accountIds?: string[] } = {}
           rows={plans ?? []}
           rowKey={(plan) => plan.strategy}
           label="Debt payoff plans by approach"
+          phoneLayout="stacked"
           // "ready" is gated on plans having actually ARRIVED, not on `loading` being
           // false. `isLoading` is false for a query TanStack has paused, and a paused
           // query with no data would otherwise render as "no revolving debt" — telling
