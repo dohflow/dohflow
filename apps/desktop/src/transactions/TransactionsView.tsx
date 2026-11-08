@@ -46,12 +46,8 @@ import {
 } from "@/components/ui/data-table";
 import { PAGE_SIZE_OPTIONS } from "@/lib/usePagination";
 import { cn } from "@/lib/utils";
-<<<<<<< HEAD
-import { useAttachmentAccept } from "./attachmentAccept";
-import { useCoarsePointer } from "@/lib/compact";
-=======
 import { useAttachmentAccept, useFileCancelFocus } from "./attachmentAccept";
->>>>>>> agent/personal-cfo-i93n3.28-attachments
+import { useCoarsePointer } from "@/lib/compact";
 import { useTags } from "@/tags/useTags";
 import { findLoanOverlap } from "@/bills/findLoanOverlap";
 import { LoanOverlapPanel } from "@/bills/LoanOverlapPanel";
