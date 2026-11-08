@@ -314,9 +314,11 @@ describe("TransactionsView", () => {
       const grid = amount.closest("div.grid")!;
       expect(grid.className).toContain("compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]");
       expect(grid.className).toContain("grid-cols-2");
-      // Its cells may shrink below their content (a date field is wide at the largest text size), and the date field is capped.
+      // Its cells may shrink below their content (a date field is wide at the largest text size), and the date field's text is capped.
       expect(grid.className).toContain("compact:[&>*]:min-w-0");
-      expect(screen.getByLabelText("Date")).toHaveClass("compact:min-w-0", "compact:max-w-full");
+      // (WebKit keeps a date field at its intrinsic width whatever `min-width` says, and that width follows the font size, so
+      // the size is capped by the window width.)
+      expect(screen.getByLabelText("Date")).toHaveClass("compact:max-w-full", "compact:text-[min(0.875rem,4.5vw)]");
       const submit = screen.getByRole("button", { name: "Add transaction", description: "" , hidden: false });
       expect(submit.closest("form")!.querySelector("div.justify-end")).toHaveClass("compact:flex-wrap");
     });
