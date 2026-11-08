@@ -26,6 +26,7 @@ import {
   signedAmountClass,
 } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { useAttachmentAccept } from "./attachmentAccept";
 import { categoryLabels } from "@/categories/labels";
 import { CategoryCombobox } from "@/categories/CategoryCombobox";
 import { CreateCategoryDialog } from "@/categories/CreateCategoryDialog";
@@ -110,6 +111,7 @@ export function TransactionDetailDrawer({
   const setSplits = useSetSplits();
   const [splitting, setSplitting] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const attachmentAccept = useAttachmentAccept();
   const [actionError, setActionError] = useState<string | null>(null);
   // Optimistic category so the picker reflects the choice immediately while the
   // list refetches in the background (the `transaction` prop is a snapshot).
@@ -618,6 +620,7 @@ export function TransactionDetailDrawer({
           <input
             ref={fileInput}
             type="file"
+            accept={attachmentAccept}
             className="sr-only"
             aria-label="Choose a document to attach"
             onChange={onPickFile}

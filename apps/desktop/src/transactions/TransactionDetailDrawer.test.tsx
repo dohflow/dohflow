@@ -155,6 +155,26 @@ describe("TransactionDetailDrawer", () => {
     ).toBeInTheDocument();
   });
 
+  it("the attachment picker accepts the touch set on a touch device and nothing on a desktop pointer (personal-cfo-i93n3.28)", async () => {
+    renderDrawer();
+    expect(await screen.findByLabelText("Choose a document to attach")).not.toHaveAttribute("accept");
+  });
+
+  it("on a touch device the attachment picker accepts images, documents and text only", async () => {
+    vi.stubGlobal("matchMedia", ((query: string) => ({
+      matches: query === "(pointer: coarse)",
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia);
+    try {
+      renderDrawer();
+      expect(await screen.findByLabelText("Choose a document to attach")).toHaveAttribute("accept", "image/*,application/*,text/*");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("lists attachments with their name and size", async () => {
     mocks.transactionAttachments.mockResolvedValue(ok([doc()]));
     renderDrawer();

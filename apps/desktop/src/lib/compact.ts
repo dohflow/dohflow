@@ -39,3 +39,13 @@ export function useCompactLayout(): boolean {
     () => false,
   );
 }
+
+/// Whether a touch pointer is the primary pointer right now, and re-rendered when it changes. Unlike
+/// [`useCompactLayout`] it does not depend on the width, so a phone turned to landscape still counts.
+export function useCoarsePointer(): boolean {
+  return useSyncExternalStore(
+    (onChange) => subscribe(COARSE_POINTER_QUERY, onChange),
+    () => matches(COARSE_POINTER_QUERY),
+    () => false,
+  );
+}

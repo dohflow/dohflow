@@ -318,6 +318,21 @@ describe("TransactionsView", () => {
       expect(submit.closest("form")!.querySelector("div.justify-end")).toHaveClass("compact:flex-wrap");
     });
 
+    it("the Add transaction attachment picker accepts the touch set (and none on a desktop pointer)", async () => {
+      vi.stubGlobal("matchMedia", ((query: string) => ({
+        matches: query === COMPACT_QUERY || query === "(pointer: coarse)",
+        media: query,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      })) as unknown as typeof window.matchMedia);
+      mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
+      renderWithClient(<TransactionsView />);
+      await screen.findByText(/\+\$?150/);
+      fireEvent.click(screen.getByRole("button", { name: /Add transaction/ }));
+      fireEvent.click(await screen.findByRole("button", { name: /Add details/i }));
+      expect(await screen.findByLabelText("Attach documents")).toHaveAttribute("accept", "image/*,application/*,text/*");
+    });
+
     it("keeps the horizontal table on a desktop window", async () => {
       mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
       renderWithClient(<TransactionsView />);
