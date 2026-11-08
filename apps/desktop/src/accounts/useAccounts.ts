@@ -50,8 +50,8 @@ export function useAccounts() {
     },
   });
   const archiveMutation = useMutation({
-    mutationFn: (accountId: string) =>
-      commands.archiveAccount(accountId, mintIdempotencyKey()),
+    mutationFn: ({ accountId, idempotencyKey }: { accountId: string; idempotencyKey?: string }) =>
+      commands.archiveAccount(accountId, idempotencyKey ?? mintIdempotencyKey()),
     onSuccess: (result) => {
       if (result.status === "ok") {
         invalidate();
@@ -121,8 +121,10 @@ export function useAccounts() {
     [updateMutation],
   );
   const archiveAccount = useCallback(
-    async (accountId: string): Promise<IpcError | null> => {
-      const result = await archiveMutation.mutateAsync(accountId);
+    // `idempotencyKey`: a caller that retries after an outcome it could not confirm passes the SAME key, so the host
+    // replays the first attempt instead of archiving twice (accounts/archiveFlow.ts).
+    async (accountId: string, idempotencyKey?: string): Promise<IpcError | null> => {
+      const result = await archiveMutation.mutateAsync({ accountId, idempotencyKey });
       return result.status === "ok" ? null : result.error;
     },
     [archiveMutation],

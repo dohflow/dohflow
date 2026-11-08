@@ -281,6 +281,21 @@ describe("the archive question on a phone (personal-cfo-i93n3.28; AA-1 AA04)", (
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   });
 
+  it("a retry after an unknown outcome sends the SAME idempotency key to the host (end to end through the view)", async () => {
+    mocks.archiveAccount.mockRejectedValueOnce(new Error("connection lost after the host committed"));
+    mocks.archiveAccount.mockResolvedValueOnce(ok({ op_seq: 1, replayed: true }));
+    const { dialog } = await open();
+    fireEvent.click(screen.getByRole("button", { name: /Confirm archive Checking/i }));
+    await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/Couldn.t confirm whether the account was archived/));
+    fireEvent.click(screen.getByRole("button", { name: /Confirm archive Checking/i }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(mocks.archiveAccount).toHaveBeenCalledTimes(2);
+    const [first, second] = mocks.archiveAccount.mock.calls;
+    expect(second![1]).toBe(first![1]);
+    // Archived once, with no error left on the screen.
+    expect(screen.queryByText(/Couldn.t confirm/)).toBeNull();
+  });
+
   it("an archive that threw is an unknown outcome and stays in the sheet", async () => {
     mocks.archiveAccount.mockRejectedValue(new Error("connection lost"));
     const { dialog } = await open();

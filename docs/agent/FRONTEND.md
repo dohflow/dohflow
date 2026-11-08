@@ -597,7 +597,7 @@ on a desktop window, and a test proves each.
   announced error (`DialogError`, so it is read once, not also under the row), the sheet stays open, and Archive can be
   tried again or Cancel leaves. It closes when the archive worked (`useArchiveFlow.confirmInSheet`). Closing returns focus
   to the exact control that opened it (`triggerRef`; a phone does not focus a tapped button), else, when the archive removed
-  that row, to the nearest row that survives, else the section's own toggle. An account that moves no forecast (a card, a
+  that row, to the nearest row that survives, else the section's own toggle. **A retry after an outcome nobody could confirm is safe**: the attempt whose call threw keeps its idempotency key and the next attempt for that account reuses it, so a first attempt that did commit is replayed by the host (one archive, no error, no second log entry); a confirmed result, archived or refused, drops the key. An account that moves no forecast (a card, a
   zero balance) still archives in one tap. The desktop keeps the inline notice.
 
 ## 8. Testing
