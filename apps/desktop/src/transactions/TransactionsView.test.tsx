@@ -324,6 +324,24 @@ describe("TransactionsView", () => {
       expect(submit.closest("form")!.querySelector("div.justify-end")).toHaveClass("compact:flex-wrap");
     });
 
+    it("a phone's Add transaction writes through the SAME record command with the same input as the desktop (AC2)", async () => {
+      compactScreen();
+      mocks.transactionPage.mockImplementationOnce((input: TransactionPageInput) => Promise.resolve(pageResult([], input)));
+      mockTransactionPage([txn()]);
+      renderWithClient(<TransactionsView />);
+      fireEvent.click(await screen.findByRole("button", { name: /add transaction/i }));
+      fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "40" } });
+      fireEvent.change(screen.getByLabelText(/date/i), { target: { value: "2026-06-05" } });
+      fireEvent.click(screen.getByRole("button", { name: /add transaction/i }));
+      await screen.findByText("Checking");
+      expect(mocks.recordTransaction).toHaveBeenCalledTimes(1);
+      const input = mocks.recordTransaction.mock.calls[0]?.[0];
+      // The very values the desktop test above asserts: nothing about the phone changes what is written.
+      expect(input.amount.minor_units).toBe(-4000);
+      expect(input.account_id).toBe(account().id);
+      expect(input.occurred_at).toBe("2026-06-05T00:00:00Z");
+    });
+
     it("keeps the horizontal table on a desktop window", async () => {
       mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
       renderWithClient(<TransactionsView />);
