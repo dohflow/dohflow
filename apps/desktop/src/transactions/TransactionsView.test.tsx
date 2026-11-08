@@ -304,6 +304,44 @@ describe("TransactionsView", () => {
       expect(screen.getByRole("combobox", { name: "Sort transactions" }).parentElement).toHaveClass("compact:flex-1");
     });
 
+    it("the Add transaction form fits as many columns as the text size allows and wraps its action row (compact-only)", async () => {
+      compactScreen();
+      mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
+      renderWithClient(<TransactionsView />);
+      await screen.findByText(/\+\$?150/);
+      fireEvent.click(screen.getByRole("button", { name: /Add transaction/ }));
+      const amount = await screen.findByLabelText("Amount");
+      const grid = amount.closest("div.grid")!;
+      expect(grid.className).toContain("compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]");
+      expect(grid.className).toContain("grid-cols-2");
+      // Its cells may shrink below their content (a date field is wide at the largest text size), and the date field's text is capped.
+      expect(grid.className).toContain("compact:[&>*]:min-w-0");
+      // (iOS WebKit gives a native date field an intrinsic minimum width that `min-width` cannot lower, which measured at 328 pt
+      // in a 230 pt column at the largest text size; without its native appearance it takes the column's width and still opens
+      // the system date picker.)
+      expect(screen.getByLabelText("Date")).toHaveClass("compact:max-w-full", "compact:appearance-none");
+      const submit = screen.getByRole("button", { name: "Add transaction", description: "" , hidden: false });
+      expect(submit.closest("form")!.querySelector("div.justify-end")).toHaveClass("compact:flex-wrap");
+    });
+
+    it("a phone's Add transaction writes through the SAME record command with the same input as the desktop (AC2)", async () => {
+      compactScreen();
+      mocks.transactionPage.mockImplementationOnce((input: TransactionPageInput) => Promise.resolve(pageResult([], input)));
+      mockTransactionPage([txn()]);
+      renderWithClient(<TransactionsView />);
+      fireEvent.click(await screen.findByRole("button", { name: /add transaction/i }));
+      fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: "40" } });
+      fireEvent.change(screen.getByLabelText(/date/i), { target: { value: "2026-06-05" } });
+      fireEvent.click(screen.getByRole("button", { name: /add transaction/i }));
+      await screen.findByText("Checking");
+      expect(mocks.recordTransaction).toHaveBeenCalledTimes(1);
+      const input = mocks.recordTransaction.mock.calls[0]?.[0];
+      // The very values the desktop test above asserts: nothing about the phone changes what is written.
+      expect(input.amount.minor_units).toBe(-4000);
+      expect(input.account_id).toBe(account().id);
+      expect(input.occurred_at).toBe("2026-06-05T00:00:00Z");
+    });
+
     it("keeps the horizontal table on a desktop window", async () => {
       mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
       renderWithClient(<TransactionsView />);
