@@ -520,6 +520,8 @@ on a desktop window, and a test proves each.
   closed value is cut off sideways at that size ("US I"): on a narrow card show the selected label as
   plain text under it (`hidden compact:@max-[15rem]:block`, `aria-hidden`, because the select already
   announces its own value) and keep the native control for choosing; the primitive itself changes with the touch-target slice.
+  A native `<input type="date">` is the same kind of control and the other way round: WebKit gives it an intrinsic minimum width (328 pt at the largest text size) that `min-width` and a smaller font size cannot lower, so on compact it takes `appearance-none`, keeps its column's width, and still opens the system date picker.
+- **Input capability or layout?** A rule about what a device can do (a file picker's `accept`, the keyboard) keys to the touch pointer with `useCoarsePointer()`; a rule about the shape of the screen keys to `compact` (`useCompactLayout()` or the `compact:` variant). A phone turned to landscape is wider than the compact breakpoint but is still a touch device, so a capability rule keyed to `compact` would reach the unrestricted path there: the attachment pickers (`transactions/attachmentAccept.ts`) accept `image/*,application/*,text/*` on a touch pointer (no video or audio, so no microphone prompt) and nothing on a desktop pointer.
 - **Touch targets: a fixed 44 pt floor.** On a compact screen every control a finger can press is at
   least 44 by 44 points. The floor lives in one place, `globals.css`, in the compact media query and
   OUTSIDE every cascade layer: `min-height: 44px` on `button`, `[role="button"]`, `[role="menuitem"]`,
