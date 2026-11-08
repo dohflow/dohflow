@@ -324,6 +324,45 @@ describe("TransactionsView", () => {
       expect(submit.closest("form")!.querySelector("div.justify-end")).toHaveClass("compact:flex-wrap");
     });
 
+    it("the Add transaction attachment picker accepts the touch set (and none on a desktop pointer)", async () => {
+      vi.stubGlobal("matchMedia", ((query: string) => ({
+        matches: query === COMPACT_QUERY || query === "(pointer: coarse)",
+        media: query,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      })) as unknown as typeof window.matchMedia);
+      mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
+      renderWithClient(<TransactionsView />);
+      await screen.findByText(/\+\$?150/);
+      fireEvent.click(screen.getByRole("button", { name: /Add transaction/ }));
+      fireEvent.click(await screen.findByRole("button", { name: /Add details/i }));
+      expect(await screen.findByLabelText("Attach documents")).toHaveAttribute("accept", "image/*,application/*,text/*");
+    });
+
+    it("cancelling the file sheet returns focus to Attach documents, and staging a large file reads nothing yet (AC5)", async () => {
+      compactScreen();
+      mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
+      renderWithClient(<TransactionsView />);
+      await screen.findByText(/\+\$?150/);
+      fireEvent.click(screen.getByRole("button", { name: /Add transaction/ }));
+      fireEvent.click(await screen.findByRole("button", { name: /Add details/i }));
+      const input = await screen.findByLabelText("Attach documents");
+      const trigger = screen.getByRole("button", { name: /Attach documents/ });
+      act(() => {
+        input.dispatchEvent(new Event("cancel"));
+      });
+      expect(trigger).toHaveFocus();
+      // A 32 MB file is only STAGED (its name and size listed) and its bytes are not read until the form is submitted, so
+      // picking it cannot hold up the interface.
+      const big = new File([new Uint8Array(8)], "big-scan.pdf", { type: "application/pdf" });
+      Object.defineProperty(big, "size", { value: 32 * 1024 * 1024 });
+      const read = vi.fn(() => Promise.resolve(new ArrayBuffer(8)));
+      big.arrayBuffer = read;
+      fireEvent.change(input, { target: { files: [big] } });
+      expect(await screen.findByText("big-scan.pdf")).toBeInTheDocument();
+      expect(read).not.toHaveBeenCalled();
+    });
+
     it("a phone's Add transaction writes through the SAME record command with the same input as the desktop (AC2)", async () => {
       compactScreen();
       mocks.transactionPage.mockImplementationOnce((input: TransactionPageInput) => Promise.resolve(pageResult([], input)));

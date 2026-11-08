@@ -46,6 +46,7 @@ import {
 } from "@/components/ui/data-table";
 import { PAGE_SIZE_OPTIONS } from "@/lib/usePagination";
 import { cn } from "@/lib/utils";
+import { useAttachmentAccept, useFileCancelFocus } from "./attachmentAccept";
 import { useTags } from "@/tags/useTags";
 import { findLoanOverlap } from "@/bills/findLoanOverlap";
 import { LoanOverlapPanel } from "@/bills/LoanOverlapPanel";
@@ -1213,6 +1214,9 @@ function AddTransactionForm({
   // Checking, recording or creating: anything the person sent that has not answered yet.
   const pending = isSubmitting || creatingBill;
   const filePicker = useRef<HTMLInputElement>(null);
+  const attachmentAccept = useAttachmentAccept();
+  const attachTrigger = useRef<HTMLButtonElement>(null);
+  useFileCancelFocus(filePicker, attachTrigger);
   function onPickFiles(event: ChangeEvent<HTMLInputElement>) {
     const picked = Array.from(event.target.files ?? []);
     event.target.value = ""; // let the user re-pick the same file later (mirrors the drawer)
@@ -1649,12 +1653,14 @@ function AddTransactionForm({
                       <input
                         ref={filePicker}
                         type="file"
+                        accept={attachmentAccept}
                         multiple
                         className="sr-only"
                         aria-label="Attach documents"
                         onChange={onPickFiles}
                       />
                       <Button
+                        ref={attachTrigger}
                         type="button"
                         variant="outline"
                         size="sm"
