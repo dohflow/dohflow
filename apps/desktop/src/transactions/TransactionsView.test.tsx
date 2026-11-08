@@ -381,6 +381,36 @@ describe("TransactionsView", () => {
       expect(input.occurred_at).toBe("2026-06-05T00:00:00Z");
     });
 
+    it("hides Export CSV on a touch device (no verified iOS destination yet) and keeps it on a desktop pointer (AC6)", async () => {
+      vi.stubGlobal("matchMedia", ((query: string) => ({
+        matches: query === COMPACT_QUERY || query === "(pointer: coarse)",
+        media: query,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      })) as unknown as typeof window.matchMedia);
+      mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
+      const { unmount } = renderWithClient(<TransactionsView />);
+      await screen.findByText(/\+\$?150/);
+      expect(screen.getByRole("button", { name: /Add transaction/ })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /export/i })).toBeNull();
+      unmount();
+      // A phone turned to landscape: touch pointer but wider than the compact breakpoint. The capability rule still applies.
+      vi.stubGlobal("matchMedia", ((query: string) => ({
+        matches: query === "(pointer: coarse)",
+        media: query,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      })) as unknown as typeof window.matchMedia);
+      const landscape = renderWithClient(<TransactionsView />);
+      await screen.findByText(/\+\$?150/);
+      expect(screen.queryByRole("button", { name: /export/i })).toBeNull();
+      landscape.unmount();
+      vi.unstubAllGlobals();
+      renderWithClient(<TransactionsView />);
+      await screen.findByText(/\+\$?150/);
+      expect(screen.getByRole("button", { name: /export/i })).toBeInTheDocument();
+    });
+
     it("keeps the horizontal table on a desktop window", async () => {
       mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
       renderWithClient(<TransactionsView />);

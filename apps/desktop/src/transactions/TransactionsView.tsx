@@ -47,6 +47,7 @@ import {
 import { PAGE_SIZE_OPTIONS } from "@/lib/usePagination";
 import { cn } from "@/lib/utils";
 import { useAttachmentAccept, useFileCancelFocus } from "./attachmentAccept";
+import { useCoarsePointer } from "@/lib/compact";
 import { useTags } from "@/tags/useTags";
 import { findLoanOverlap } from "@/bills/findLoanOverlap";
 import { LoanOverlapPanel } from "@/bills/LoanOverlapPanel";
@@ -377,6 +378,10 @@ export function TransactionsView({
   );
   const scopeCurrency = rows[0]?.amount.currency ?? "USD";
 
+  // CSV export is not offered on a touch device until a verified iOS destination exists (its own bead): the phone UI hides
+  // Export rather than show a control that fails (personal-cfo-i93n3.28 AC6).
+  const touchDevice = useCoarsePointer();
+
   // The table's column definitions (personal-cfo-4d8.27.4.2). Declaring them here rather
   // than inlining JSX rows means the header, the body cells and the expander's span all
   // derive from ONE list — adding a column cannot leave them out of step.
@@ -606,7 +611,7 @@ export function TransactionsView({
                 Auto-categorize
               </Button>
             )}
-            {total !== undefined && total > 0 && <ExportCsvButton />}
+            {total !== undefined && total > 0 && !touchDevice && <ExportCsvButton />}
             {canTransfer && (
               <Button
                 size="sm"
