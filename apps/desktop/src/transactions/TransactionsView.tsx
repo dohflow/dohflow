@@ -46,8 +46,12 @@ import {
 } from "@/components/ui/data-table";
 import { PAGE_SIZE_OPTIONS } from "@/lib/usePagination";
 import { cn } from "@/lib/utils";
+<<<<<<< HEAD
 import { useAttachmentAccept } from "./attachmentAccept";
 import { useCoarsePointer } from "@/lib/compact";
+=======
+import { useAttachmentAccept, useFileCancelFocus } from "./attachmentAccept";
+>>>>>>> agent/personal-cfo-i93n3.28-attachments
 import { useTags } from "@/tags/useTags";
 import { findLoanOverlap } from "@/bills/findLoanOverlap";
 import { LoanOverlapPanel } from "@/bills/LoanOverlapPanel";
@@ -378,13 +382,13 @@ export function TransactionsView({
   );
   const scopeCurrency = rows[0]?.amount.currency ?? "USD";
 
-  // The table's column definitions (personal-cfo-4d8.27.4.2). Declaring them here rather
-  // than inlining JSX rows means the header, the body cells and the expander's span all
-  // derive from ONE list — adding a column cannot leave them out of step.
   // CSV export is not offered on a touch device until a verified iOS destination exists (its own bead): the phone UI hides
   // Export rather than show a control that fails (personal-cfo-i93n3.28 AC6).
   const touchDevice = useCoarsePointer();
 
+  // The table's column definitions (personal-cfo-4d8.27.4.2). Declaring them here rather
+  // than inlining JSX rows means the header, the body cells and the expander's span all
+  // derive from ONE list — adding a column cannot leave them out of step.
   const transactionColumns: DataTableColumn<TransactionRowDto>[] = [
     {
       key: "select",
@@ -1220,6 +1224,8 @@ function AddTransactionForm({
   const pending = isSubmitting || creatingBill;
   const filePicker = useRef<HTMLInputElement>(null);
   const attachmentAccept = useAttachmentAccept();
+  const attachTrigger = useRef<HTMLButtonElement>(null);
+  useFileCancelFocus(filePicker, attachTrigger);
   function onPickFiles(event: ChangeEvent<HTMLInputElement>) {
     const picked = Array.from(event.target.files ?? []);
     event.target.value = ""; // let the user re-pick the same file later (mirrors the drawer)
@@ -1663,6 +1669,7 @@ function AddTransactionForm({
                         onChange={onPickFiles}
                       />
                       <Button
+                        ref={attachTrigger}
                         type="button"
                         variant="outline"
                         size="sm"
