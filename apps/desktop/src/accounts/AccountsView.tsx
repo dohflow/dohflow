@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -171,7 +171,7 @@ export function AccountsView() {
 
       {hasAccounts && (
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <label className="mr-auto flex h-8 cursor-pointer items-center gap-2 rounded-md border px-2.5 text-xs font-medium text-muted-foreground">
+          <label className="mr-auto flex h-8 cursor-pointer items-center gap-2 rounded-md border px-2.5 text-xs font-medium text-muted-foreground compact:h-auto compact:min-h-11 compact:max-w-full compact:flex-wrap">
             <input
               type="checkbox"
               className="size-3.5 accent-primary"
@@ -183,6 +183,7 @@ export function AccountsView() {
           <Button
             type="button"
             size="sm"
+            className="compact:h-auto compact:max-w-full compact:whitespace-normal compact:py-2"
             variant={batchMode ? "secondary" : "outline"}
             aria-pressed={batchMode}
             // Not while a save is pending: leaving would discard the drafts it is still saving.
@@ -254,7 +255,7 @@ export function AccountsView() {
         </Card>
       ) : (
         <>
-          <div className="grid gap-x-6 gap-y-5 md:grid-cols-2">
+          <div className="grid gap-x-6 gap-y-5 md:grid-cols-2 compact:grid-cols-1">
             <BalanceColumn
               title="Assets"
               total={money(summary.assets)}
@@ -306,7 +307,7 @@ function SummaryStrip({
   cashOnHand: string;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,10rem),1fr))]">
       <Stat label="Net worth" value={netWorth} valueClass={netWorthClass} emphasis />
       <Stat label="Total assets" value={assets} />
       <Stat label="Total liabilities" value={liabilities} />
@@ -332,8 +333,10 @@ function Stat({
         <span className="text-xs text-muted-foreground">{label}</span>
         <span
           className={cn(
-            "font-semibold tabular-nums",
-            emphasis ? "text-lg" : "text-base",
+            "font-semibold tabular-nums compact:[overflow-wrap:anywhere]",
+            // On a phone the figure never outgrows the window: the smaller of its size and a share of the window width,
+            // so at the largest text size it stays on one line instead of breaking inside the number.
+            emphasis ? "text-lg compact:text-[min(1.125rem,7.5vw)]" : "text-base compact:text-[min(1rem,7.5vw)]",
             valueClass,
           )}
         >
@@ -378,11 +381,11 @@ function BalanceColumn({
 
   return (
     <section className="flex flex-col gap-2">
-      <div className="flex items-center justify-between px-1">
+      <div className="flex items-center justify-between px-1 compact:flex-wrap compact:gap-x-3">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           {title}
         </h3>
-        <span className="text-xs font-medium tabular-nums text-muted-foreground">
+        <span className="text-xs font-medium tabular-nums text-muted-foreground compact:[overflow-wrap:anywhere]">
           {total}
         </span>
       </div>
@@ -458,13 +461,13 @@ function AccountSection({
   return (
     <Card>
       <CardContent className="p-0">
-        <div className="flex items-center gap-2 px-3 py-2">
+        <div className="flex items-center gap-2 px-3 py-2 compact:flex-wrap">
           <button
             type="button"
             onClick={() => setCollapsed((v) => !v)}
             aria-expanded={!collapsed}
             aria-label={`${def.label} section`}
-            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+            className="flex min-w-0 flex-1 items-center gap-2 text-left compact:flex-wrap compact:basis-full"
           >
             <ChevronDown
               className={cn(
@@ -474,10 +477,10 @@ function AccountSection({
               aria-hidden
             />
             <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-            <span className="truncate text-sm font-medium">{def.label}</span>
+            <span className="truncate text-sm font-medium compact:overflow-visible compact:whitespace-normal compact:text-clip">{def.label}</span>
             <span className="text-xs text-muted-foreground">({members.length})</span>
           </button>
-          <span className="shrink-0 text-sm font-medium tabular-nums text-muted-foreground">
+          <span className="shrink-0 text-sm font-medium tabular-nums text-muted-foreground compact:shrink compact:[overflow-wrap:anywhere]">
             {money(storedToShownMinor(def.role, subtotal))}
           </span>
           <button
@@ -496,7 +499,7 @@ function AccountSection({
 
         {!collapsed && showControls && (
           <div className="flex flex-wrap items-center gap-2 border-t bg-muted/30 px-3 py-2">
-            <div className="relative min-w-40 flex-1">
+            <div className="relative min-w-40 flex-1 compact:min-w-0 compact:basis-full">
               <Search
                 className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
                 aria-hidden
@@ -515,7 +518,7 @@ function AccountSection({
               aria-label={`Sort ${def.label}`}
               value={sort}
               onChange={(e) => setSort(e.target.value as AccountSort)}
-              className="h-8 w-36 shrink-0 text-sm"
+              className="h-8 w-36 shrink-0 text-sm compact:w-full compact:shrink"
             >
               {SORT_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -567,6 +570,7 @@ function AccountRow({
 }) {
   const { archiveAccount, reinstateAccount } = useAccounts();
   const archiveFlow = useArchiveFlow(account, archiveAccount);
+  const archiveButtonRef = useRef<HTMLButtonElement>(null);
   // In batch mode an editable account's figure becomes an inline input; everything
   // else in the row (name, subtype, controls) stays put (personal-cfo-4d8.25.24).
   const editing = batch !== null && batch.isEditable(account);
@@ -578,13 +582,13 @@ function AccountRow({
         !account.active && "opacity-60",
       )}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 compact:flex-wrap">
       <button
         type="button"
         onClick={() => onOpen(account)}
-        className="flex min-w-0 flex-1 flex-col text-left"
+        className="flex min-w-0 flex-1 flex-col text-left compact:basis-full"
       >
-        <span className="truncate text-sm font-medium">
+        <span className="truncate text-sm font-medium compact:overflow-visible compact:whitespace-normal compact:text-clip compact:[overflow-wrap:anywhere]">
           {account.name}
           {!account.active && (
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">
@@ -592,13 +596,13 @@ function AccountRow({
             </span>
           )}
         </span>
-        <span className="truncate text-xs text-muted-foreground">
+        <span className="truncate text-xs text-muted-foreground compact:overflow-visible compact:whitespace-normal compact:text-clip compact:[overflow-wrap:anywhere]">
           {account.subtype
             ? (SUBTYPE_LABELS[account.subtype] ?? account.subtype)
             : (ROLE_LABELS[account.cashflow_role] ?? account.cashflow_role)}
         </span>
         {account.linked_account_name && (
-          <span className="mt-0.5 flex items-center gap-1 truncate text-xs text-muted-foreground">
+          <span className="mt-0.5 flex items-center gap-1 truncate text-xs text-muted-foreground compact:overflow-visible compact:whitespace-normal compact:text-clip compact:[overflow-wrap:anywhere]">
             <Link2 className="size-3 shrink-0" aria-hidden />
             Linked to {account.linked_account_name}
           </span>
@@ -632,7 +636,7 @@ function AccountRow({
       ) : (
         <span
           className={cn(
-            "shrink-0 text-sm font-medium tabular-nums",
+            "shrink-0 text-sm font-medium tabular-nums compact:shrink compact:[overflow-wrap:anywhere]",
             signedAmountClass(account.balance),
           )}
         >
@@ -650,6 +654,7 @@ function AccountRow({
         </button>
         {account.active ? (
           <button
+            ref={archiveButtonRef}
             type="button"
             // A balance that anchors the forecast must not vanish from it silently
             // (personal-cfo-tiqf, ADR 0056); the shared flow asks first when it does.
@@ -686,7 +691,7 @@ function AccountRow({
       )}
       {/* Sits UNDER the row rather than inside it: the row's own name is a button that
           opens the account, and a button inside a button is invalid HTML. */}
-      <ArchiveImpactConfirm account={account} flow={archiveFlow} />
+      <ArchiveImpactConfirm account={account} flow={archiveFlow} triggerRef={archiveButtonRef} />
       <ArchiveFailure flow={archiveFlow} />
     </li>
   );

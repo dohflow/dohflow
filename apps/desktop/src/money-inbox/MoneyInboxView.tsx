@@ -1185,7 +1185,7 @@ function StaleBalanceRow({
   accounts: AccountViewDto[] | null;
   accountsError: string | null;
   onUpdateBalance: (account: AccountViewDto) => void;
-  onArchive: (accountId: string) => Promise<IpcError | null>;
+  onArchive: (accountId: string, idempotencyKey?: string) => Promise<IpcError | null>;
 }) {
   const payload = parseStalePayload(item.payload_json);
   // The account comes from the view's accounts list (its role and balance decide whether archiving

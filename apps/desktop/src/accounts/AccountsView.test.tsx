@@ -3,6 +3,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { renderWithClient } from "@/test/renderWithClient";
 
 import type { AccountViewDto } from "@/bindings";
+import { COMPACT_QUERY } from "@/lib/compact";
 import { AccountsView } from "./AccountsView";
 
 const mocks = vi.hoisted(() => ({
@@ -192,6 +193,130 @@ test("cancelling the archive notice leaves the account alone", async () => {
   expect(mocks.archiveAccount).not.toHaveBeenCalled();
 });
 
+describe("the archive question on a phone (personal-cfo-i93n3.28; AA-1 AA04)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  function phone() {
+    vi.stubGlobal("matchMedia", ((query: string) => ({
+      matches: query === COMPACT_QUERY,
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    })) as unknown as typeof window.matchMedia);
+  }
+  async function open() {
+    phone();
+    renderWithClient(<AccountsView />);
+    const trigger = await screen.findByRole("button", { name: /Archive Checking/i });
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("alertdialog", { name: /Archive Checking/i });
+    return { trigger, dialog };
+  }
+
+  it("is a full-screen alert dialog with the same words, Cancel first and focused, Archive second", async () => {
+    const { dialog } = await open();
+    expect(dialog).toHaveClass("compact:top-0", "compact:h-dvh");
+    expect(dialog).toHaveTextContent("$2,000.00");
+    expect(dialog).toHaveTextContent(/toward your forecast, so your projected cash will drop by that much\. Restoring the account brings it back\./);
+    const buttons = within(dialog).getAllByRole("button");
+    expect(buttons.map((b) => b.textContent)).toEqual(["Cancel", "Archive"]);
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
+    // The visual order is the reading order: stacked top to bottom, Cancel above Archive (not reversed).
+    const footer = buttons[0]!.parentElement!;
+    expect(footer).toHaveClass("compact:flex-col");
+    expect(footer).not.toHaveClass("compact:flex-col-reverse");
+    expect(mocks.archiveAccount).not.toHaveBeenCalled();
+  });
+
+  it("Cancel closes it without archiving and returns focus to the control that opened it", async () => {
+    const { trigger } = await open();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(mocks.archiveAccount).not.toHaveBeenCalled();
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("Escape and a tap outside close it when nothing is pending", async () => {
+    await open();
+    fireEvent.keyDown(screen.getByRole("alertdialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
+  it("holds both buttons and cannot be dismissed while the archive runs, and closes when it worked", async () => {
+    let finish!: (value: unknown) => void;
+    mocks.archiveAccount.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: /Confirm archive Checking/i }));
+    const archiving = await screen.findByRole("button", { name: /Confirm archive Checking/i });
+    await waitFor(() => expect(archiving).toHaveTextContent("Archiving…"));
+    expect(archiving).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("alertdialog"), { key: "Escape" });
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    await act(async () => finish(ok({ op_seq: 1, replayed: false })));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(mocks.archiveAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes on success even when the archived row stays on the list (Show archived is on)", async () => {
+    phone();
+    renderWithClient(<AccountsView />);
+    fireEvent.click(await screen.findByLabelText(/Show archived/i));
+    fireEvent.click(await screen.findByRole("button", { name: /Archive Checking/i }));
+    await screen.findByRole("alertdialog", { name: /Archive Checking/i });
+    fireEvent.click(screen.getByRole("button", { name: /Confirm archive Checking/i }));
+    await waitFor(() => expect(mocks.archiveAccount).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
+  it("keeps a refused archive's reason in the sheet's own alert, stays open, and offers a retry or Cancel", async () => {
+    mocks.archiveAccount.mockResolvedValue({ status: "error", error: { Validation: "Cannot archive right now." } });
+    const { dialog } = await open();
+    fireEvent.click(screen.getByRole("button", { name: /Confirm archive Checking/i }));
+    await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent("Cannot archive right now."));
+    // Still open, both actions available again, and the same message is not announced twice (not under the row too).
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Confirm archive Checking/i })).toBeEnabled();
+    // (hidden: true counts the page behind the sheet too, which assistive technology cannot reach but a duplicate would still be there.)
+    expect(screen.getAllByRole("alert", { hidden: true }).filter((a) => /Cannot archive/.test(a.textContent ?? ""))).toHaveLength(1);
+    // A retry that works closes it.
+    mocks.archiveAccount.mockResolvedValue(ok({ op_seq: 2, replayed: false }));
+    fireEvent.click(screen.getByRole("button", { name: /Confirm archive Checking/i }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
+  it("a retry after an unknown outcome sends the SAME idempotency key to the host (end to end through the view)", async () => {
+    mocks.archiveAccount.mockRejectedValueOnce(new Error("connection lost after the host committed"));
+    mocks.archiveAccount.mockResolvedValueOnce(ok({ op_seq: 1, replayed: true }));
+    const { dialog } = await open();
+    fireEvent.click(screen.getByRole("button", { name: /Confirm archive Checking/i }));
+    await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/Couldn.t confirm whether the account was archived/));
+    fireEvent.click(screen.getByRole("button", { name: /Confirm archive Checking/i }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(mocks.archiveAccount).toHaveBeenCalledTimes(2);
+    const [first, second] = mocks.archiveAccount.mock.calls;
+    expect(second![1]).toBe(first![1]);
+    // Archived once, with no error left on the screen.
+    expect(screen.queryByText(/Couldn.t confirm/)).toBeNull();
+  });
+
+  it("an archive that threw is an unknown outcome and stays in the sheet", async () => {
+    mocks.archiveAccount.mockRejectedValue(new Error("connection lost"));
+    const { dialog } = await open();
+    fireEvent.click(screen.getByRole("button", { name: /Confirm archive Checking/i }));
+    await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/Couldn.t confirm whether the account was archived/));
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+  });
+
+  it("is still the inline notice on a desktop window", async () => {
+    renderWithClient(<AccountsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /Archive Checking/i }));
+    const notice = await screen.findByRole("alertdialog", { name: /Archive Checking/i });
+    expect(notice).not.toHaveClass("compact:h-dvh");
+    expect(within(notice).getAllByRole("button").map((b) => b.textContent)).toEqual(["Archive", "Cancel"]);
+  });
+});
+
 test("archiving an empty account keeps the one-click path", async () => {
   // A zero balance moves no projection, so explaining a consequence that will not happen
   // would be friction that teaches nothing.
@@ -316,6 +441,35 @@ test("inline batch edit saves through assertBalance with the as-of date (persona
   const arg = mocks.assertBalance.mock.calls[0]?.[0];
   expect(arg.amount.minor_units).toBe(250_000);
   expect(arg.as_of_date).toBeTruthy();
+});
+
+// personal-cfo-i93n3.28: the Accounts list at the largest text size on a phone. Everything wraps instead of running off
+// the screen (found by measuring the populated screen with the accessibility tree); a desktop window is unchanged.
+test("the Accounts list wraps its summary, section header, rows and toolbar on a phone (compact-only classes)", async () => {
+  renderWithClient(<AccountsView />);
+  const name = await screen.findByText("Checking");
+  // The summary grid fits as many columns as the text size allows (one at the largest).
+  const stat = screen.getByText("Net worth").closest("div.grid")!;
+  expect(stat.className).toContain("compact:grid-cols-[repeat(auto-fit,minmax(min(100%,10rem),1fr))]");
+  // A summary figure never outgrows the window (it stays on one line at the largest text size).
+  expect(screen.getByText("Net worth").nextElementSibling!.className).toContain("compact:text-[min(1.125rem,7.5vw)]");
+  expect(screen.getByText("Total assets").nextElementSibling!.className).toContain("compact:text-[min(1rem,7.5vw)]");
+  // A column's total wraps under its title instead of running off the window.
+  expect(screen.getByText("Assets").parentElement).toHaveClass("compact:flex-wrap");
+  expect(screen.getByText("Assets").nextElementSibling).toHaveClass("compact:[overflow-wrap:anywhere]");
+  // The groups are one column no wider than the window (an implicit grid column grows to its widest content).
+  expect(screen.getByText("Assets").closest("div.grid")!.className).toContain("compact:grid-cols-1");
+  // A row: the name takes its own line, the balance and actions wrap below it, and the text wraps.
+  const row = name.closest("li")!;
+  expect(row.firstElementChild).toHaveClass("compact:flex-wrap");
+  expect(name.closest("button")).toHaveClass("compact:basis-full");
+  expect(name).toHaveClass("compact:whitespace-normal", "compact:[overflow-wrap:anywhere]");
+  // A section header wraps its label, count and subtotal.
+  const header = screen.getByRole("button", { name: /Cash section/ });
+  expect(header).toHaveClass("compact:flex-wrap", "compact:basis-full");
+  expect(header.parentElement).toHaveClass("compact:flex-wrap");
+  // The Update balances button wraps its label instead of overflowing.
+  expect(screen.getByRole("button", { name: /update balances/i })).toHaveClass("compact:whitespace-normal", "compact:max-w-full");
 });
 
 describe("saving several balances reports each row truthfully (g3m.37)", () => {
