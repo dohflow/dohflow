@@ -435,6 +435,9 @@ test("the Accounts list wraps its summary, section header, rows and toolbar on a
   // A summary figure never outgrows the window (it stays on one line at the largest text size).
   expect(screen.getByText("Net worth").nextElementSibling!.className).toContain("compact:text-[min(1.125rem,7.5vw)]");
   expect(screen.getByText("Total assets").nextElementSibling!.className).toContain("compact:text-[min(1rem,7.5vw)]");
+  // A column's total wraps under its title instead of running off the window.
+  expect(screen.getByText("Assets").parentElement).toHaveClass("compact:flex-wrap");
+  expect(screen.getByText("Assets").nextElementSibling).toHaveClass("compact:[overflow-wrap:anywhere]");
   // The groups are one column no wider than the window (an implicit grid column grows to its widest content).
   expect(screen.getByText("Assets").closest("div.grid")!.className).toContain("compact:grid-cols-1");
   // A row: the name takes its own line, the balance and actions wrap below it, and the text wraps.

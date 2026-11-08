@@ -381,11 +381,11 @@ function BalanceColumn({
 
   return (
     <section className="flex flex-col gap-2">
-      <div className="flex items-center justify-between px-1">
+      <div className="flex items-center justify-between px-1 compact:flex-wrap compact:gap-x-3">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           {title}
         </h3>
-        <span className="text-xs font-medium tabular-nums text-muted-foreground">
+        <span className="text-xs font-medium tabular-nums text-muted-foreground compact:[overflow-wrap:anywhere]">
           {total}
         </span>
       </div>
