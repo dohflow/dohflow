@@ -1463,7 +1463,7 @@ function AddTransactionForm({
                 <Label htmlFor="txn-date">
                   {recurring ? "First due date" : "Date"}
                 </Label>
-                <Input id="txn-date" type="date" className="compact:max-w-full compact:text-[min(0.875rem,4.5vw)]" {...register("date")} />
+                <Input id="txn-date" type="date" className="compact:max-w-full compact:appearance-none" {...register("date")} />
               </div>
             </div>
 
@@ -1992,7 +1992,7 @@ export function AddTransferForm({
                 <Label htmlFor="transfer-date">
                   {recurring ? "Starting" : "Date"}
                 </Label>
-                <Input id="transfer-date" type="date" className="compact:max-w-full compact:text-[min(0.875rem,4.5vw)]" {...register("date")} />
+                <Input id="transfer-date" type="date" className="compact:max-w-full compact:appearance-none" {...register("date")} />
               </div>
             </div>
 
