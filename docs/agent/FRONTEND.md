@@ -520,6 +520,7 @@ on a desktop window, and a test proves each.
   closed value is cut off sideways at that size ("US I"): on a narrow card show the selected label as
   plain text under it (`hidden compact:@max-[15rem]:block`, `aria-hidden`, because the select already
   announces its own value) and keep the native control for choosing; the primitive itself changes with the touch-target slice.
+  A native `<input type="date">` is the same kind of control and the other way round: WebKit gives it an intrinsic minimum width (328 pt at the largest text size) that `min-width` and a smaller font size cannot lower, so on compact it takes `appearance-none`, keeps its column's width, and still opens the system date picker.
 - **Touch targets: a fixed 44 pt floor.** On a compact screen every control a finger can press is at
   least 44 by 44 points. The floor lives in one place, `globals.css`, in the compact media query and
   OUTSIDE every cascade layer: `min-height: 44px` on `button`, `[role="button"]`, `[role="menuitem"]`,
