@@ -314,6 +314,9 @@ describe("TransactionsView", () => {
       const grid = amount.closest("div.grid")!;
       expect(grid.className).toContain("compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]");
       expect(grid.className).toContain("grid-cols-2");
+      // Its cells may shrink below their content (a date field is wide at the largest text size), and the date field is capped.
+      expect(grid.className).toContain("compact:[&>*]:min-w-0");
+      expect(screen.getByLabelText("Date")).toHaveClass("compact:min-w-0", "compact:max-w-full");
       const submit = screen.getByRole("button", { name: "Add transaction", description: "" , hidden: false });
       expect(submit.closest("form")!.querySelector("div.justify-end")).toHaveClass("compact:flex-wrap");
     });
