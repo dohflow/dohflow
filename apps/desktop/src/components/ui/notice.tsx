@@ -177,11 +177,16 @@ function NoticeItem({
       onBlur={onBlur}
       onKeyDown={onKeyDown}
     >
-      <div className="flex items-center gap-3">
+      {/* On a phone the actions wrap under the message when the message needs the line (the largest text size: Undo ran
+          off the edge and overlapped the words), and the message keeps a floor of 10rem or the full line, whichever is less. */}
+      <div className="flex items-center gap-3 compact:flex-wrap">
         <p
           id={messageId}
           role={isError ? "alert" : "status"}
-          className={cn("min-h-5 flex-1 text-sm", isError && "text-loss")}
+          className={cn(
+            "min-h-5 flex-1 text-sm compact:min-w-[min(100%,10rem)] compact:[overflow-wrap:anywhere]",
+            isError && "text-loss",
+          )}
         >
           {announced ? notice.message : null}
         </p>
