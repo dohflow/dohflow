@@ -125,7 +125,7 @@ function PhoneArchiveConfirm({
           <DialogDescription>{impactSentence(account)}</DialogDescription>
         </DialogBody>
         <DialogError error={flow.error} />
-        <DialogFooter className="compact:flex-col-reverse compact:[&>button]:w-full">
+        <DialogFooter className="compact:flex-col compact:[&>button]:w-full">
           <Button
             ref={cancelRef}
             type="button"

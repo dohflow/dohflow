@@ -220,6 +220,10 @@ describe("the archive question on a phone (personal-cfo-i93n3.28; AA-1 AA04)", (
     const buttons = within(dialog).getAllByRole("button");
     expect(buttons.map((b) => b.textContent)).toEqual(["Cancel", "Archive"]);
     expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
+    // The visual order is the reading order: stacked top to bottom, Cancel above Archive (not reversed).
+    const footer = buttons[0]!.parentElement!;
+    expect(footer).toHaveClass("compact:flex-col");
+    expect(footer).not.toHaveClass("compact:flex-col-reverse");
     expect(mocks.archiveAccount).not.toHaveBeenCalled();
   });
 
