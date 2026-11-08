@@ -304,6 +304,20 @@ describe("TransactionsView", () => {
       expect(screen.getByRole("combobox", { name: "Sort transactions" }).parentElement).toHaveClass("compact:flex-1");
     });
 
+    it("the Add transaction form fits as many columns as the text size allows and wraps its action row (compact-only)", async () => {
+      compactScreen();
+      mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
+      renderWithClient(<TransactionsView />);
+      await screen.findByText(/\+\$?150/);
+      fireEvent.click(screen.getByRole("button", { name: /Add transaction/ }));
+      const amount = await screen.findByLabelText("Amount");
+      const grid = amount.closest("div.grid")!;
+      expect(grid.className).toContain("compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]");
+      expect(grid.className).toContain("grid-cols-2");
+      const submit = screen.getByRole("button", { name: "Add transaction", description: "" , hidden: false });
+      expect(submit.closest("form")!.querySelector("div.justify-end")).toHaveClass("compact:flex-wrap");
+    });
+
     it("keeps the horizontal table on a desktop window", async () => {
       mockTransactionPage([txn({ amount: { minor_units: 15_000, currency: "USD" } })]);
       renderWithClient(<TransactionsView />);

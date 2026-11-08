@@ -1425,7 +1425,7 @@ function AddTransactionForm({
             ) : (
               <div className="flex flex-col gap-1.5">
                 <Label>Type</Label>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-2 gap-2 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]">
                   <Button
                     type="button"
                     variant={kind === "expense" ? "default" : "outline"}
@@ -1444,7 +1444,7 @@ function AddTransactionForm({
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="txn-amount">Amount</Label>
                 <Input
@@ -1687,7 +1687,7 @@ function AddTransactionForm({
                 onCreate={(follow) => void createBill(activeOverlap.input, follow)}
               />
             ) : (
-              <div className="flex justify-end gap-2">
+              <div className="flex justify-end gap-2 compact:flex-wrap">
                 <Button type="button" variant="ghost" onClick={onCancel} disabled={pending}>
                   Cancel
                 </Button>
@@ -1902,7 +1902,7 @@ export function AddTransferForm({
             disabled={isSubmitting}
             className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0"
           >
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="transfer-source">From</Label>
                 <select
@@ -1952,7 +1952,7 @@ export function AddTransferForm({
             {!lockRecurring && (
             <div className="flex flex-col gap-1.5">
               <Label>Repeat</Label>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-2 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]">
                 <Button
                   type="button"
                   variant={recurring ? "outline" : "default"}
@@ -1973,7 +1973,7 @@ export function AddTransferForm({
             </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="transfer-amount">Amount</Label>
                 <Input
@@ -2041,7 +2041,7 @@ export function AddTransferForm({
               </p>
             )}
 
-            <div className="flex justify-end gap-2">
+            <div className="flex justify-end gap-2 compact:flex-wrap">
               <Button type="button" variant="ghost" onClick={onCancel} disabled={isSubmitting}>
                 Cancel
               </Button>
