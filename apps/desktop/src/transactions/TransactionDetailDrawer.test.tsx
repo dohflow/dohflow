@@ -175,6 +175,41 @@ describe("TransactionDetailDrawer", () => {
     }
   });
 
+  it("cancelling the system file sheet returns focus to the Attach document button (AC5)", async () => {
+    renderDrawer();
+    const input = await screen.findByLabelText("Choose a document to attach");
+    const trigger = screen.getByRole("button", { name: /attach document/i });
+    expect(trigger).not.toHaveFocus();
+    // WebKit fires `cancel` on the file input when the sheet is dismissed without a file.
+    act(() => {
+      input.dispatchEvent(new Event("cancel"));
+    });
+    expect(trigger).toHaveFocus();
+  });
+
+  it("a large file does not block the UI: the button reports Attaching... at once while the bytes are read, and the drawer stays usable (AC5)", async () => {
+    mocks.transactionAttachments.mockResolvedValue(ok([]));
+    let finishRead!: (buffer: ArrayBuffer) => void;
+    const read = new Promise<ArrayBuffer>((resolve) => (finishRead = resolve));
+    mocks.attachDocument.mockResolvedValue(ok(doc({ original_filename: "scan.pdf" })));
+    const { container } = renderDrawer();
+    await screen.findByText(/no documents attached/i);
+    // 32 MB, never actually allocated for the read: the read is a promise the test controls.
+    const file = new File([new Uint8Array(8)], "scan.pdf", { type: "application/pdf" });
+    Object.defineProperty(file, "size", { value: 32 * 1024 * 1024 });
+    file.arrayBuffer = () => read;
+    fireEvent.change(screen.getByLabelText(/choose a document/i), { target: { files: [file] } });
+    // Busy straight away, before the read has finished: the interface is not waiting on the file.
+    const busy = await screen.findByRole("button", { name: /attaching/i });
+    expect(busy).toBeDisabled();
+    // Nothing else is held: the drawer's other controls still respond, and the host was not called yet.
+    expect(container.ownerDocument.querySelectorAll("button:disabled").length).toBeLessThan(4);
+    expect(mocks.attachDocument).not.toHaveBeenCalled();
+    await act(async () => finishRead(new Uint8Array(8).buffer));
+    await waitFor(() => expect(mocks.attachDocument).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole("button", { name: /attach document/i })).toBeEnabled());
+  });
+
   it("lists attachments with their name and size", async () => {
     mocks.transactionAttachments.mockResolvedValue(ok([doc()]));
     renderDrawer();
