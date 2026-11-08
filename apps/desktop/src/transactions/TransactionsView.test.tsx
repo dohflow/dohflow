@@ -337,6 +337,8 @@ describe("TransactionsView", () => {
       fireEvent.click(screen.getByRole("button", { name: /Add transaction/ }));
       fireEvent.click(await screen.findByRole("button", { name: /Add details/i }));
       expect(await screen.findByLabelText("Attach documents")).toHaveAttribute("accept", "image/*,application/*,text/*");
+    });
+
     it("a phone's Add transaction writes through the SAME record command with the same input as the desktop (AC2)", async () => {
       compactScreen();
       mocks.transactionPage.mockImplementationOnce((input: TransactionPageInput) => Promise.resolve(pageResult([], input)));
