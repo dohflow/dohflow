@@ -1427,7 +1427,7 @@ function AddTransactionForm({
             ) : (
               <div className="flex flex-col gap-1.5">
                 <Label>Type</Label>
-                <div className="grid grid-cols-2 gap-2 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]">
+                <div className="grid grid-cols-2 gap-2 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))] compact:[&>*]:min-w-0">
                   <Button
                     type="button"
                     variant={kind === "expense" ? "default" : "outline"}
@@ -1446,7 +1446,7 @@ function AddTransactionForm({
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]">
+            <div className="grid grid-cols-2 gap-3 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))] compact:[&>*]:min-w-0">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="txn-amount">Amount</Label>
                 <Input
@@ -1465,7 +1465,7 @@ function AddTransactionForm({
                 <Label htmlFor="txn-date">
                   {recurring ? "First due date" : "Date"}
                 </Label>
-                <Input id="txn-date" type="date" {...register("date")} />
+                <Input id="txn-date" type="date" className="compact:max-w-full compact:appearance-none" {...register("date")} />
               </div>
             </div>
 
@@ -1905,7 +1905,7 @@ export function AddTransferForm({
             disabled={isSubmitting}
             className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0"
           >
-            <div className="grid grid-cols-2 gap-3 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]">
+            <div className="grid grid-cols-2 gap-3 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))] compact:[&>*]:min-w-0">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="transfer-source">From</Label>
                 <select
@@ -1955,7 +1955,7 @@ export function AddTransferForm({
             {!lockRecurring && (
             <div className="flex flex-col gap-1.5">
               <Label>Repeat</Label>
-              <div className="grid grid-cols-2 gap-2 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]">
+              <div className="grid grid-cols-2 gap-2 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))] compact:[&>*]:min-w-0">
                 <Button
                   type="button"
                   variant={recurring ? "outline" : "default"}
@@ -1976,7 +1976,7 @@ export function AddTransferForm({
             </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]">
+            <div className="grid grid-cols-2 gap-3 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))] compact:[&>*]:min-w-0">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="transfer-amount">Amount</Label>
                 <Input
@@ -1995,7 +1995,7 @@ export function AddTransferForm({
                 <Label htmlFor="transfer-date">
                   {recurring ? "Starting" : "Date"}
                 </Label>
-                <Input id="transfer-date" type="date" {...register("date")} />
+                <Input id="transfer-date" type="date" className="compact:max-w-full compact:appearance-none" {...register("date")} />
               </div>
             </div>
 
