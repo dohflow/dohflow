@@ -152,6 +152,25 @@ describe("useArchiveFlow.confirmInSheet", () => {
       expect(keys[1]).not.toBe(keys[0]);
     });
 
+    it("never reuses a pending key for a different account (an unknown outcome on one account is not another's retry)", async () => {
+      const keys: string[] = [];
+      const archive = vi.fn().mockImplementation(async (_id: string, key: string) => {
+        keys.push(key);
+        if (keys.length === 1) throw new Error("lost");
+        return null;
+      });
+      const other = { ...ACCOUNT, id: "acc-2", name: "Savings" } as AccountViewDto;
+      const { result, rerender } = renderHook(({ account }) => useArchiveFlow(account, archive), {
+        initialProps: { account: ACCOUNT },
+      });
+      act(() => result.current.request());
+      await act(async () => result.current.confirmInSheet());
+      rerender({ account: other });
+      act(() => result.current.request());
+      await act(async () => result.current.confirmInSheet());
+      expect(keys[1]).not.toBe(keys[0]);
+    });
+
     it("a confirmed success drops the key too (archiving again later is a new archive)", async () => {
       const keys: string[] = [];
       const archive = vi.fn().mockImplementation(async (_id: string, key: string) => {
