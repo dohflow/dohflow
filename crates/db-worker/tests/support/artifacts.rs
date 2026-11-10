@@ -219,3 +219,41 @@ pub fn opened(service: &FakeService, key: &EpochKey, published: &Published) -> O
     let container = service.get(&VAULT, key.key_epoch(), &published.id).unwrap();
     open_artifact(key, &published.id, &container, MAX_ARTIFACT_CONTAINER).unwrap()
 }
+
+/// Publish an artifact of any kind with exactly the metadata and blob given, so a test can build
+/// the artifacts a faulty producer would (a part that does not decode, a binding that names no id).
+pub fn publish_raw(
+    service: &FakeService,
+    key: &EpochKey,
+    address_byte: u8,
+    kind: ArtifactKind,
+    logical_metadata: &[u8],
+    blob: &[u8],
+) -> Published {
+    let id = first_artifact_id(key, &[address_byte; 32]);
+    publish(
+        service,
+        key,
+        &TransportPlaintext {
+            artifact_id: id,
+            kind,
+            logical_metadata,
+            blob,
+        },
+        Fixity::First,
+    )
+    .unwrap();
+    Published {
+        id,
+        hash: service.bound_hash(key.key_epoch(), &id),
+    }
+}
+
+/// The `logical_metadata` of one part of a batch (C.9): canonical JSON, keys in ascending order.
+pub fn part_metadata(batch_id: [u8; 16], index: u32, count: u32) -> Vec<u8> {
+    format!(
+        r#"{{"batch_id":"{}","part_count":"{count}","part_index":"{index}"}}"#,
+        hyphenated(&batch_id)
+    )
+    .into_bytes()
+}

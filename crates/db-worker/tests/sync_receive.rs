@@ -7,11 +7,13 @@
 mod artifacts;
 mod common;
 
-use artifacts::{key_of, publish_attachment, publish_batch, FakeService, Published};
+use artifacts::{
+    key_of, part_metadata, publish_attachment, publish_batch, publish_raw, FakeService, Published,
+};
 use db_worker::sync_artifacts::{create_attachment_from_staged, lookup};
 use db_worker::sync_receive::{receive_delta, ReceiveError, Received};
 use db_worker::DbWorker;
-use sync_core::artifact::ArtifactId;
+use sync_core::artifact::{ArtifactId, ArtifactKind};
 use sync_core::artifact_closure::{LiveClosure, LogicalRef, Mismatch, PayloadRef};
 use sync_core::envelope::{BoundArtifact, BoundManifest};
 use sync_core::source_batch::{BatchRow, RecordRow, RunRow, SourceBatch};
@@ -393,5 +395,248 @@ fn a_local_failure_after_the_verdicts_is_materialization_not_a_verdict() {
         vault.footprint(),
         (0, 0, 0, 0, 0),
         "and it leaves nothing behind"
+    );
+}
+
+// ---- stage 9(b): every refusal class decides from the artifacts and writes nothing -----------------
+
+/// A batch with the records `[n; 16]` for each `n` in `records`, split canonically into one part.
+fn batch_of(id: [u8; 16], records: &[u8]) -> SourceBatch {
+    let mut next = batch();
+    next.batch.id = id;
+    next.runs[0].source_batch_id = id;
+    next.records = records
+        .iter()
+        .map(|n| RecordRow {
+            id: [*n; 16],
+            source_batch_id: id,
+            external_id: Some(format!("ext-{n}")),
+            source_hash: format!("hash-{n}"),
+            normalized_json: format!("{{\"n\":{n}}}"),
+            ..batch().records[0].clone()
+        })
+        .collect();
+    next
+}
+
+fn to_json(value: &serde_json::Value) -> Vec<u8> {
+    serde_json::to_vec(value).unwrap()
+}
+
+/// Part 0 of `batch` as JSON, with only the records at the given positions.
+fn part0_keeping(batch: &SourceBatch, keep: &[usize]) -> Vec<u8> {
+    let mut part: serde_json::Value =
+        serde_json::from_slice(&batch.split().unwrap()[0].blob).unwrap();
+    let all = part["records"].as_array().unwrap().clone();
+    part["records"] = serde_json::Value::Array(keep.iter().map(|i| all[*i].clone()).collect());
+    to_json(&part)
+}
+
+/// A later part holding the records of `batch` at the given positions.
+fn later_part(batch: &SourceBatch, keep: &[usize]) -> Vec<u8> {
+    let part: serde_json::Value = serde_json::from_slice(&batch.split().unwrap()[0].blob).unwrap();
+    let all = part["records"].as_array().unwrap().clone();
+    to_json(
+        &serde_json::json!({ "records": keep.iter().map(|i| all[*i].clone()).collect::<Vec<_>>() }),
+    )
+}
+
+#[test]
+fn every_stage_9b_refusal_class_is_decided_from_the_artifacts_and_writes_nothing() {
+    let key = key_of(1, 0);
+    let part = |service: &FakeService,
+                address: u8,
+                batch: [u8; 16],
+                index: u32,
+                count: u32,
+                blob: &[u8]| {
+        publish_raw(
+            service,
+            &key,
+            address,
+            ArtifactKind::SourceBatchPart,
+            &part_metadata(batch, index, count),
+            blob,
+        )
+    };
+    let run = |name: &str,
+               service: &FakeService,
+               delta: &[Published],
+               refs: &[PayloadRef],
+               live: &LiveClosure,
+               expected: &dyn Fn(&Mismatch) -> bool| {
+        let vault = Vault::new();
+        match receive_delta(&vault.worker, service, &key, &manifest(delta), refs, live) {
+            Err(ReceiveError::Mismatch(found)) => assert!(expected(&found), "{name}: {found:?}"),
+            other => panic!("{name}: expected a stage-9(b) verdict, got {other:?}"),
+        }
+        assert_eq!(
+            vault.footprint(),
+            (0, 0, 0, 0, 0),
+            "{name}: nothing written"
+        );
+    };
+    let two = batch_of(BATCH, &[1, 2]);
+    let none = LiveClosure::new();
+    let records = [PayloadRef::Record([1; 16]), PayloadRef::Record([2; 16])];
+
+    // A batch that is not its canonical split: two records that belong in one part are in two.
+    let s = FakeService::default();
+    let delta = [
+        part(&s, 0x10, BATCH, 0, 2, &part0_keeping(&two, &[0])),
+        part(&s, 0x11, BATCH, 1, 2, &later_part(&two, &[1])),
+    ];
+    run(
+        "a non-canonical split",
+        &s,
+        &delta,
+        &records,
+        &none,
+        &|m| matches!(m, Mismatch::BatchNotCanonical(b) if *b == BATCH),
+    );
+
+    // A record carried by two parts of one batch.
+    let s = FakeService::default();
+    let delta = [
+        part(&s, 0x20, BATCH, 0, 2, &part0_keeping(&two, &[0, 1])),
+        part(&s, 0x21, BATCH, 1, 2, &later_part(&two, &[1])),
+    ];
+    run(
+        "a record in two parts",
+        &s,
+        &delta,
+        &records,
+        &none,
+        &|m| matches!(m, Mismatch::RecordDuplicated(r) if *r == [2; 16]),
+    );
+
+    // An authenticated part that does not decode as batch rows.
+    let s = FakeService::default();
+    let bad = part(&s, 0x31, BATCH, 1, 2, b"this is not a batch part");
+    let delta = [
+        part(&s, 0x30, BATCH, 0, 2, &part0_keeping(&two, &[0, 1])),
+        bad,
+    ];
+    run(
+        "an undecodable part",
+        &s,
+        &delta,
+        &records,
+        &none,
+        &|m| matches!(m, Mismatch::PartUndecodable(id) if *id == bad.id),
+    );
+
+    // One source record held by two batches of the delta.
+    let s = FakeService::default();
+    let first = batch_of([0xb1; 16], &[1]);
+    let second = batch_of([0xb2; 16], &[1]);
+    let delta = [
+        part(&s, 0x40, [0xb1; 16], 0, 1, &part0_keeping(&first, &[0])),
+        part(&s, 0x41, [0xb2; 16], 0, 1, &part0_keeping(&second, &[0])),
+    ];
+    run(
+        "a record in two batches",
+        &s,
+        &delta,
+        &[PayloadRef::Record([1; 16])],
+        &none,
+        &|m| matches!(m, Mismatch::RecordInSeveralBatches(r) if *r == [1; 16]),
+    );
+
+    // The same record held by a batch of the delta and by a different batch of the live closure.
+    let s = FakeService::default();
+    let one = batch_of(BATCH, &[1]);
+    let delta = [part(&s, 0x50, BATCH, 0, 1, &part0_keeping(&one, &[0]))];
+    let mut live = LiveClosure::new();
+    live.insert_record([0xee; 16], [1; 16]);
+    run(
+        "a record in a different live batch",
+        &s,
+        &delta,
+        &[PayloadRef::Record([1; 16])],
+        &live,
+        &|m| matches!(m, Mismatch::RecordInLiveBatch(r) if *r == [1; 16]),
+    );
+
+    // The parts of a batch: a gap, a repeated index, and parts that disagree on the count.
+    let s = FakeService::default();
+    let delta = [part(&s, 0x60, BATCH, 0, 2, &part0_keeping(&two, &[0, 1]))];
+    run(
+        "a missing part",
+        &s,
+        &delta,
+        &records,
+        &none,
+        &|m| matches!(m, Mismatch::PartMissing(b) if *b == BATCH),
+    );
+    let s = FakeService::default();
+    let delta = [
+        part(&s, 0x70, BATCH, 0, 2, &part0_keeping(&two, &[0])),
+        part(&s, 0x71, BATCH, 0, 2, &part0_keeping(&two, &[1])),
+    ];
+    run(
+        "a repeated part index",
+        &s,
+        &delta,
+        &records,
+        &none,
+        &|m| matches!(m, Mismatch::PartDuplicated(b) if *b == BATCH),
+    );
+    let s = FakeService::default();
+    let delta = [
+        part(&s, 0x80, BATCH, 0, 2, &part0_keeping(&two, &[0, 1])),
+        part(&s, 0x81, BATCH, 1, 3, &later_part(&two, &[1])),
+    ];
+    run(
+        "parts that disagree on the count",
+        &s,
+        &delta,
+        &records,
+        &none,
+        &|m| matches!(m, Mismatch::PartsDisagree(b) if *b == BATCH),
+    );
+
+    // A payload that names a record no batch of the delta holds.
+    let s = FakeService::default();
+    let delta = [part(&s, 0x90, BATCH, 0, 1, &part0_keeping(&one, &[0]))];
+    run(
+        "a named record in no batch",
+        &s,
+        &delta,
+        &[PayloadRef::Record([1; 16]), PayloadRef::Record([0x55; 16])],
+        &none,
+        &|m| matches!(m, Mismatch::RecordInNoBatch(r) if *r == [0x55; 16]),
+    );
+
+    // An attachment whose metadata names no attachment id, and one attachment bound twice.
+    let s = FakeService::default();
+    let unnamed = publish_raw(
+        &s,
+        &key,
+        0xa0,
+        ArtifactKind::Attachment,
+        br#"{"mime_type":"text/plain"}"#,
+        PDF,
+    );
+    run(
+        "an attachment with no id",
+        &s,
+        &[unnamed],
+        &[],
+        &none,
+        &|m| matches!(m, Mismatch::BadBinding(id) if *id == unnamed.id),
+    );
+    let s = FakeService::default();
+    let delta = [
+        publish_attachment(&s, &key, 0xb0, ATT, PDF, "application/pdf"),
+        publish_attachment(&s, &key, 0xb1, ATT, b"other bytes", "application/pdf"),
+    ];
+    run(
+        "an attachment bound twice",
+        &s,
+        &delta,
+        &[PayloadRef::Attachment(ATT)],
+        &none,
+        &|m| matches!(m, Mismatch::AttachmentRebound(a) if *a == ATT),
     );
 }
