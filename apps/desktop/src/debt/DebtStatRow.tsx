@@ -7,13 +7,13 @@ import { debtStats, type ScopedDebt } from "./debtStats";
 /// figure rests on or leaves out, which is the difference between a number and a claim.
 function Stat({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground compact:[overflow-wrap:anywhere]">
         {label}
       </span>
-      <span className="text-lg font-semibold tabular-nums">{value}</span>
+      <span className="text-lg font-semibold tabular-nums compact:text-[min(1.125rem,7.5vw)] compact:[overflow-wrap:anywhere]">{value}</span>
       {note !== undefined && (
-        <span className="text-xs text-muted-foreground">{note}</span>
+        <span className="text-xs text-muted-foreground compact:[overflow-wrap:anywhere]">{note}</span>
       )}
     </div>
   );
@@ -44,7 +44,7 @@ export function DebtStatRow({
 
   return (
     <Card>
-      <CardContent className="grid grid-cols-2 gap-x-6 gap-y-4 p-4 sm:grid-cols-3 lg:grid-cols-5">
+      <CardContent className="grid grid-cols-2 gap-x-6 gap-y-4 p-4 sm:grid-cols-3 lg:grid-cols-5 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]">
         <Stat
           label="Total owed"
           value={money(stats.totalOwedMinor)}
