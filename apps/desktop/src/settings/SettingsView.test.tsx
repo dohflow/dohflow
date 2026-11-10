@@ -7,6 +7,15 @@ import { renderWithClient } from "@/test/renderWithClient";
 
 import { SettingsView } from "./SettingsView";
 
+// v0.4.1 ships with the Touch ID controls off (`vault/touchIdEnabled.ts`); the cases here are about the controls themselves, so
+// they run with the flag on, and the "flag off" cases below turn it off. `vault/touchIdEnabled.test.ts` pins the shipped value.
+const flag = vi.hoisted(() => ({ on: true }));
+vi.mock("@/vault/touchIdEnabled", () => ({
+  get TOUCH_ID_ENABLED() {
+    return flag.on;
+  },
+}));
+
 const mocks = vi.hoisted(() => ({
   vault: { vaults: [] as unknown[], vaultsError: null as string | null },
   connectorConnections: vi.fn(),
@@ -34,6 +43,7 @@ const mocks = vi.hoisted(() => ({
   exportBackup: vi.fn(),
   save: vi.fn(),
   updaterCheck: vi.fn(),
+  touchIdStatus: vi.fn(),
 }));
 
 // The release updater plugin (personal-cfo-4d8.39.1: it must not run when the build cannot self-update).
@@ -87,12 +97,16 @@ vi.mock("@/bindings", () => ({
     configureBackup: mocks.configureBackup,
     runBackupNow: mocks.runBackupNow,
     exportBackup: mocks.exportBackup,
+    touchIdStatus: mocks.touchIdStatus,
   },
 }));
 
 const ok = <T,>(data: T) => ({ status: "ok", data }) as const;
 
 beforeEach(() => {
+  // No host in these tests: a Touch ID status read fails, which every caller treats as "not available".
+  mocks.touchIdStatus.mockReset();
+  mocks.touchIdStatus.mockRejectedValue(new Error("no host"));
   mocks.vault.vaults = [];
   mocks.vault.vaultsError = null;
   // SettingsView now also renders ConnectionsCard (personal-cfo-ul5d).
@@ -389,6 +403,30 @@ describe("the Settings sections (personal-cfo-4d8.39.1)", () => {
     for (const trigger of document.querySelectorAll("[data-settings-section] h3 button")) {
       expect(trigger).toHaveAttribute("aria-expanded", "true");
     }
+  });
+
+  describe("the Touch ID controls switched off (v0.4.1)", () => {
+    afterEach(() => {
+      flag.on = true;
+    });
+
+    it("leave no Touch ID section, title, card text or trigger, and every other section keeps its place", async () => {
+      flag.on = false;
+      await render({ setup: true });
+      const without = FULL_ORDER.filter((name) => name !== "Touch ID");
+      await waitFor(() => expect(sectionNames()).toEqual(without));
+      expect(triggerNames()).toEqual(without);
+      expect(sectionEl("Touch ID")).toBeNull();
+      expect(screen.queryByText(/touch id/i)).toBeNull();
+      expect(screen.queryByRole("switch", { name: /touch id/i })).toBeNull();
+    });
+
+    it("ask the host nothing about Touch ID", async () => {
+      flag.on = false;
+      await render({ setup: true });
+      await waitFor(() => expect(sectionNames()).toContain("Change master password"));
+      expect(mocks.touchIdStatus).not.toHaveBeenCalled();
+    });
   });
 
   describe("the Setup guide", () => {

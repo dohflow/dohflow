@@ -280,6 +280,17 @@ synthetic no-app recovery test before any such public claim.
   `Pending` and `Approved` still require NULL. The table is rebuilt in the migration transaction, and
   the down migration fails closed rather than inventing a result. No wire layout, write-set rule,
   vector or `engine_version` changes.
+- `spec-version = 36` (personal-cfo-1cltt.4, part C) states how the genesis snapshot is named and
+  resumed (C.8 "The genesis snapshot's id and a resume": a derived id, the saved container is what
+  a resume sends, a fresh container is sent only when the service does not hold the id, the persisted
+  genesis is the authority, a vault that has synced before never mints one, and a vault that changed after the export is `EnabledWithLocalChanges`, never `Enabled`). One vector
+  (`genesis_snapshot_id`). No wire layout, write-set rule, `engine_version` or schema change.
+- `spec-version = 35` (personal-cfo-1cltt.4, part B) states how a snapshot is published and where
+  its plaintext is read from (C.8 "Publishing a snapshot": a genesis by `installEpoch`, a later
+  snapshot by `publishSnapshot`, the live vault only for a genesis, no publish while halted or
+  stopped, a refused stage while enabling is not read as the vault being known) and the lifecycle
+  of the saved sealed snapshot file (C.4 "Saved sealed snapshot"). No wire layout, write-set rule,
+  vector or `engine_version` change, and no schema change.
 - `spec-version = 34` (personal-cfo-1cltt.4, schema version 68) adds the SQLite home of the counter
   register and of the genesis a device mints at sync-enable: the class-3 tables
   `sync_counter_register`, `sync_saved_snapshot` and `sync_genesis` (inventory rows, all excluded from
@@ -1505,6 +1516,38 @@ receives and accepts only an exact-byte retry afterwards, as a duplicate-detecti
 backstop and never as the security source. The same independent witness also
 protects the newest verified membership head and the accepted epoch chain (C.6).
 
+### Saved sealed snapshot
+
+A snapshot's container can be up to 1 GiB, so the exact bytes sealed for a publish are a **file**,
+never a database row, kept so that a retransmission of the same publish sends the same ciphertext
+and burns no second counter. The device-local table `sync_saved_snapshot` holds the record that
+names it (ids, the plaintext's SHA-256, the container's SHA-256 and length, the counter). The file's
+lifecycle:
+
+- **Path.** `sync/snapshots/<snapshot id as 32 lowercase hex digits>.snapshot`, in the `sync/`
+  directory beside `vault.db`. Its temporary name is `.<same name>.tmp` in the same directory.
+- **Write.** Atomic: to the temporary name, flushed to disk, renamed over the final name, and the
+  directory flushed, so a crash leaves the old file or the new one whole. The register's record is
+  written only after the file is.
+- **Reuse.** Only when the record, the file's length and the file's SHA-256 all agree, the header
+  still names the key epoch and device, and the register has advanced past the saved counter. A
+  file that is missing or fails any check is not reusable: the publish reseals with a fresh
+  counter and the record is replaced.
+- **Dropped** once the publish is accepted (a re-snapshot published, a genesis installed), or when a
+  genesis is refused as `VaultKnown`. Any other answer, `Unavailable` included, keeps the file: the
+  client then resends exactly these bytes, because resealing the same snapshot id with a new
+  counter would be a different byte string and an `ObjectConflict`.
+- **Replaced** when a seal is for a different publish: the record is replaced and the earlier
+  file is removed.
+- **Backups.** Excluded. A backup is `vault.db`, the envelope and the attachment blobs; a restore
+  clears `sync/` and the restored register row names a file that is gone, which the rule above
+  treats as not reusable.
+- **Deletion.** Removed with the vault (the whole `sync/` directory goes).
+- **Key rotation.** Not re-encrypted: it is ciphertext under the epoch key, not a copy of vault
+  data. A rotation neither reads nor rewrites it, and a seal under a new epoch is a new publish.
+- **Sweeps.** Any housekeeping of `sync/` temporary files must leave `snapshots/` alone: its
+  temporary names belong to a write in flight.
+
 ## C.5 Idempotency keys and the tag
 
 Every idempotency key that enters a Sync envelope is a UUID version 4 drawn from
@@ -1988,6 +2031,70 @@ the typed error `SnapshotTooLarge` until a chunked framing is specified.
 Publication follows ADR 0074 Decision 1: the service accepts a snapshot only when
 `base_seq` equals the current head and the snapshot, its artifact closure and
 every closure pin are durable in one compare-and-swap transaction.
+
+### Publishing a snapshot
+
+A **genesis** (the first snapshot of a vault, sealed under epoch 1) is published by `installEpoch`
+with `reason 1`, `base_seq` `0`, the genesis records exactly as the device persisted them, and the
+snapshot's closure sidecar (empty until class-1b artifacts join the genesis). A later snapshot (a
+re-snapshot that truncates a tail) is published by `publishSnapshot` with `base_seq` equal to the
+head and to the snapshot's own; a snapshot that starts a key epoch is never sent there. A client
+stages the snapshot first. A refused stage while enabling is not evidence of anything, because the
+service refuses the account credential at `stageSnapshot` once the genesis is installed (which is
+the state after a lost `installEpoch` response): the client goes on to `installEpoch` with the same
+bytes, and only that answer says the vault is known (`VaultExists`, R39), after which the genesis is
+never published or re-minted and nothing in the vault is discarded.
+
+**The genesis snapshot's id and a resume.** The genesis snapshot's `object_id` is not random: it is
+the first 16 bytes of `SHA-256("dohflow/genesis-snapshot-id/v1" ‖ genesis_epoch_record_id)` with the
+UUID version (4) and variant bits set, so a client that resumes after a crash or a lost response
+names the snapshot its first attempt named without persisting anything more.
+`genesis_epoch_record_id` is the identifier of the vault's genesis epoch record (C.6 "Signed record
+container": `SHA-256` of the record's body bytes, 32 raw bytes). The body carries the `vault_id`, so
+the id binds the vault: no two vaults share one. This is the **one** `object_id` that is not drawn
+from a CSPRNG: C.5's rule is about idempotency keys, and an `object_id` is only an identifier the
+service stores. The derived id is version-4 formatted for the wire and is unpredictable to anyone
+without the genesis epoch record, which the service already holds, so it reveals nothing new. The
+vector `genesis_snapshot_id` (C.14) pins one input and its 16 bytes. A resume sends the
+**saved container** of that snapshot (C.4 "Saved sealed snapshot") exactly as it was sealed, and
+reads nothing from the vault: if the vault changed in between, re-exporting would build a different
+snapshot under an id the service may already hold. The client exports the live vault and seals again
+**only when the service does not hold the id**. A container sealed in this attempt has never been
+sent, so if the service answers `ObjectConflict` at the stage (an earlier attempt staged another
+container under the derived id), or answers `installEpoch` with an exact retry of a genesis it has
+already installed (the `200` of protocol 4.4), the service holds an earlier attempt's snapshot that
+this device can no longer send, and publishing the new one would either be refused or leave the
+service's snapshot installed while the origin holds changes no envelope carries. The client then
+stops in the persisted terminal state `GenesisResumeLost` (vault-format B.2, `sync_genesis`):
+nothing is published, minted or discarded, a restart does not retry (every retry would seal again
+and burn a counter), and Sync status shows it with the support path. A resume that sends the **saved**
+container is different: it is the container the service already holds, so a refused stage, an
+`ObjectConflict` or an already-published answer all go on to `installEpoch`, whose `200` decides. The
+client records the outcome (`Published`, `VaultKnown` or `GenesisResumeLost`) **before** it drops the
+saved container. The enable sequence persists the genesis records before it installs any key from
+them, and a vault that holds a persisted genesis never mints another. A vault that holds a sync base
+or any outbox row and no persisted genesis never mints a genesis; it joins as a replica. And no
+genesis is exported from the live vault once it holds either.
+
+**The vault after the export.** The genesis snapshot is exactly the state the export read, and the
+`operation_log` high-water mark of that same read transaction is persisted with the genesis
+(`export_high_water`, B.2 `sync_genesis`) before anything is sealed. A command taken after the
+export is not in the genesis, and until the device is armed (a `sync_base` row exists) it is not
+recorded in the outbox either, so no envelope will ever carry it. Once the genesis is published the
+client therefore compares the log with the mark: equal is `Enabled`; a log that has grown past it is
+`EnabledWithLocalChanges`, never `Enabled`, and the device is not armed while that is so. The
+reconciliation (a base built from the genesis plaintext, and the commands after the mark enqueued as
+unpushed work over the genesis head) is the replica bootstrap's (`personal-cfo-1cltt.5`).
+
+**Where the plaintext is read from.** Only a genesis is read from the live vault, at sync-enable,
+before any outbox row exists. The live vault holds the effects of local commands no envelope has
+sequenced, so every other snapshot is read from a state equal to the log at the snapshot's head,
+and the client refuses to publish a snapshot after the genesis whose source is the live vault
+(before it seals, spends a counter or makes a request).
+
+**While halted or stopped.** A replica halted at a poisoned position, or stopped at an invalid
+envelope or an engine version it does not run, publishes no snapshot (ADR 0074 Addendum D rule 5);
+the client refuses locally, before it seals, spends a counter or makes a request.
 
 ## C.9 Artifact transport
 
@@ -2571,6 +2678,7 @@ written `N x 0xNN`.
 | Idempotency key | `4a3b2c1d-9e8f-4a7b-8c6d-5e4f3a2b1c0d` as 16 raw bytes |
 | Command metadata | `command_id` `01938f2e-7c1a-7b3d-9a4e-123456789abc`; `correlation_id` 16 x `0x22`; `causation_id` absent; `actor_type` 1; `actor_id` `device-a-user`; `issued_at` 1_790_000_000_000_000; `device_id` = device A |
 | Sample header fields | `base_seq` 41; `payload_schema_version` 1; `engine_version` `dohflow-0.3.0`; `schema_version` 55; `invocation_counter` 0; the snapshot's `object_id` 16 x `0x33`; `nonce_domain` and fingerprint as derived for device A |
+| Genesis snapshot id | `genesis_epoch_record_id` 32 x `0x5a` (the input of `genesis_snapshot_id`, C.8) |
 | Envelope plaintext | `write_set_hash` 32 x `0x44`; payload `{"amount_minor":"-1250","currency":"USD"}`; the delta manifest is the two sample artifact ids in ascending byte order |
 | Local storage ids | 32 x `0x5a` and 32 x `0x6b`; the manifest commitment covers the two epoch-1 artifact ids |
 | Sample artifact | `artifact_kind` 1; plaintext `synthetic document` (18 bytes); `logical_metadata` `{"mime_type":"text/plain"}`; the address and keys of the first storage id at epoch 1 |
@@ -2672,6 +2780,7 @@ the canonical manifest whose bytes the export vectors seal.
 <!-- sync-vector: artifact_id_epoch1=d250092c040686d891c21151a01b44a593e22451b71f872fbf367c9327fd90de -->
 <!-- sync-vector: artifact_id_epoch2=b8532c2b8f48fc07410d0fcaab93293882b32a0dc4cbb6d9263ddd4d5b708273 -->
 <!-- sync-vector: artifact_id_readdress_epoch2=684c15bc0b06fbaa3d36a0ee22f46e32c230390ab1b98f934c004016d0dba999 -->
+<!-- sync-vector: genesis_snapshot_id=2485cd189d53493584d44603bc2083d4 -->
 <!-- sync-vector: artifact_manifest_commitment=e9f048d0e627a918249c19bd2df94315be7373469a5af23869cd32c65cd88631 -->
 <!-- sync-vector: write_set_hash_sample=5e2ef15d19742bcf1f39b0071f115a9c5b1f427f11eb3eb3468cf08bbdfe3f11 -->
 <!-- sync-vector: artifact_object_key=57441986f4b6610011f5efa0aa280eb3dd5f415d6275d4e823e03048851944e1 -->

@@ -68,6 +68,18 @@ pub fn sync_dir(vault_path: &Path) -> PathBuf {
         .join(SYNC_DIR)
 }
 
+/// The directory under [`SYNC_DIR`] that holds the sealed snapshot saved for an exact-byte
+/// retransmission (`personal-cfo-1cltt.4`, `vault-format.md` C.4 "Saved sealed snapshot").
+pub const SAVED_SNAPSHOTS_DIR: &str = "snapshots";
+
+/// Where the saved sealed snapshots of the vault at `vault_path` live: `sync/snapshots`, one
+/// `<snapshot id as 32 hex digits>.snapshot` file per publish in flight. The directory is the
+/// caller's to create (`std::fs::create_dir_all`) before the first seal.
+#[must_use]
+pub fn saved_snapshots_dir(vault_path: &Path) -> PathBuf {
+    sync_dir(vault_path).join(SAVED_SNAPSHOTS_DIR)
+}
+
 /// Where the base image of the vault at `vault_path` lives.
 #[must_use]
 pub fn base_image_path(vault_path: &Path) -> PathBuf {
