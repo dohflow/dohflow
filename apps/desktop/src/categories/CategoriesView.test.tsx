@@ -81,6 +81,19 @@ describe("CategoriesView", () => {
     expect(screen.getAllByText("Default").length).toBeGreaterThan(0);
   });
 
+  // personal-cfo-i93n3.28 slice 7: reflow only at the largest text size on a phone (compact-only classes; desktop unchanged).
+  it("reflows on a phone: the row, its name and badges, and its actions wrap; nothing wraps unconditionally", async () => {
+    renderWithClient(<CategoriesView />);
+    const name = await screen.findByText("Food and Drink");
+    expect(name).toHaveClass("compact:[overflow-wrap:anywhere]");
+    const labelGroup = name.parentElement!;
+    expect(labelGroup).toHaveClass("compact:flex-wrap", "compact:min-w-0");
+    expect(labelGroup.parentElement).toHaveClass("compact:flex-wrap");
+    const actions = screen.getByRole("button", { name: "Edit Food and Drink" }).parentElement!;
+    expect(actions).toHaveClass("compact:flex-wrap");
+    for (const el of [labelGroup, labelGroup.parentElement!, actions]) expect(el).not.toHaveClass("flex-wrap");
+  });
+
   it("creates a user category with an emoji + color at creation (kogu)", async () => {
     renderWithClient(<CategoriesView />);
     await screen.findByText("Coffee");
