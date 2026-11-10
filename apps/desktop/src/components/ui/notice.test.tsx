@@ -53,6 +53,22 @@ test("a notice is a polite status inside the Notifications region, with an Undo 
   expect(inRegion.getByRole("button", { name: "Undo" })).toBeInTheDocument();
 });
 
+// personal-cfo-i93n3.28: at the largest text size on a phone the actions used to run off the edge and overlap the words.
+test("on a phone the row wraps its actions under the message and the message keeps a floor (compact-only classes)", () => {
+  renderShell();
+  act(() => notify({ message: "Removed Glassmoor Streaming.", undo: undoOk() }));
+  frame();
+  const status = within(card()).getByRole("status");
+  const row = status.parentElement!;
+  expect(row).toHaveClass("compact:flex-wrap");
+  expect(status).toHaveClass("compact:min-w-[min(100%,10rem)]", "compact:[overflow-wrap:anywhere]");
+  // The desktop row is unchanged: the message and the buttons share one line.
+  expect(row).toHaveClass("flex", "items-center");
+  // The wrap is compact-only: nothing wraps unconditionally (a bare `flex-wrap` would reach the desktop too).
+  expect(row).not.toHaveClass("flex-wrap");
+  expect(status).not.toHaveClass("min-w-[min(100%,10rem)]");
+});
+
 // A live region that mounts together with its text is not reliably announced (review F1): the status
 // element is in the page EMPTY first, and the message arrives on the next frame.
 test("the status element mounts empty and receives its message on the next frame", () => {
