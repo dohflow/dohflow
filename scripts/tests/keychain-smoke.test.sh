@@ -52,7 +52,7 @@ grep -q 'MissingEntitlement' "$SCRIPT" && pass "requires MissingEntitlement unen
 case_start "a kept bundle is never overwritten or deleted, and a bundle this Mac cannot run needs --sign-only"
 grep -q 'already exists: this script never overwrites or deletes it' "$SCRIPT" && pass "refuses an existing kept bundle" || fail "no overwrite guard"
 grep -q 'cannot be run here. Use --sign-only' "$SCRIPT" && pass "refuses to run a foreign-architecture bundle" || fail "no architecture guard"
-grep -q "trap 'rm -rf \"\$work\"' EXIT" "$SCRIPT" && ! grep -v '^[[:space:]]*#' "$SCRIPT" | grep -Eq 'rm -rf[^|]*\$keep' \
+grep -q "trap 'rm -rf \"\$work\"' EXIT" "$SCRIPT" && ! grep -Eq 'rm -rf[^|]*\$keep' <<<"$code_only" \
   && pass "only the temporary directory is ever removed" || fail "the script removes something other than its temporary directory"
 
 case_start "the conformance line in the PASS block is derived from the availability the Mac reported"

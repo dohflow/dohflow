@@ -76,7 +76,7 @@ pub enum SecretError {
     /// A store stopped at `step` with the platform's numeric status `code` (an `OSStatus` on Apple
     /// platforms, `0` when the platform refused without giving one). Never a message. It is returned
     /// for every refusal at a store step except the ones with a typed meaning of their own (a missing
-    /// entitlement), so a caller can name the step and the code and not guess a cause.
+    /// entitlement, a locked keychain), so a caller can name the step and the code and not guess a cause.
     #[error("the platform secret store refused the {} step (status {code})", .step.label())]
     StoreFailed { step: StoreStep, code: i64 },
 }

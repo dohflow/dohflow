@@ -51,6 +51,8 @@ struct Spy {
     store_error: Mutex<Option<SecretError>>,
     /// When set, storing the markers' sibling item fails with it.
     markers_store_error: Mutex<Option<SecretError>>,
+    /// When set, reading a tag fails with it (the store cannot answer).
+    tag_read_error: Mutex<Option<SecretError>>,
     /// While set, `load_secret` blocks (the prompt is up) until `release_load` is called.
     hold_load: AtomicBool,
     loads_entered: AtomicU32,
@@ -144,6 +146,9 @@ impl SecretStore for Spy {
     }
 
     fn public_tag(&self, key: &SecretKey) -> Result<Option<PublicTag>, SecretError> {
+        if let Some(error) = self.tag_read_error.lock().unwrap().clone() {
+            return Err(error);
+        }
         self.inner.public_tag(key)
     }
 
@@ -174,6 +179,7 @@ impl Rig {
             load_error: Mutex::default(),
             store_error: Mutex::default(),
             markers_store_error: Mutex::default(),
+            tag_read_error: Mutex::default(),
             hold_load: AtomicBool::new(false),
             loads_entered: AtomicU32::new(0),
             load_released: (Mutex::new(false), Condvar::new()),
@@ -1224,6 +1230,71 @@ fn a_change_does_not_start_when_the_item_cannot_be_removed_first() {
     rig.lock();
     rig.password_unlock();
     assert!(rig.item_exists());
+}
+
+// An item with no markers item is one no flow would ever use or remove, so the sweep removes it. It
+// happens after the 0.4.0 layout (the markers on the item itself), a crash between writing the item and
+// its markers, and a cleanup that failed halfway.
+#[test]
+fn an_item_with_no_markers_item_is_removed_by_the_launch_sweep() {
+    let rig = Rig::new();
+    rig.enable();
+    rig.store.inner.delete_secret(&Rig::markers_key()).unwrap();
+    assert!(!rig.nothing_left(), "only the item is left");
+    assert_eq!(rig.status().state, TouchIdStateDto::Off);
+    touch::sweep(&rig.state);
+    assert!(
+        rig.nothing_left(),
+        "the sweep removes the item with no markers"
+    );
+}
+
+#[test]
+fn an_item_with_no_markers_item_is_removed_by_the_next_password_unlock() {
+    let rig = Rig::new();
+    rig.enable();
+    rig.lock();
+    rig.store.inner.delete_secret(&Rig::markers_key()).unwrap();
+    rig.password_unlock();
+    assert!(rig.nothing_left());
+}
+
+#[test]
+fn the_layout_0_4_0_wrote_is_removed_not_left_behind() {
+    // 0.4.0 stored the markers as the biometric item's own tag and wrote no sibling.
+    let rig = Rig::new();
+    rig.store.inner.allow_tag_access_on_biometric_items(true);
+    rig.store
+        .inner
+        .store_secret_tagged(
+            &Rig::key(),
+            &SecretValue::new(&[7_u8; 81]).unwrap(),
+            AccessPolicy::DeviceOnlyBiometryCurrentSet,
+            Some(&PublicTag::new(b"0.4.0 markers").unwrap()),
+        )
+        .unwrap();
+    assert!(rig.store.inner.contains(&Rig::key()));
+    assert!(!rig.store.inner.contains(&Rig::markers_key()));
+    assert_eq!(rig.status().state, TouchIdStateDto::Off);
+    touch::sweep(&rig.state);
+    assert!(rig.nothing_left(), "the old layout's item is removed");
+    // And Turn on works again.
+    rig.store.inner.allow_tag_access_on_biometric_items(false);
+    rig.enable();
+}
+
+#[test]
+fn a_store_that_cannot_answer_leaves_the_item_alone() {
+    let rig = Rig::new();
+    rig.enable();
+    *rig.store.tag_read_error.lock().unwrap() =
+        Some(SecretError::Unavailable(UnavailableReason::Locked));
+    touch::sweep(&rig.state);
+    *rig.store.tag_read_error.lock().unwrap() = None;
+    assert!(
+        rig.item_exists(),
+        "an unanswered read is not a reason to delete"
+    );
 }
 
 #[test]

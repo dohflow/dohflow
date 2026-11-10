@@ -433,6 +433,12 @@ impl TouchId {
                 None => true,
             },
             Ok(None) => true,
+            // No markers item. Nothing offers Touch ID without one (the status reads Off), so an item
+            // that has none is one no flow will ever use or remove: the layout 0.4.0 wrote (the markers
+            // on the item itself), a crash between writing the item and its markers, or a cleanup that
+            // failed halfway. Removing it is safe: deleting what is not there is not an error.
+            Err(SecretError::NotFound) => true,
+            // The store could not answer (no entitlement, a locked keychain): leave everything alone.
             Err(_) => false,
         };
         if stale {

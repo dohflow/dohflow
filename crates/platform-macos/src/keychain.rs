@@ -285,6 +285,7 @@ impl SecretStore for MacSecretStore {
                     } else {
                         let code = CFErrorGetCode(error);
                         CFRelease(error as CFTypeRef);
+                        // An `OSStatus` is an `i32`; a code that does not fit is not one, and reads as "none".
                         i32::try_from(code).unwrap_or(NO_STATUS_GIVEN)
                     };
                     return Err(store_step_error(StoreStep::AccessControl, code));

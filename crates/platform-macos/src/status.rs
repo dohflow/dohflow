@@ -35,6 +35,7 @@ pub fn map_os_status(status: i32) -> SecretError {
 /// The status [`SecretError::StoreFailed`] carries when the platform refused a step without an error
 /// object to read (a null access control with no `CFError`). `0` is `errSecSuccess`, so it can never be
 /// a real failure code and reads as "no code given".
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const NO_STATUS_GIVEN: i32 = 0;
 
 /// The error for a store step that failed with `status`: the typed error when the status means
@@ -44,6 +45,7 @@ pub const NO_STATUS_GIVEN: i32 = 0;
 /// "the user cancelled" or "authentication failed" from a status: those describe a prompt, and a store
 /// shows none, so they would mislead a caller that read them as a wrong finger.
 #[must_use]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn store_step_error(step: StoreStep, status: i32) -> SecretError {
     match map_os_status(status) {
         error @ SecretError::Unavailable(
