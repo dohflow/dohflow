@@ -26,7 +26,7 @@ const COPY: Record<string, string> = {
   store_unavailable:
     "DohFlow can't reach your Mac's secure storage right now. Enter your master password.",
   store_refused:
-    "Your Mac wouldn't store the Touch ID key, so Touch ID stays off. Use your master password.",
+    "DohFlow couldn't turn on Touch ID. It stays off for this vault. Use your master password.",
   not_enabled: "Touch ID is off for this vault.",
   prompt_not_completed:
     "Touch ID didn't unlock the vault. Try again, or enter your master password.",

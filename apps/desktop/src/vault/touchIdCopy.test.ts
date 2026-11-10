@@ -51,3 +51,12 @@ describe("Touch ID reason copy", () => {
     );
   });
 });
+
+describe("the store_refused line", () => {
+  // Studio's formal verdict on xuu: the exact words, pinned so a rewording is a review, not an edit.
+  it("is Studio's approved sentence", () => {
+    expect(touchIdReasonCopy("store_refused")).toBe(
+      "DohFlow couldn't turn on Touch ID. It stays off for this vault. Use your master password.",
+    );
+  });
+});
