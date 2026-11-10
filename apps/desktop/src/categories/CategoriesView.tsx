@@ -114,10 +114,10 @@ export function CategoriesView() {
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between compact:flex-wrap compact:gap-2">
         <h2 className="text-lg font-semibold tracking-tight">Categories</h2>
         {!adding && (
-          <Button size="sm" onClick={() => setAdding(true)}>
+          <Button size="sm" className="compact:h-auto compact:max-w-full compact:whitespace-normal" onClick={() => setAdding(true)}>
             <Plus aria-hidden />
             Add category
           </Button>

@@ -92,6 +92,10 @@ describe("CategoriesView", () => {
     const actions = screen.getByRole("button", { name: "Edit Food and Drink" }).parentElement!;
     expect(actions).toHaveClass("compact:flex-wrap");
     for (const el of [labelGroup, labelGroup.parentElement!, actions]) expect(el).not.toHaveClass("flex-wrap");
+    // The header's Add category button wraps its label and its row wraps.
+    const add = screen.getByRole("button", { name: /Add category/ });
+    expect(add).toHaveClass("compact:whitespace-normal", "compact:max-w-full");
+    expect(add.parentElement).toHaveClass("compact:flex-wrap");
   });
 
   it("creates a user category with an emoji + color at creation (kogu)", async () => {
