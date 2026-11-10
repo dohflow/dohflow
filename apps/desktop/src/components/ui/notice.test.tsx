@@ -64,6 +64,9 @@ test("on a phone the row wraps its actions under the message and the message kee
   expect(status).toHaveClass("compact:min-w-[min(100%,10rem)]", "compact:[overflow-wrap:anywhere]");
   // The desktop row is unchanged: the message and the buttons share one line.
   expect(row).toHaveClass("flex", "items-center");
+  // The wrap is compact-only: nothing wraps unconditionally (a bare `flex-wrap` would reach the desktop too).
+  expect(row).not.toHaveClass("flex-wrap");
+  expect(status).not.toHaveClass("min-w-[min(100%,10rem)]");
 });
 
 // A live region that mounts together with its text is not reliably announced (review F1): the status
