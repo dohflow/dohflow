@@ -478,7 +478,9 @@ export function ScenariosView({
             type="date"
             aria-label={`Expiry for ${scenario.name}`}
             disabled={busy}
-            className="h-8 w-36"
+            // A native date field has an intrinsic minimum width on iOS that min-width cannot lower: on a phone it drops its
+            // native appearance and takes its column's width (FRONTEND.md, Reflow, not clipping).
+            className="h-8 w-36 compact:w-full compact:max-w-full compact:appearance-none"
             defaultValue={scenario.expires_on ?? ""}
             key={`${scenario.id}:${scenario.expires_on ?? ""}`}
             onBlur={(e) => {
@@ -600,8 +602,8 @@ export function ScenariosView({
   return (
     <div className="flex flex-col gap-4">
       <Card>
-        <CardHeader className="flex flex-row items-start justify-between gap-4">
-          <div>
+        <CardHeader className="flex flex-row items-start justify-between gap-4 compact:flex-wrap">
+          <div className="compact:min-w-0 compact:basis-full">
             <CardTitle ref={headingRef} tabIndex={-1} className="focus-visible:outline-none">
               Scenarios
             </CardTitle>
@@ -611,7 +613,7 @@ export function ScenariosView({
               forecast.
             </CardDescription>
           </div>
-          <Button size="sm" onClick={() => setCreating((v) => !v)}>
+          <Button size="sm" className="compact:h-auto compact:max-w-full compact:whitespace-normal" onClick={() => setCreating((v) => !v)}>
             <FolderPlus aria-hidden className="size-4" />
             New scenario
           </Button>
@@ -627,7 +629,7 @@ export function ScenariosView({
                   onChange={(e) => setName(e.target.value)}
                   maxLength={SCENARIO_NAME_MAX}
                   placeholder="Maternity leave"
-                  className="w-64"
+                  className="w-64 compact:w-full compact:max-w-full"
                 />
               </div>
               <Button type="submit" disabled={busy}>
