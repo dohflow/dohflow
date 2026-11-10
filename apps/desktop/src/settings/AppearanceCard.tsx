@@ -29,7 +29,7 @@ export function AppearanceCard() {
           <div
             role="radiogroup"
             aria-labelledby="appearance-label"
-            className="mt-1 inline-flex w-fit rounded-md border border-input"
+            className="mt-1 inline-flex w-fit rounded-md border border-input compact:flex compact:w-full compact:max-w-full compact:flex-wrap"
           >
             {THEME_PREFERENCES.map((option, index) => (
               <button
@@ -39,7 +39,7 @@ export function AppearanceCard() {
                 aria-checked={preference === option}
                 onClick={() => setPreference(option)}
                 className={cn(
-                  "px-3 py-1.5 text-sm font-medium transition-colors focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                  "px-3 py-1.5 text-sm font-medium transition-colors compact:flex-1 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
                   index === 0 && "rounded-l-md",
                   index === THEME_PREFERENCES.length - 1 && "rounded-r-md",
                   index > 0 && "border-l border-input",

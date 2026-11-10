@@ -226,6 +226,21 @@ describe("SettingsView", () => {
     expect(await screen.findByText(/saved/i)).toBeInTheDocument();
   });
 
+  // personal-cfo-i93n3.28 slice 7: reflow only at the largest text size on a phone (compact-only classes; desktop unchanged).
+  it("lets every button in Settings wrap on a phone (one container rule), and the theme control fill its row", async () => {
+    const { container } = renderWithClient(<SettingsView />);
+    const group = await screen.findByRole("radiogroup", { name: "Appearance" });
+    const page = container.querySelector(".\\@container")!;
+    for (const rule of ["compact:[&_button]:h-auto", "compact:[&_button]:max-w-full", "compact:[&_button]:whitespace-normal"]) {
+      expect(page.className).toContain(rule);
+    }
+    // Desktop: the page has no unconditional wrap rule, and the theme control is still a fitted inline segmented control.
+    expect(page.className).not.toMatch(/(^|\s)\[&_button\]/);
+    expect(group).toHaveClass("inline-flex", "w-fit");
+    expect(group).toHaveClass("compact:flex", "compact:w-full", "compact:flex-wrap");
+    expect(screen.getByRole("radio", { name: "System" })).toHaveClass("compact:flex-1");
+  });
+
   it("renders the Appearance card (personal-cfo-17u1)", async () => {
     renderWithClient(<SettingsView />);
     // The section's wrapper title and the card's own title (4d8.39.1: cards are unchanged inside it).
