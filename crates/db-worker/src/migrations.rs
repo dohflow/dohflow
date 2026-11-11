@@ -4116,7 +4116,8 @@ mod tests {
         );
         assert!(origin.is_ok(), "an unchanged cursor is not a move back");
 
-        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 1);
+        // 70 (the outbox rebuild, no rows here) comes down with 69.
+        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 2);
         assert!(
             objects(&conn).is_empty(),
             "down drops both tables and every trigger"
