@@ -73,6 +73,7 @@ mod forecast_persist;
 mod ingestion;
 mod jobs;
 pub mod logical_export;
+mod wal_guard;
 pub use jobs::{
     DurableJobView, JobStoreError, CONNECTOR_REFRESH_JOB_KIND, LOCK_RELEASING_JOB_KINDS,
 };
@@ -1595,6 +1596,20 @@ pub enum DbError {
     /// (personal-cfo-g3m.20), so no connection was keyed.
     #[error("the encryption library did not finish starting up")]
     CipherUnavailable,
+    /// A `-wal` file beside the database was written with a page size this app never uses
+    /// (personal-cfo-5vto5, RUSTSEC-2026-0459). Nothing was opened and the file was not touched: a real
+    /// log can hold committed work that has not been checkpointed yet. The sizes are all that is
+    /// reported (no path crosses the boundary).
+    #[error(
+        "a write-ahead log beside the vault was written with a page size of {found_page_size} bytes, \
+         not the {expected_page_size} this vault uses; it was left untouched and the vault was not opened"
+    )]
+    WalHeaderMismatch {
+        /// The page size the file's header names.
+        found_page_size: u32,
+        /// The page size every vault uses.
+        expected_page_size: u32,
+    },
     /// The write-ahead log could not be fully truncated because a reader still holds the
     /// database open (`wal_checkpoint(TRUNCATE)` reported busy).
     #[error("the write-ahead log could not be fully checkpointed: a reader is still open")]
@@ -5157,6 +5172,8 @@ fn open_vault_connection(path: &Path, flags: OpenFlags) -> Result<Connection, Db
     if !ensure_cipher_ready() {
         return Err(DbError::CipherUnavailable);
     }
+    // Before SQLite sees the file: a sibling `-wal` with a different page size is refused untouched.
+    wal_guard::check_wal_header(path)?;
     Ok(Connection::open_with_flags(path, flags)?)
 }
 

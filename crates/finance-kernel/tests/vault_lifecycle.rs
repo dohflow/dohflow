@@ -127,3 +127,68 @@ fn existing_envelope_with_missing_db_never_creates_a_replacement_on_unlock() {
     assert!(!path.exists());
     assert!(dir.path().join("preserved.db").exists());
 }
+
+/// A `-wal` with a page size this app never uses (personal-cfo-5vto5, RUSTSEC-2026-0459) is refused at
+/// unlock with its own typed error, and the vault and its log are left exactly as they were.
+#[test]
+fn unlock_refuses_a_mismatched_wal_with_a_typed_error_and_touches_nothing() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("vault.db");
+    let kernel = Kernel::create_vault(&path, PASSWORD).expect("create vault");
+    kernel
+        .dispatch(CommandEnvelope::new(
+            meta(),
+            CreateAccount::new(account_named("Checking")),
+        ))
+        .expect("create account");
+    // While the vault is open its `-wal` is real: keep a copy of both files, as a crash or a copied
+    // folder would leave them.
+    let mut wal = path.as_os_str().to_owned();
+    wal.push("-wal");
+    let wal = std::path::PathBuf::from(wal);
+    let copy_dir = TempDir::new().unwrap();
+    let copy = copy_dir.path().join("vault.db");
+    std::fs::copy(&path, &copy).unwrap();
+    // The key envelope sits beside the vault.
+    let mut envelope = path.as_os_str().to_owned();
+    envelope.push(".envelope");
+    let mut copy_envelope = copy.as_os_str().to_owned();
+    copy_envelope.push(".envelope");
+    std::fs::copy(&envelope, &copy_envelope).unwrap();
+    let mut copy_wal = copy.as_os_str().to_owned();
+    copy_wal.push("-wal");
+    let copy_wal = std::path::PathBuf::from(copy_wal);
+    std::fs::copy(&wal, &copy_wal).unwrap();
+    kernel.lock();
+
+    let mut bytes = std::fs::read(&copy_wal).unwrap();
+    bytes[8..12].copy_from_slice(&8192_u32.to_be_bytes());
+    std::fs::write(&copy_wal, &bytes).unwrap();
+    let main_before = std::fs::read(&copy).unwrap();
+
+    let refused = Kernel::unlock_vault(&copy, PASSWORD)
+        .err()
+        .expect("refused");
+    assert!(
+        matches!(
+            refused,
+            KernelError::WalHeaderMismatch {
+                found_page_size: 8192,
+                expected_page_size: 4096
+            }
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        std::fs::read(&copy_wal).unwrap(),
+        bytes,
+        "the -wal is untouched"
+    );
+    assert_eq!(
+        std::fs::read(&copy).unwrap(),
+        main_before,
+        "the vault is untouched"
+    );
+    let text = refused.to_string();
+    assert!(text.contains("8192") && text.contains("4096") && !text.contains("vault.db"));
+}
