@@ -95,6 +95,10 @@ test("stacks its controls at full width on a phone, scrolls when tall and clears
     expect(bar.className).toContain(rule);
   }
   expect(bar).toHaveClass("flex-wrap", "fixed", "bottom-5");
+  // Every button in the bar may wrap its label and grow taller (one rule, the shared COMPACT_WRAP_BUTTONS).
+  for (const rule of ["compact:[&_button]:h-auto", "compact:[&_button]:max-w-full", "compact:[&_button]:whitespace-normal"]) {
+    expect(bar.className).toContain(rule);
+  }
   expect(bar).not.toHaveClass("flex-col");
   expect(screen.getByRole("button", { name: "Categorize selected" }).closest("div.w-44")).toHaveClass("compact:w-full");
   const tag = screen.getByLabelText("Add or create tag");

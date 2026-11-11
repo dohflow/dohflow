@@ -1,3 +1,4 @@
+import { COMPACT_WRAP_BUTTONS } from "@/lib/sheet";
 import { useRef, useState } from "react";
 import { Check, Loader2, Trash2, X } from "lucide-react";
 
@@ -252,7 +253,7 @@ export function BulkTransactionActions({
   return (
     // A floating bar pinned to the bottom of the viewport (feedback 2026-07-03): the user can
     // keep scrolling and selecting without losing the actions off-screen.
-    <div className="fixed bottom-5 left-1/2 z-40 flex max-w-[calc(100vw-3rem)] -translate-x-1/2 flex-wrap items-center gap-2 rounded-xl border bg-card px-3 py-2 text-sm shadow-lg compact:bottom-[max(1.25rem,var(--safe-area-bottom))] compact:max-h-[60dvh] compact:w-[calc(100vw-2rem)] compact:max-w-none compact:flex-col compact:items-stretch compact:overflow-y-auto">
+    <div className={`fixed bottom-5 left-1/2 z-40 flex max-w-[calc(100vw-3rem)] -translate-x-1/2 flex-wrap items-center gap-2 rounded-xl border bg-card px-3 py-2 text-sm shadow-lg ${COMPACT_WRAP_BUTTONS} compact:bottom-[max(1.25rem,var(--safe-area-bottom))] compact:max-h-[60dvh] compact:w-[calc(100vw-2rem)] compact:max-w-none compact:flex-col compact:items-stretch compact:overflow-y-auto`}>
       <span className="font-medium">{count} selected</span>
       {count < total && (
         // Scope: every selectable row currently visible across BOTH lists — the inbox's
