@@ -939,6 +939,7 @@ dependencies = [
  "sha2",
  "sync-core",
  "thiserror 2.0.18",
+ "tracing",
  "uuid",
  "vault-crypto",
  "zeroize",

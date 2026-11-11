@@ -218,6 +218,7 @@ pub fn sample_header() -> ClearHeader {
             idempotency_key_tag: IdempotencyKeyTag::from_derived([1; 32]),
             immutable_metadata_commitment: MetadataCommitment::from_derived([2; 32]),
             artifact_manifest_commitment: None,
+            artifact_binding_commitment: None,
         },
         object_id: [0x11; 16],
         device_id: dev.device_id,

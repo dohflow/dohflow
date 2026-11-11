@@ -219,6 +219,9 @@ impl Kernel {
             }
             None => DbWorker::open_existing_with_raw_key(db_path, dek)?,
         };
+        // Rotation recovery has run (it precedes classification), so a blob nothing names is the
+        // ciphertext of a key that was never committed. Best effort: it never blocks an unlock.
+        let _ = worker.sweep_orphan_blobs();
         Ok(Self::with_worker(worker))
     }
 
@@ -353,6 +356,7 @@ impl Kernel {
         match DbWorker::open_existing_with_raw_key(db_path, material.dek) {
             Ok(worker) => {
                 if still_matches()? {
+                    let _ = worker.sweep_orphan_blobs();
                     Ok(Self::with_worker(worker))
                 } else {
                     // Dropping the worker releases the lock and scrubs the key.
@@ -1560,11 +1564,11 @@ mod old_backup_settings_tests {
             // What a 63 build had on disk: the unprefixed names, no tracker row for 64 or any
             // later migration, and none of their objects (66 adds the device-local Sync state, 67 the
             // outbox's issue time, 68 the counter register and the genesis, 69 the void ledger and
-            // the applied cursor).
+            // the applied cursor, 70 the artifact mapping, 71 the Sync notices).
             let conn = kernel.worker.read_connection().unwrap();
             conn.execute_batch(
                 "UPDATE settings SET key = substr(key, 6) WHERE key LIKE 'user.%';
-                 DELETE FROM schema_migrations WHERE version IN (64, 65, 66, 67, 68, 69);
+                 DELETE FROM schema_migrations WHERE version IN (64, 65, 66, 67, 68, 69, 70, 71);
                  DROP TRIGGER sync_position_no_delete;
                  DROP TRIGGER sync_position_forward;
                  DROP TABLE sync_position;
@@ -1575,6 +1579,11 @@ mod old_backup_settings_tests {
                  DROP TABLE sync_voids;
                  ALTER TABLE staged_transactions DROP COLUMN row_ordinal;
                  ALTER TABLE sync_outbox DROP COLUMN issued_at;
+                 DROP INDEX idx_sync_notices_pending;
+                 DROP TABLE sync_notices;
+                 DROP INDEX idx_sync_artifacts_staged_storage;
+                 DROP INDEX idx_sync_artifacts_logical;
+                 DROP TABLE sync_artifacts;
                  DROP TABLE sync_genesis;
                  DROP TABLE sync_saved_snapshot;
                  DROP TABLE sync_counter_register;

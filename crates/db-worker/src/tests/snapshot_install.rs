@@ -366,7 +366,10 @@ fn a_snapshot_that_needs_artifacts_installs_nothing() {
 
     // A non-empty closure.
     let (_dir, origin) = super::worker();
-    let closure = [[7_u8; 32]];
+    let closure = [sync_core::envelope::BoundArtifact {
+        id: [7_u8; 32],
+        ciphertext_sha256: [8_u8; 32],
+    }];
     let plaintext = export_genesis_plaintext(
         &origin.read_connection().unwrap(),
         &ExportInput {

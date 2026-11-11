@@ -102,7 +102,10 @@ fn sample_plaintext() -> (Vec<u8>, String) {
         first: 40,
         last: 44,
     }];
-    let artifacts = [[0x22; 32]];
+    let artifacts = [sync_core::envelope::BoundArtifact {
+        id: [0x22; 32],
+        ciphertext_sha256: [0x23; 32],
+    }];
     let plaintext = build(
         &Header {
             schema_version: 65,

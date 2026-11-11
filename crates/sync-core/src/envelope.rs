@@ -11,8 +11,8 @@ use thiserror::Error;
 
 use crate::cbe::{Reader, WireError, Writer};
 use crate::header::{
-    ClearHeader, IdempotencyKeyTag, ManifestCommitment, MetadataCommitment, NonceDomain,
-    ObjectKind, OBJECT_ENVELOPE,
+    BindingCommitment, ClearHeader, IdempotencyKeyTag, ManifestCommitment, MetadataCommitment,
+    NonceDomain, ObjectKind, OBJECT_ENVELOPE,
 };
 
 /// The plaintext's label.
@@ -238,6 +238,108 @@ pub(crate) fn manifest_bytes_bounded(ids: &[[u8; 32]], max: usize) -> Vec<u8> {
     w.finish()
 }
 
+/// The binding commitment of a manifest's ciphertext hashes (C.3, header field 18):
+/// `SHA-256(label "dohflow/sync-artifact-binding/v1" ‖ list(digest, N) of the ciphertext_sha256 of
+/// each artifact, in the strictly ascending order of the ids they belong to)`, with `N` the bound of
+/// the object type (4096 for an envelope's delta, 2^20 for a snapshot's closure). The caller passes
+/// the hashes **in id order**; the function does not sort them, because it never sees the ids.
+///
+/// This is the one function that defines the commitment: the client's producer and receiver and the
+/// service's check at the steps that require every receipt all call it.
+///
+/// # Errors
+/// [`WireError::TooLong`] if there are more than `max` hashes.
+pub fn binding_commitment(
+    hashes_in_id_order: &[[u8; 32]],
+    max: usize,
+) -> Result<BindingCommitment, WireError> {
+    let mut w = Writer::with_label("dohflow/sync-artifact-binding/v1");
+    w.list(max, hashes_in_id_order, |w, hash| {
+        w.fixed(hash);
+    })?;
+    Ok(BindingCommitment::from_derived(
+        Sha256::digest(w.as_bytes()).into(),
+    ))
+}
+
+/// One artifact of a delta or a closure as the sealed object names it: its service address and the
+/// SHA-256 of its AEAD output (C.3, C.9). The hash is one the producer **verified** when it published
+/// or fetched the artifact, never a transport or blob plaintext digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoundArtifact {
+    /// `sync_artifact_id_e`.
+    pub id: [u8; 32],
+    /// The SHA-256 of the artifact's AEAD output (its container's `ciphertext` field).
+    pub ciphertext_sha256: [u8; 32],
+}
+
+/// An envelope's delta manifest with the hash bound to each id (C.4): strictly ascending by id,
+/// duplicate-free, at most [`MAX_MANIFEST_ENTRIES`]. The ids' commitment is header field 17 and the
+/// hashes' commitment is field 18.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundManifest(Vec<BoundArtifact>);
+
+impl BoundManifest {
+    /// Order `entries` by id and refuse a duplicate id or more than [`MAX_MANIFEST_ENTRIES`].
+    ///
+    /// # Errors
+    /// [`WireError::TooLong`], [`WireError::ListNotAscending`] (a duplicate id).
+    pub fn new(mut entries: Vec<BoundArtifact>) -> Result<Self, WireError> {
+        if entries.len() > MAX_MANIFEST_ENTRIES {
+            return Err(WireError::TooLong);
+        }
+        entries.sort_unstable_by_key(|entry| entry.id);
+        if entries.windows(2).any(|pair| pair[0].id == pair[1].id) {
+            return Err(WireError::ListNotAscending);
+        }
+        Ok(Self(entries))
+    }
+
+    /// The empty manifest.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    /// The entries, strictly ascending by id.
+    #[must_use]
+    pub fn entries(&self) -> &[BoundArtifact] {
+        &self.0
+    }
+
+    /// The ids, strictly ascending.
+    #[must_use]
+    pub fn ids(&self) -> Vec<[u8; 32]> {
+        self.0.iter().map(|entry| entry.id).collect()
+    }
+
+    /// Whether the manifest is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The ids alone, as the sidecar and the manifest commitment see them.
+    #[must_use]
+    pub fn manifest(&self) -> ArtifactManifest {
+        ArtifactManifest(self.ids())
+    }
+
+    /// The ids' commitment (header field 17).
+    #[must_use]
+    pub fn commitment(&self) -> ManifestCommitment {
+        self.manifest().commitment()
+    }
+
+    /// The hashes' commitment (header field 18), in the ids' order.
+    #[must_use]
+    pub fn binding(&self) -> BindingCommitment {
+        let hashes: Vec<[u8; 32]> = self.0.iter().map(|e| e.ciphertext_sha256).collect();
+        binding_commitment(&hashes, MAX_MANIFEST_ENTRIES)
+            .expect("a manifest within its bound always fits")
+    }
+}
+
 /// `EnvelopePlaintextV1` (C.4): what is encrypted under the envelope's AEAD key.
 ///
 /// `Debug` prints sizes and a short prefix of the write-set hash, never the payload (canonical
@@ -248,8 +350,9 @@ pub struct EnvelopePlaintext {
     pub meta: ImmutableMeta,
     /// The class-1 write-set hash (C.4).
     pub write_set_hash: [u8; 32],
-    /// The delta manifest, strictly ascending; empty when the command adds no artifact.
-    pub delta_manifest: ArtifactManifest,
+    /// The delta manifest with the hash bound to each id, strictly ascending by id; empty when the
+    /// command adds no artifact.
+    pub delta_manifest: BoundManifest,
     /// The canonical-JSON command payload, at most [`MAX_PAYLOAD`] bytes.
     pub payload: Vec<u8>,
 }
@@ -258,7 +361,7 @@ impl core::fmt::Debug for EnvelopePlaintext {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("EnvelopePlaintext")
             .field("payload_len", &self.payload.len())
-            .field("delta_manifest_len", &self.delta_manifest.ids().len())
+            .field("delta_manifest_len", &self.delta_manifest.entries().len())
             .field(
                 "write_set_hash",
                 &format_args!(
@@ -273,8 +376,8 @@ impl core::fmt::Debug for EnvelopePlaintext {
 impl EnvelopePlaintext {
     /// The plaintext's canonical bytes: `label ‖ uuid command_id ‖ uuid correlation_id ‖
     /// opt(uuid) causation_id ‖ u8 actor_type ‖ text(256) actor_id ‖ uuid idempotency_key ‖
-    /// i64 issued_at ‖ uuid device_id ‖ digest write_set_hash ‖ list(digest, 4096)
-    /// delta_manifest ‖ bytes(2^24) payload`.
+    /// i64 issued_at ‖ uuid device_id ‖ digest write_set_hash ‖ list(digest sync_artifact_id ‖
+    /// digest ciphertext_sha256, 4096) delta_manifest ‖ bytes(2^24) payload`.
     ///
     /// # Errors
     /// [`WireError::UnknownActorType`], [`WireError::TooLong`].
@@ -282,9 +385,13 @@ impl EnvelopePlaintext {
         let mut w = Writer::with_label(PLAINTEXT_LABEL);
         self.meta.write_fields(&mut w)?;
         w.fixed(&self.meta.device_id).fixed(&self.write_set_hash);
-        w.list(MAX_MANIFEST_ENTRIES, self.delta_manifest.ids(), |w, id| {
-            w.fixed(id);
-        })?;
+        w.list(
+            MAX_MANIFEST_ENTRIES,
+            self.delta_manifest.entries(),
+            |w, entry| {
+                w.fixed(&entry.id).fixed(&entry.ciphertext_sha256);
+            },
+        )?;
         w.bytes(MAX_PAYLOAD, &self.payload)?;
         Ok(w.finish())
     }
@@ -309,8 +416,13 @@ impl EnvelopePlaintext {
         let issued_at = r.i64()?;
         let device_id = r.fixed::<16>()?;
         let write_set_hash = r.fixed::<32>()?;
-        let delta = r.list(MAX_MANIFEST_ENTRIES, 32, |r| r.fixed::<32>())?;
-        if delta.windows(2).any(|pair| pair[0] >= pair[1]) {
+        let delta = r.list(MAX_MANIFEST_ENTRIES, 64, |r| {
+            Ok(BoundArtifact {
+                id: r.fixed::<32>()?,
+                ciphertext_sha256: r.fixed::<32>()?,
+            })
+        })?;
+        if delta.windows(2).any(|pair| pair[0].id >= pair[1].id) {
             return Err(WireError::ListNotAscending);
         }
         let payload = r.bytes(MAX_PAYLOAD)?.to_vec();
@@ -327,7 +439,7 @@ impl EnvelopePlaintext {
                 device_id,
             },
             write_set_hash,
-            delta_manifest: ArtifactManifest(delta),
+            delta_manifest: BoundManifest(delta),
             payload,
         })
     }
@@ -400,6 +512,10 @@ pub enum ReceiverError {
     /// non-empty one, or not the manifest's commitment.
     #[error("the manifest commitment does not match the delta manifest")]
     ManifestCommitmentMismatch,
+    /// Header field 18 is not the binding commitment of the delta's ciphertext hashes in the ids'
+    /// order, or is present without (or absent with) field 17.
+    #[error("the artifact binding commitment does not match the delta manifest")]
+    BindingCommitmentMismatch,
     /// The plaintext's own fields could not be committed (an unknown actor type, an oversize
     /// actor id).
     #[error("the plaintext metadata is not encodable")]
@@ -438,6 +554,7 @@ pub fn check_envelope<'a>(
         idempotency_key_tag,
         immutable_metadata_commitment,
         artifact_manifest_commitment,
+        artifact_binding_commitment,
     } = &header.object
     else {
         return Err(ReceiverError::NotAnEnvelope);
@@ -479,6 +596,17 @@ pub fn check_envelope<'a>(
     };
     if !manifest_ok {
         return Err(ReceiverError::ManifestCommitmentMismatch);
+    }
+    // Field 18 follows field 17: present exactly when the delta is non-empty, and then the
+    // commitment of the hashes bound to the ids, in the ids' order.
+    let binding_ok = match artifact_binding_commitment {
+        None => plaintext.delta_manifest.is_empty(),
+        Some(found) => {
+            !plaintext.delta_manifest.is_empty() && *found == plaintext.delta_manifest.binding()
+        }
+    };
+    if !binding_ok {
+        return Err(ReceiverError::BindingCommitmentMismatch);
     }
     if !issued_at_in_range(plaintext.meta.issued_at) {
         return Err(ReceiverError::IssuedAtOutOfRange);

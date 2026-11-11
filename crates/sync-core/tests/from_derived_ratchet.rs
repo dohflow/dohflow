@@ -23,6 +23,13 @@ const ALLOWED: &[&str] = &[
     // The first-publication and chained re-address ids (C.3) are derived from `K_e` here and nowhere
     // else (personal-cfo-0g528.2).
     "crates/vault-crypto/src/sync_artifact.rs",
+    // The snapshot opener and sealer read the closure's artifact ids off a snapshot manifest they
+    // have just verified (strictly ascending, hex of 32 bytes) and wrap them as service addresses
+    // for the closure sidecar (personal-cfo-1cltt.4, personal-cfo-0g528.2).
+    "crates/vault-crypto/src/sync_snapshot.rs",
+    // Receiving a delta wraps the ids of the envelope's verified delta manifest as service addresses
+    // to fetch (personal-cfo-0g528.2).
+    "crates/db-worker/src/sync_receive.rs",
     // 6b adds the commitment derivations here, and vault-crypto adds the tag and domain
     // derivations; list each file when it lands.
 ];
@@ -67,12 +74,13 @@ fn from_derived_is_called_only_by_the_derivations() {
             .map(|line| line.split("//").next().unwrap_or(""))
             .collect::<Vec<_>>()
             .join("\n");
-        if code.contains("from_derived(") && !ALLOWED.contains(&relative.as_str()) {
+        // The token, not only a call: `.map(ArtifactId::from_derived)` passes it point-free.
+        if code.contains("from_derived") && !ALLOWED.contains(&relative.as_str()) {
             offenders.push(relative);
         }
     }
     assert!(
         offenders.is_empty(),
-        "from_derived( called outside the derivations: {offenders:?}"
+        "from_derived used outside the derivations: {offenders:?}"
     );
 }
