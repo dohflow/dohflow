@@ -42,6 +42,16 @@ beforeEach(() => {
 });
 
 describe("ReconcileBalanceModal", () => {
+  // personal-cfo-i93n3.28 slice 8: the Remaining-to-reconcile row wraps and breaks a long figure on a phone (compact-only).
+  it("wraps its remaining row and breaks a long figure on a phone", () => {
+    renderWithClient(<ReconcileBalanceModal account={account()} onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/target balance/i), { target: { value: "1200" } });
+    const figure = screen.getByText(/\+\$200\.00/);
+    expect(figure).toHaveClass("compact:[overflow-wrap:anywhere]");
+    expect(figure.parentElement).toHaveClass("compact:flex-wrap", "justify-between");
+    expect(figure.parentElement).not.toHaveClass("flex-wrap");
+  });
+
   it("computes the remaining delta from the target", () => {
     renderWithClient(
       <ReconcileBalanceModal account={account()} onClose={() => {}} />,

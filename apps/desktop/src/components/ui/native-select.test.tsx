@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { NativeSelect } from "@/components/ui/native-select";
+import { NativeSelect, NativeSelectValue } from "@/components/ui/native-select";
 
 afterEach(cleanup);
 
@@ -23,5 +23,22 @@ describe("NativeSelect right padding clears the chevron", () => {
     expect(classes.contains(left)).toBe(true);
     // A horizontal `px-*` would let tailwind-merge drop the right padding again.
     expect([...classes].filter((c) => /^px-/.test(c))).toEqual([]);
+  });
+});
+
+// personal-cfo-i93n3.28: a native select cannot wrap, so a narrow container shows its selected label as text.
+describe("NativeSelectValue", () => {
+  it("is for the eyes only, hidden unless a compact container is narrow, and breaks long names", () => {
+    render(<NativeSelectValue data-testid="v">A very long account name</NativeSelectValue>);
+    const copy = screen.getByTestId("v");
+    expect(copy).toHaveAttribute("aria-hidden", "true");
+    expect(copy).toHaveClass("hidden", "compact:@max-[15rem]:block", "[overflow-wrap:anywhere]");
+    expect(copy).not.toHaveClass("block");
+  });
+
+  it("uses a narrower threshold for one column of two in a form row", () => {
+    render(<NativeSelectValue narrow="field" data-testid="v">Weekly</NativeSelectValue>);
+    expect(screen.getByTestId("v")).toHaveClass("hidden", "compact:@max-[10rem]:block");
+    expect(screen.getByTestId("v")).not.toHaveClass("compact:@max-[15rem]:block");
   });
 });

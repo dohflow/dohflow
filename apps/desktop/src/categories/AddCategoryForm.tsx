@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { EmojiPicker } from "@/components/ui/emoji-picker";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NativeSelectValue } from "@/components/ui/native-select";
 import { mintIdempotencyKey } from "@/lib/idempotency";
 
 export const CATEGORY_TYPES = [
@@ -82,7 +83,7 @@ export function AddCategoryForm({
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1.5">
+            <div className="@container flex flex-col gap-1.5">
               <Label htmlFor="category-type">Type</Label>
               <select
                 id="category-type"
@@ -96,8 +97,11 @@ export function AddCategoryForm({
                   </option>
                 ))}
               </select>
+              <NativeSelectValue narrow="field" data-testid="category-type-value">
+                {CATEGORY_TYPES.find((option) => option.value === categoryType)?.label}
+              </NativeSelectValue>
             </div>
-            <div className="flex flex-col gap-1.5">
+            <div className="@container flex flex-col gap-1.5">
               <Label htmlFor="category-parent">Parent (optional)</Label>
               <select
                 id="category-parent"
@@ -112,6 +116,9 @@ export function AddCategoryForm({
                   </option>
                 ))}
               </select>
+              <NativeSelectValue narrow="field" data-testid="category-parent-value">
+                {parents.find((parent) => parent.id === parentId)?.name ?? "Top level"}
+              </NativeSelectValue>
             </div>
           </div>
 

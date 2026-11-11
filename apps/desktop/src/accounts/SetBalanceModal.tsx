@@ -275,9 +275,9 @@ function SetBalanceOutcome({
           {BALANCE_SAVED_UNCONFIRMED}
         </p>
       ) : (
-        <div className="flex items-center justify-between rounded-md bg-muted px-3 py-2 text-sm">
+        <div className="flex items-center justify-between rounded-md bg-muted px-3 py-2 text-sm compact:flex-wrap compact:gap-x-3">
           <span className="text-muted-foreground">New balance</span>
-          <span className="font-medium tabular-nums">
+          <span className="font-medium tabular-nums compact:[overflow-wrap:anywhere]">
             {formatMoney({
               minor_units: storedToShownMinor(role, outcome.balance.minor_units),
               currency: outcome.balance.currency,
@@ -290,9 +290,9 @@ function SetBalanceOutcome({
         <p className="text-sm text-gain">Fully explained by your transactions ✓</p>
       ) : (
         <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between rounded-md border border-dashed px-3 py-2 text-sm">
+          <div className="flex items-center justify-between rounded-md border border-dashed px-3 py-2 text-sm compact:flex-wrap compact:gap-x-3">
             <span className="text-muted-foreground">Unexplained adjustment</span>
-            <span className="font-medium tabular-nums">
+            <span className="font-medium tabular-nums compact:[overflow-wrap:anywhere]">
               {/* `explained` guarantees a non-null plug here. */}
               {formatSignedMoney({
                 minor_units: storedToShownMinor(

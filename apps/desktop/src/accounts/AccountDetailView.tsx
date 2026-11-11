@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable, type DataTableColumn } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
-import { NativeSelect } from "@/components/ui/native-select";
+import { NativeSelect, NativeSelectValue } from "@/components/ui/native-select";
 import { PaginationControls } from "@/components/ui/pagination";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -233,20 +233,25 @@ export function AccountDetailView({
           </div>
         </div>
         {spendingAccounts.length > 1 && (
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            Account
-            <NativeSelect
-              aria-label="Switch account"
-              value={selectedId}
-              onChange={(e) => setSelectedId(e.target.value)}
-            >
-              {spendingAccounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </NativeSelect>
-          </label>
+          <div className="@container compact:w-full">
+            <label className="flex items-center gap-2 text-xs text-muted-foreground compact:@max-[15rem]:flex-col compact:@max-[15rem]:items-stretch compact:@max-[15rem]:gap-1">
+              Account
+              <NativeSelect
+                aria-label="Switch account"
+                value={selectedId}
+                onChange={(e) => setSelectedId(e.target.value)}
+              >
+                {spendingAccounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </NativeSelect>
+            </label>
+            <NativeSelectValue data-testid="switch-account-value" className="mt-1">
+              {spendingAccounts.find((a) => a.id === selectedId)?.name}
+            </NativeSelectValue>
+          </div>
         )}
       </div>
 

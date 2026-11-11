@@ -679,3 +679,26 @@ describe("the balance step keeps one idempotency key per draft (g3m.40)", () => 
     expect(keys()[1]).toBe(keys()[0]);
   });
 });
+
+// personal-cfo-i93n3.28: a native select cannot wrap, so a narrow field shows the chosen type and subtype as text.
+describe("the type and subtype selects on a narrow field", () => {
+  test("show the chosen option as text, for the eyes only, and follow the choice", () => {
+    renderWithClient(<AccountEditorDrawer account={null} defaultCurrency="USD" onClose={vi.fn()} />);
+    const type = screen.getByTestId("account-type-value");
+    expect(type).toHaveAttribute("aria-hidden", "true");
+    expect(type).toHaveClass("hidden", "compact:@max-[10rem]:block");
+    expect(type.parentElement).toHaveClass("@container");
+    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "CreditFacility" } });
+    expect(screen.getByTestId("account-type-value")).toHaveTextContent(/credit/i);
+  });
+
+  test("the subtype copy follows the choice, not the first option", () => {
+    renderWithClient(<AccountEditorDrawer account={null} defaultCurrency="USD" onClose={vi.fn()} />);
+    const subtype = screen.getByTestId("account-subtype-value");
+    expect(subtype).toHaveAttribute("aria-hidden", "true");
+    expect(subtype).toHaveClass("hidden", "compact:@max-[10rem]:block");
+    expect(subtype).toHaveTextContent("— None —");
+    fireEvent.change(screen.getByLabelText("Subtype"), { target: { value: "savings" } });
+    expect(screen.getByTestId("account-subtype-value")).toHaveTextContent("Savings");
+  });
+});

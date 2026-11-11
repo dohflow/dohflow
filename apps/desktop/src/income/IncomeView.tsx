@@ -18,6 +18,7 @@ import type {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NativeSelectValue } from "@/components/ui/native-select";
 import { Card, CardContent } from "@/components/ui/card";
 import { describeIpcError } from "@/vault/useVault";
 import { AppliedOverrideNote } from "@/future-cash/AppliedOverrideNote";
@@ -487,6 +488,7 @@ export function IncomeForm({
   const {
     register,
     handleSubmit,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm<IncomeFormValues>({
     resolver: zodResolver(incomeFormSchema),
@@ -496,6 +498,8 @@ export function IncomeForm({
   // prefilled form beside the add form, gmnk review).
   const uid = useId();
   const [error, setError] = useState<string | null>(null);
+  const frequency = watch("frequency");
+  const depositAccountId = watch("deposit_account_id");
 
   const submit = handleSubmit(async (values) => {
     setError(null);
@@ -549,7 +553,7 @@ export function IncomeForm({
             <p className="text-xs text-loss">{errors.amount.message}</p>
           )}
         </div>
-        <div className="flex flex-col gap-1.5">
+        <div className="@container flex flex-col gap-1.5">
           <Label htmlFor={`${uid}-frequency`}>Frequency</Label>
           <select
             id={`${uid}-frequency`}
@@ -562,6 +566,9 @@ export function IncomeForm({
               </option>
             ))}
           </select>
+          <NativeSelectValue narrow="field" data-testid="income-frequency-value">
+            {FREQUENCIES.find((option) => option.value === frequency)?.label}
+          </NativeSelectValue>
         </div>
       </div>
 
@@ -570,7 +577,7 @@ export function IncomeForm({
           <Label htmlFor={`${uid}-anchor`}>Anchor pay date</Label>
           <Input id={`${uid}-anchor`} type="date" {...register("anchor")} />
         </div>
-        <div className="flex flex-col gap-1.5">
+        <div className="@container flex flex-col gap-1.5">
           <Label htmlFor={`${uid}-account`}>Deposit account</Label>
           <select
             id={`${uid}-account`}
@@ -588,6 +595,9 @@ export function IncomeForm({
                 </option>
               ))}
           </select>
+          <NativeSelectValue narrow="field" data-testid="income-account-value">
+            {accounts.find((account) => account.id === depositAccountId)?.name ?? "No deposit account"}
+          </NativeSelectValue>
         </div>
       </div>
 

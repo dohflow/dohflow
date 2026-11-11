@@ -9,7 +9,7 @@ import type {
 } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { NativeSelect } from "@/components/ui/native-select";
+import { NativeSelect, NativeSelectValue } from "@/components/ui/native-select";
 import { describeIpcError } from "@/vault/useVault";
 import { dollarsToMinorUnits } from "@/lib/format";
 import { mintIdempotencyKey } from "@/lib/idempotency";
@@ -513,7 +513,14 @@ export function AccountEditorDrawer({
                 />
               </Field>
               <div className="grid grid-cols-2 gap-3">
-                <Field label="Type">
+                <Field
+                  label="Type"
+                  valueCopy={
+                    <NativeSelectValue narrow="field" data-testid="account-type-value">
+                      {ACCOUNT_TYPES.find((t) => t.value === role)?.label}
+                    </NativeSelectValue>
+                  }
+                >
                   <NativeSelect
                     value={role}
                     onChange={(e) => {
@@ -530,7 +537,14 @@ export function AccountEditorDrawer({
                   </NativeSelect>
                 </Field>
                 {subtypeOptions.length > 0 && (
-                  <Field label="Subtype">
+                  <Field
+                    label="Subtype"
+                    valueCopy={
+                      <NativeSelectValue narrow="field" data-testid="account-subtype-value">
+                        {subtypeOptions.find((o) => o.value === subtype)?.label ?? "— None —"}
+                      </NativeSelectValue>
+                    }
+                  >
                     <NativeSelect
                       value={subtype}
                       onChange={(e) => setSubtypeState(e.target.value)}
@@ -771,11 +785,23 @@ function Section({
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+/// `valueCopy` (a `NativeSelectValue`) sits outside the label, so it does not become part of the label's text.
+function Field({
+  label,
+  children,
+  valueCopy,
+}: {
+  label: string;
+  children: React.ReactNode;
+  valueCopy?: React.ReactNode;
+}) {
   return (
-    <label className="flex flex-col gap-1.5">
-      <span className="text-sm font-medium">{label}</span>
-      {children}
-    </label>
+    <div className="@container flex flex-col gap-1.5">
+      <label className="flex flex-col gap-1.5">
+        <span className="text-sm font-medium">{label}</span>
+        {children}
+      </label>
+      {valueCopy}
+    </div>
   );
 }

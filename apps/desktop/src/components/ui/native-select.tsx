@@ -47,3 +47,30 @@ const NativeSelect = React.forwardRef<
 NativeSelect.displayName = "NativeSelect";
 
 export { NativeSelect };
+
+/// A native `<select>` cannot wrap, so at a large text size its closed value is cut off sideways (FRONTEND.md,
+/// "Reflow, not clipping"). Place this right after the select, inside an `@container` ancestor: when that container is
+/// narrow, in rem so it follows the text size, the selected label is shown as text, for the eyes only, because the
+/// select already announces its own value. `card` is a full-width card or form column (narrower than 15rem); `field`
+/// is one of two columns in a form row (narrower than 10rem).
+const NATIVE_SELECT_VALUE_NARROW = {
+  card: "hidden compact:@max-[15rem]:block",
+  field: "hidden compact:@max-[10rem]:block",
+} as const;
+
+const NativeSelectValue = ({
+  children,
+  narrow = "card",
+  className,
+  ...props
+}: Omit<React.ComponentProps<"p">, "aria-hidden"> & { narrow?: keyof typeof NATIVE_SELECT_VALUE_NARROW }) => (
+  <p
+    aria-hidden="true"
+    className={cn("text-sm font-medium [overflow-wrap:anywhere]", NATIVE_SELECT_VALUE_NARROW[narrow], className)}
+    {...props}
+  >
+    {children}
+  </p>
+);
+
+export { NativeSelectValue };

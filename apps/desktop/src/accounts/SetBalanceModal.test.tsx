@@ -56,6 +56,24 @@ beforeEach(() => {
 });
 
 describe("SetBalanceModal", () => {
+  // personal-cfo-i93n3.28 slice 8: found on the simulator at the largest text size (the outcome's figures ran past the window): the figure rows wrap and
+  // break long figures on a phone; desktop keeps one line.
+  it("wraps the outcome's figure rows and breaks long figures on a phone (compact-only)", async () => {
+    renderWithClient(
+      <SetBalanceModal account={account()} onClose={() => {}} onExplainWithTransactions={() => {}} />,
+    );
+    fireEvent.change(screen.getByLabelText(/new balance/i), { target: { value: "500" } });
+    fireEvent.click(screen.getByRole("button", { name: /set balance/i }));
+    const adjustment = await screen.findByText(/unexplained adjustment/i);
+    const row = adjustment.parentElement!;
+    expect(row).toHaveClass("compact:flex-wrap", "justify-between");
+    expect(row).not.toHaveClass("flex-wrap");
+    expect(adjustment.nextElementSibling).toHaveClass("compact:[overflow-wrap:anywhere]");
+    const balanceRow = screen.getByText("New balance").parentElement!;
+    expect(balanceRow).toHaveClass("compact:flex-wrap");
+    expect(screen.getByText("New balance").nextElementSibling).toHaveClass("compact:[overflow-wrap:anywhere]");
+  });
+
   it("converts the unexplained plug into a transaction (dyy4)", async () => {
     renderWithClient(
       <SetBalanceModal

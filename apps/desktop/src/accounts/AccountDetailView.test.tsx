@@ -365,6 +365,20 @@ describe("AccountDetailView", () => {
     expect((await screen.findAllByText("$3,248.72")).length).toBeGreaterThanOrEqual(1);
   });
 
+  it("shows the selected account's name as text under the switcher on a narrow card, because a native select cannot wrap (compact-only)", async () => {
+    renderWithClient(<AccountDetailView accountId={CHECKING.id} onBack={vi.fn()} />);
+    await screen.findByRole("heading", { name: "Everyday Checking" });
+    const copy = screen.getByTestId("switch-account-value");
+    expect(copy).toHaveTextContent("Everyday Checking");
+    expect(copy).toHaveAttribute("aria-hidden", "true");
+    expect(copy).toHaveClass("hidden", "compact:@max-[15rem]:block", "[overflow-wrap:anywhere]");
+    expect(copy.parentElement).toHaveClass("@container");
+    expect(screen.getByLabelText("Switch account").closest("label")).toHaveClass("compact:@max-[15rem]:flex-col");
+    expect(screen.getByLabelText("Switch account").closest("label")).not.toHaveClass("flex-col");
+    fireEvent.change(screen.getByLabelText("Switch account"), { target: { value: CARD.id } });
+    expect(await screen.findByTestId("switch-account-value")).toHaveTextContent("Venture X");
+  });
+
   it("opens the balance editor from the Edit button", async () => {
     renderWithClient(
       <AccountDetailView accountId={CHECKING.id} onBack={vi.fn()} />,
