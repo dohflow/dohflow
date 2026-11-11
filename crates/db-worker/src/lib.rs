@@ -92,6 +92,7 @@ mod rekey;
 pub use rekey::{available_space, verify_rekeyed_copy, BlobRename};
 mod scenarios;
 mod schedule_sources;
+pub mod snapshot_install;
 mod spend_by_category;
 mod staged_import;
 pub mod sync_enable;
@@ -5687,23 +5688,7 @@ fn ensure_vault_metadata(
         |r| r.get(0),
     )?;
     if has_households {
-        conn.execute(
-            "INSERT INTO vault_metadata (
-                singleton, vault_id, schema_version, envelope_version,
-                kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism,
-                manifest_pointer, created_at
-            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
-            params![
-                vault_id,
-                schema_version,
-                VAULT_ENVELOPE_VERSION,
-                DEFAULT_KDF_ALGORITHM,
-                DEFAULT_KDF_MEMORY_KIB,
-                DEFAULT_KDF_TIME_COST,
-                DEFAULT_KDF_PARALLELISM,
-                created_at,
-            ],
-        )?;
+        insert_vault_metadata(conn, &vault_id, schema_version, &created_at)?;
         // The genesis seed of the household and its first member, from the vault's own id and
         // creation time (personal-cfo-339).
         households::seed(conn, &vault_id, DEFAULT_HOUSEHOLD_TIMEZONE, &created_at)?;
@@ -5728,6 +5713,35 @@ fn ensure_vault_metadata(
         )?;
     }
     Ok(Some((vault_id, created_at)))
+}
+
+/// Insert the `vault_metadata` row of a vault whose schema has `households` (version 61 on). The
+/// envelope and KDF fields describe THIS device's own envelope, never the origin's. Shared by the
+/// creation path above and the snapshot installer, so the two write the same row.
+pub(crate) fn insert_vault_metadata(
+    conn: &Connection,
+    vault_id: &Uuid,
+    schema_version: i64,
+    created_at: &str,
+) -> Result<(), DbError> {
+    conn.execute(
+        "INSERT INTO vault_metadata (
+            singleton, vault_id, schema_version, envelope_version,
+            kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism,
+            manifest_pointer, created_at
+        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
+        params![
+            vault_id,
+            schema_version,
+            VAULT_ENVELOPE_VERSION,
+            DEFAULT_KDF_ALGORITHM,
+            DEFAULT_KDF_MEMORY_KIB,
+            DEFAULT_KDF_TIME_COST,
+            DEFAULT_KDF_PARALLELISM,
+            created_at,
+        ],
+    )?;
+    Ok(())
 }
 
 thread_local! {
