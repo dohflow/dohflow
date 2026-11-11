@@ -446,6 +446,17 @@ impl SnapshotService for FakeSnapshotService {
         })
     }
 
+    fn log_head(&self, vault_id: &[u8; 16]) -> Result<u64, ServiceError> {
+        let _ = vault_id;
+        self.call("log_head", |state, _| {
+            state
+                .vault
+                .as_ref()
+                .map(|vault| vault.head)
+                .ok_or(ServiceError::VaultNotFound)
+        })
+    }
+
     fn get_snapshot<'a>(
         &'a self,
         vault_id: &[u8; 16],

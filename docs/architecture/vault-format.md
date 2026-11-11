@@ -2150,9 +2150,29 @@ genesis is exported from the live vault once it holds either.
 export is not in the genesis, and until the device is armed (a `sync_base` row exists) it is not
 recorded in the outbox either, so no envelope will ever carry it. Once the genesis is published the
 client therefore compares the log with the mark: equal is `Enabled`; a log that has grown past it is
-`EnabledWithLocalChanges`, never `Enabled`, and the device is not armed while that is so. The
-reconciliation (a base built from the genesis plaintext, and the commands after the mark enqueued as
-unpushed work over the genesis head) is the replica bootstrap's (`personal-cfo-1cltt.5`).
+`EnabledWithLocalChanges`, never `Enabled`, and the device is not armed while that is so.
+
+**Arming after the export (the genesis gap).** The device is armed on its genesis, never on its live
+vault, so that the log and the device agree on what the server has seen (`personal-cfo-1cltt.5`).
+The reconciliation refuses, before it writes anything to the live vault, unless: the genesis is
+`Published` and `genesis_snapshot_id` and `genesis_container_sha256` are recorded (a genesis recorded
+by an earlier build has neither, and the service's copy is not trusted in its place); the device has
+no `sync_base` row and no outbox row; the service's log head is `0` and the snapshot it holds is the
+one recorded; and every `operation_log` row after `export_high_water` has its `issued_at` and a
+payload this build decodes (`operation_log.issued_at`, the instant the command was issued, is the
+only place a command taken before arming keeps it, because it has no outbox row). It then fetches
+the genesis container (streamed to a file under `max_snapshot_container_bytes`, and equal to the
+recorded digest), opens it with `K_1`, installs it into a throwaway replica and takes that replica's
+base image as the base: **the base is the fetched genesis, whatever the live vault holds.** The gap
+is replayed on a scratch copy of that base, in log order, each command under its recorded ids and
+`issued_at`, and every step is proved: the write-set hash the replay produces is the one the log
+recorded, and the class-1 state at the end is the live vault's, table by table; a command that is
+refused, or reproduced differently, refuses arming by name. Arming itself is one transaction in the
+live vault: it re-reads the log's high-water mark (a command taken since aborts it), writes the
+replayed commands into the outbox as `Pending` in log order with their recorded issue times, places
+the genesis base image, and writes `sync_base` (`Ready`, position `0`) and `sync_position`
+(`snapshot_root` NULL, `next_to_apply` 1). A head that has moved past the genesis is refused; how a
+device recovers from that is not this section's.
 
 **Where the plaintext is read from.** Only a genesis is read from the live vault, at sync-enable,
 before any outbox row exists. The live vault holds the effects of local commands no envelope has

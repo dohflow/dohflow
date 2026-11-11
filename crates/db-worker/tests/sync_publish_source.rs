@@ -77,6 +77,10 @@ impl SnapshotService for RecordingService {
         Err(self.record("latest_snapshot"))
     }
 
+    fn log_head(&self, _: &[u8; 16]) -> Result<u64, ServiceError> {
+        Err(self.record("log_head"))
+    }
+
     fn get_snapshot<'a>(
         &'a self,
         _: &[u8; 16],

@@ -203,6 +203,15 @@ pub trait SnapshotService {
         vault_id: &[u8; 16],
     ) -> Result<Option<PublishedSnapshot>, ServiceError>;
 
+    /// `getStatus` (protocol 4.2), the part a snapshot client needs: the log head (the position of
+    /// the last sequenced envelope, `0` for a vault that holds only its genesis). A client that
+    /// reconciles its genesis gap (`personal-cfo-1cltt.5`) needs it to know that nothing was
+    /// sequenced after the genesis it published.
+    ///
+    /// # Errors
+    /// A [`ServiceError`].
+    fn log_head(&self, vault_id: &[u8; 16]) -> Result<u64, ServiceError>;
+
     /// `getSnapshot` (protocol 4.9): the container bytes of a **retained, published** snapshot, as
     /// a stream. A snapshot is up to `max_snapshot_container_bytes` (about 1 GiB), so it is never
     /// returned as one buffer: the caller drains the reader into a file with

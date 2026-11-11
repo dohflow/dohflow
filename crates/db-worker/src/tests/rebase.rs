@@ -743,6 +743,22 @@ mod executor {
             sealed_before,
             "the meta commitment after the rollback and replay equals the one sealed before it"
         );
+        // The instant itself is on the log row of both vaults, taken from the command and never
+        // from the clock (migration 72): a replay that read the clock would stamp "now".
+        let logged = |worker: &DbWorker| -> Option<i64> {
+            worker
+                .read_connection()
+                .unwrap()
+                .query_row(
+                    "SELECT issued_at FROM operation_log WHERE command_id = ?1",
+                    [original.command_id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let expected = Some(original.issued_at.as_unix_micros());
+        assert_eq!(logged(&live), expected);
+        assert_eq!(logged(scratch.worker()), expected);
     }
 
     #[test]

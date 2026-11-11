@@ -100,6 +100,7 @@ pub mod sync_artifacts;
 pub mod sync_bootstrap;
 pub mod sync_enable;
 pub mod sync_genesis;
+pub mod sync_genesis_gap;
 pub mod sync_materialize;
 pub mod sync_receive;
 pub mod sync_references;
@@ -3498,6 +3499,15 @@ impl DbWorker {
             attachments::remove_blob(&dir, &storage_id)?;
         }
         Ok(())
+    }
+
+    /// The raw DEK as a shared handle, for building another vault keyed like this one (the genesis
+    /// reconciliation's throwaway replica), or fail if the vault was opened in passphrase mode.
+    pub(crate) fn raw_dek(&self) -> Result<std::sync::Arc<Dek>, DbError> {
+        match &self.key {
+            KeyMaterial::Raw(dek) => Ok(std::sync::Arc::clone(dek)),
+            KeyMaterial::Passphrase(_) => Err(DbError::KeyUnavailable),
+        }
     }
 
     /// Borrow the raw DEK, or fail if the vault was opened in passphrase mode —
