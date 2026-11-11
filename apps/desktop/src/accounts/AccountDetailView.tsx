@@ -233,20 +233,33 @@ export function AccountDetailView({
           </div>
         </div>
         {spendingAccounts.length > 1 && (
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            Account
-            <NativeSelect
-              aria-label="Switch account"
-              value={selectedId}
-              onChange={(e) => setSelectedId(e.target.value)}
+          <div className="@container compact:w-full">
+            <label className="flex items-center gap-2 text-xs text-muted-foreground compact:flex-wrap">
+              Account
+              <NativeSelect
+                aria-label="Switch account"
+                className="compact:min-w-0 compact:max-w-full compact:flex-1"
+                value={selectedId}
+                onChange={(e) => setSelectedId(e.target.value)}
+              >
+                {spendingAccounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </NativeSelect>
+            </label>
+            {/* A native select cannot wrap, so at the largest text size its closed value is cut off sideways.
+                On a narrow card the selected name is also shown as text (FRONTEND.md, Reflow). The select
+                already announces its own value, so this copy is for the eyes only. */}
+            <p
+              aria-hidden="true"
+              data-testid="switch-account-value"
+              className="mt-1 hidden text-sm font-medium [overflow-wrap:anywhere] compact:@max-[15rem]:block"
             >
-              {spendingAccounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </NativeSelect>
-          </label>
+              {spendingAccounts.find((a) => a.id === selectedId)?.name}
+            </p>
+          </div>
         )}
       </div>
 
