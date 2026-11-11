@@ -445,4 +445,31 @@ impl SnapshotService for FakeSnapshotService {
             Ok(state.published.last().copied())
         })
     }
+
+    fn get_snapshot<'a>(
+        &'a self,
+        vault_id: &[u8; 16],
+        snapshot_id: &[u8; 16],
+    ) -> Result<Box<dyn std::io::Read + 'a>, ServiceError> {
+        let _ = vault_id;
+        let bytes = self.call("get_snapshot", |state, _| {
+            if state.vault.is_none() {
+                return Err(ServiceError::VaultNotFound);
+            }
+            // Protocol 4.9: only a published snapshot is returned, never a staged one.
+            if !state
+                .published
+                .iter()
+                .any(|p| &p.snapshot_id == snapshot_id)
+            {
+                return Err(ServiceError::SnapshotNotFound);
+            }
+            state
+                .staged
+                .get(snapshot_id)
+                .cloned()
+                .ok_or(ServiceError::SnapshotNotFound)
+        })?;
+        Ok(Box::new(std::io::Cursor::new(bytes)))
+    }
 }

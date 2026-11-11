@@ -76,6 +76,14 @@ impl SnapshotService for RecordingService {
     fn latest_snapshot(&self, _: &[u8; 16]) -> Result<Option<PublishedSnapshot>, ServiceError> {
         Err(self.record("latest_snapshot"))
     }
+
+    fn get_snapshot<'a>(
+        &'a self,
+        _: &[u8; 16],
+        _: &[u8; 16],
+    ) -> Result<Box<dyn std::io::Read + 'a>, ServiceError> {
+        Err(self.record("get_snapshot"))
+    }
 }
 
 #[test]

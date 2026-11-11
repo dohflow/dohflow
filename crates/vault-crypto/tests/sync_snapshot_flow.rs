@@ -417,6 +417,32 @@ fn a_re_snapshot_is_published_at_the_head_and_its_closure_is_pinned() {
 }
 
 #[test]
+fn get_snapshot_streams_a_published_snapshot_and_never_a_staged_or_unknown_one() {
+    use sync_core::snapshot_service::{copy_snapshot_container, SnapshotService};
+
+    let rig = Rig::genesis("get");
+    let service = service_with_genesis(&rig);
+    let mut reader = service.get_snapshot(&VAULT, &[0x01; 16]).unwrap();
+    let mut sink = Vec::new();
+    let copied = copy_snapshot_container(&mut reader, &mut sink, 1 << 20, None).unwrap();
+    assert_eq!(copied.len as usize, sink.len());
+    assert_eq!(&sink[..4], b"DFSY", "the stored container");
+
+    // A snapshot that was staged but not published is not returned (protocol 4.9).
+    service.advance_head_to(6);
+    let plaintext = pt("built at five");
+    let _ = rig.publish(&service, &HEALTHY, &re_snapshot(0x02, 5, &plaintext));
+    assert!(matches!(
+        service.get_snapshot(&VAULT, &[0x02; 16]),
+        Err(ServiceError::SnapshotNotFound)
+    ));
+    assert!(matches!(
+        service.get_snapshot(&VAULT, &[0x7f; 16]),
+        Err(ServiceError::SnapshotNotFound)
+    ));
+}
+
+#[test]
 fn a_head_that_moved_refuses_the_publish_and_changes_nothing() {
     let rig = Rig::genesis("head");
     let service = service_with_genesis(&rig);
