@@ -39,7 +39,7 @@ export function AutoCategorizeOnImportCard() {
     <Card>
       <CardContent className="pt-6">
         <div className="flex items-start justify-between gap-4">
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-1 compact:min-w-0 compact:[overflow-wrap:anywhere]">
             <Label htmlFor="auto-categorize-on-import">
               Auto-categorize imported transactions
             </Label>

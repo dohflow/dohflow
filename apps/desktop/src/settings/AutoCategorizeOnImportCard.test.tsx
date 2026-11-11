@@ -26,6 +26,13 @@ beforeEach(() => {
 });
 
 describe("AutoCategorizeOnImportCard", () => {
+  // personal-cfo-i93n3.28 slice 8: the text column may shrink and breaks long words on a phone (it pushed the switch past the edge).
+  it("lets the text beside the switch shrink and break long words on a phone", async () => {
+    renderWithClient(<AutoCategorizeOnImportCard />);
+    const label = await screen.findByText("Auto-categorize imported transactions");
+    expect(label.parentElement).toHaveClass("compact:min-w-0", "compact:[overflow-wrap:anywhere]");
+  });
+
   it("reflects the stored on state", async () => {
     renderWithClient(<AutoCategorizeOnImportCard />);
     await waitFor(() =>

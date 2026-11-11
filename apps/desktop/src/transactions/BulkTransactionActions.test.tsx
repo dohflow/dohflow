@@ -86,6 +86,23 @@ function setup(over: Partial<Parameters<typeof BulkTransactionActions>[0]> = {})
   return ops;
 }
 
+// personal-cfo-i93n3.28 slice 8: reflow only on a phone (compact-only classes; desktop unchanged). The bar still floats at the bottom; on a phone its
+// controls stack at full width, it scrolls when taller than 60% of the window, and it clears the home indicator.
+test("stacks its controls at full width on a phone, scrolls when tall and clears the home indicator; desktop keeps one wrapping row", () => {
+  setup();
+  const bar = screen.getByText("2 selected").parentElement!;
+  for (const rule of ["compact:flex-col", "compact:items-stretch", "compact:max-h-[60dvh]", "compact:overflow-y-auto", "compact:w-[calc(100vw-2rem)]", "compact:bottom-[max(1.25rem,var(--safe-area-bottom))]"]) {
+    expect(bar.className).toContain(rule);
+  }
+  expect(bar).toHaveClass("flex-wrap", "fixed", "bottom-5");
+  expect(bar).not.toHaveClass("flex-col");
+  expect(screen.getByRole("button", { name: "Categorize selected" }).closest("div.w-44")).toHaveClass("compact:w-full");
+  const tag = screen.getByLabelText("Add or create tag");
+  expect(tag.className).toContain("compact:flex-1");
+  expect(tag.parentElement).toHaveClass("compact:w-full");
+  expect(screen.getByRole("button", { name: /Clear/ })).toHaveClass("compact:ml-0");
+});
+
 test("recategorizes every selected transaction, then clears", async () => {
   const ops = setup();
   fireEvent.click(screen.getByRole("button", { name: "Categorize selected" }));
