@@ -35,7 +35,7 @@ use sync_core::void::{HonoredVoid, LedgerError, VoidLedger};
 use thiserror::Error;
 use vault_crypto::Dek;
 
-use crate::base_image::{BaseCapture, BaseImageError};
+use crate::base_image::{base_image_path, base_image_temp_path, BaseCapture, BaseImageError};
 use crate::snapshot_install::{install_snapshot, InstallError, InstalledSnapshot};
 use crate::{
     migrations, open_existing_keyed_raw, open_keyed_raw, DbError, DbWorker, KeyMaterial, VaultLease,
@@ -196,13 +196,27 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
-/// Remove a temporary replica a crashed bootstrap left: that exact name and its journal files.
-fn discard_stale(temp: &Path) -> io::Result<()> {
+/// Remove a temporary replica a crashed bootstrap left: that exact name and its journal files. A
+/// bootstrap cut after its base capture also left `sync/base.db` (and the capture's temporary
+/// copy), which belong to no vault: no vault exists at `path` (the caller checked), and the
+/// temporary replica was the only thing that recorded the base, so they go with it. A base image
+/// is only ever removed together with a stale temporary replica, never on its own.
+fn discard_stale(temp: &Path, path: &Path) -> io::Result<()> {
+    let mut found = false;
     for suffix in ["", "-wal", "-shm", "-journal"] {
         match fs::remove_file(with_suffix(temp, suffix)) {
-            Ok(()) => {}
+            Ok(()) => found = true,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
+        }
+    }
+    if found {
+        for image in [base_image_path(path), base_image_temp_path(path)] {
+            match fs::remove_file(image) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
         }
     }
     Ok(())
@@ -224,8 +238,8 @@ fn write_ledger(
     let tx = conn.transaction()?;
     for (index, void) in ledger.seeded().iter().enumerate() {
         tx.execute(
-            "INSERT INTO sync_voids (void_id, first, last, ordinal, origin)
-             VALUES (?1, ?2, ?3, ?4, 'seeded')",
+            "INSERT INTO sync_voids (ordinal, void_id, first, last, origin)
+             VALUES (?4, ?1, ?2, ?3, 'seeded')",
             params![
                 void.void_id.as_slice(),
                 to_i64(void.first)?,
@@ -306,9 +320,10 @@ pub fn bootstrap_replica(
     }
     let root = to_i64(source.root)?;
 
-    // A crash left a temporary replica: discard it and begin again.
+    // A crash left a temporary replica: discard it, and the base image it captured before the
+    // crash, and begin again.
     let temp = bootstrapping_path(path);
-    discard_stale(&temp)?;
+    discard_stale(&temp, path)?;
 
     // 1. Create and install.
     let mut conn = open_keyed_raw(&temp, dek)?;

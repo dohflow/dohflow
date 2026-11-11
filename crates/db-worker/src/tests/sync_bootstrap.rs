@@ -463,3 +463,64 @@ fn a_replica_with_no_identity_is_never_given_one_by_the_open() {
     );
     assert!(result.is_err());
 }
+
+#[test]
+fn one_void_id_can_hold_more_than_one_entry() {
+    // Q1: a snapshot that records one id at two ranges (the verifier does not refuse it) installs,
+    // and each range is its own seeded entry.
+    let (_origin_dir, origin, verified) = origin();
+    let schema = CURRENT_VERSION.unsigned_abs();
+    let snapshot = with_voids(&verified, &[void(1, 2, 3), void(1, 5, 6)], schema);
+    let (version, own) = (engine(), engine());
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("vault.db");
+    let born = bootstrap_replica(
+        &path,
+        &dek(),
+        &source(&origin, &snapshot, 9, &version, &own, &[]),
+    )
+    .unwrap();
+    assert_born(&born.worker, &origin, &snapshot, 9, &path);
+    assert_eq!(born.worker.void_ledger().unwrap().seeded().len(), 2);
+
+    // Q2: the same id honored here, past the root (the seeded entry is history, never a fork
+    // check's input): a second entry for the id, and the next snapshot records all three.
+    born.worker
+        .lock()
+        .conn
+        .execute(
+            "INSERT INTO sync_voids (ordinal, void_id, first, last, origin)
+             VALUES (3, ?1, 12, 13, 'honored')",
+            [vec![1_u8; 32]],
+        )
+        .unwrap();
+    let ledger = born.worker.void_ledger().unwrap();
+    assert_eq!((ledger.seeded().len(), ledger.honored().len()), (2, 1));
+    let recorded = ledger.recorded();
+    assert_eq!(recorded.len(), 3);
+    assert!(recorded.iter().all(|v| v.void_id == [1; 32]));
+}
+
+#[test]
+fn an_abandoned_bootstrap_leaves_no_base_image_behind() {
+    // Q3: cut after the base capture, then cut again right after the next attempt discards what
+    // the first left: no base.db belongs to a vault that does not exist.
+    let (_origin_dir, origin, verified) = origin();
+    let (version, own) = (engine(), engine());
+    let src = source(&origin, &verified, 9, &version, &own, &[]);
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("vault.db");
+    let dek = dek();
+    let cut = cut_after(Step::BaseImage, || bootstrap_replica(&path, &dek, &src));
+    assert!(matches!(cut, Err(BootstrapError::Cut(Step::BaseImage))));
+    assert!(base_image_path(&path).exists(), "the capture reached disk");
+    let cut = cut_after(Step::Created, || bootstrap_replica(&path, &dek, &src));
+    assert!(matches!(cut, Err(BootstrapError::Cut(Step::Created))));
+    assert!(
+        !base_image_path(&path).exists(),
+        "discarded with the temporary replica"
+    );
+    assert!(!crate::base_image::base_image_temp_path(&path).exists());
+    // A vault file that was never created is untouched, and a neighbor's base is not removed when
+    // there was no temporary replica: nothing here is a bootstrap of its own.
+}

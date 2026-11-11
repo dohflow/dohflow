@@ -96,6 +96,10 @@ pub enum InstallError {
     /// The vault could not be read or written.
     #[error("the vault could not be written: {0}")]
     Db(#[from] DbError),
+    /// The installed vault's identity header (its creation time or schema version) is not the
+    /// snapshot's.
+    #[error("the installed vault's header is not the snapshot's")]
+    HeaderMismatch,
     /// The re-export that proves the install failed.
     #[error("the installed state could not be exported again: {0}")]
     Export(#[from] ExportError),
@@ -245,6 +249,11 @@ pub fn install_snapshot(
     // The proof: what is installed exports to the snapshot, table for table.
     let (again, _) = export_within(&tx, &ExportInput::default())?;
     let reexported = verify(&again)?;
+    if reexported.manifest.vault_created_at != manifest.vault_created_at
+        || reexported.manifest.schema_version != manifest.schema_version
+    {
+        return Err(InstallError::HeaderMismatch);
+    }
     for entry in &manifest.tables {
         let other: Option<&TableEntry> = reexported
             .manifest

@@ -665,7 +665,7 @@ therefore requires reviewing this inventory.
 | `sync_counter_register` | 3 | exclude | exclude | Device-local state: the durable `next_counter` of each `(vault_id, key_epoch, fingerprint, object_type)` context (C.4). A row is never 0. Written under the writer lock, so a restore rolls it back and the independent witness detects it. |
 | `sync_saved_snapshot` | 3 | exclude | exclude | Device-local state: the sealed snapshot saved beside the register for an exact-byte retransmission, with the hashes of what it was sealed from. |
 | `sync_genesis` | 3 | exclude | exclude | Device-local state: the genesis records this device minted at sync-enable, persisted before any key is installed from them, how far enabling got (`Persisted`, `Installed`, `Published`, or a terminal `VaultKnown` or `GenesisResumeLost`), and the `operation_log` high-water mark of the export. The records never change. |
-| `sync_voids` | 3 | exclude | exclude | Device-local state: the void ledger, one row per void this replica skips (the void id, the range of log positions it skips, a dense `ordinal` in write order) with its `origin`: `seeded` from the snapshot the replica bootstrapped from, or `honored` here. Append-only; a row is never updated or deleted. |
+| `sync_voids` | 3 | exclude | exclude | Device-local state: the void ledger, one row per void this replica skips (the void id, the range of log positions it skips, a dense `ordinal` in write order) with its `origin`: `seeded` from the snapshot the replica bootstrapped from, or `honored` here. Append-only; a row is never updated or deleted. The key is the `ordinal`, not the void id: one id can hold more than one entry (a snapshot may record one id at two ranges, and a recorded void may later be honored here as a new void). |
 | `sync_position` | 3 | exclude | exclude | Device-local state: the applied cursor of a replica that has bootstrapped: `snapshot_root` (the last position of the snapshot it was built from; NULL for an origin; never changes) and `next_to_apply` (only increases). Written with the void ledger in one transaction. |
 <!-- inventory:end -->
 
@@ -2134,7 +2134,9 @@ voids with origin `seeded`, in ascending order, and its cursor (`sync_position`)
 `seeded` entry is history: the engine skips its positions and a snapshot the replica later publishes
 records it, but it never feeds the same-void-at-two-positions fork check or the already-covered
 outcome, which concern voids this replica honored. A void whose id a snapshot recorded below the root
-and which later appears past the root is judged as a new void.
+and which later appears past the root is judged as a new void, and is then a second entry for that id (the
+ledger is keyed by position in it, not by id). A snapshot may record one id at two ranges; each is its own
+entry.
 
 **Becoming the vault.** The replica is built at `<vault>.bootstrapping` beside the vault path, under
 the vault's lease: the install, the ledger and the first base image (`sync_base` `Ready` at `root`,
@@ -2142,7 +2144,7 @@ credentials stripped) all land there. Class-2 tables are never shipped, so a new
 them empty. Only then is the file
 synced and renamed to the vault path and the directory synced. A vault that exists therefore always has
 its base, so no command can be taken, unrecorded, between the install and the base. A start that finds
-a `<vault>.bootstrapping` file discards that file (and its journal files) and begins again; a vault
+a `<vault>.bootstrapping` file discards that file (and its journal files) and the base image it had captured (`sync/base.db`, which belongs to no vault until the rename) and begins again; a vault
 file that already exists is never replaced.
 
 ## C.9 Artifact transport

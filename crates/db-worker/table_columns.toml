@@ -535,8 +535,8 @@ columns = ["vault_id:uuid", "key_epoch:int", "fingerprint:bytes", "object_type:i
 name = "sync_voids"
 class = "3"
 write_set = "none"
-primary_key = ["void_id"]
-columns = ["void_id:bytes", "first:int", "last:int", "ordinal:int", "origin:text"]
+primary_key = ["ordinal"]
+columns = ["ordinal:int", "void_id:bytes", "first:int", "last:int", "origin:text"]
 
 [[table]]
 name = "system_ledger_accounts"

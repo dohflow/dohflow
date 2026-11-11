@@ -2424,6 +2424,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     //   The table is append-only: an entry is never updated or deleted (a re-bootstrap builds a
     //   NEW vault), `ordinal` is dense and in the order the entries were written (a trigger
     //   refuses any other), and the ranges ascend without overlap (a trigger refuses any other).
+    //   The key is the ordinal, not the void id: a snapshot may record one id at two ranges (the
+    //   verifier does not refuse it), and a void a snapshot recorded may later be honored here as a
+    //   new void (the seeded entry is history and never a fork check's input), so one id can hold
+    //   more than one entry.
     // * `sync_position` is a singleton: `snapshot_root`, the last log position of the snapshot the
     //   replica bootstrapped from (NULL for the origin, which was never bootstrapped, and never
     //   changed after the row is written), and `next_to_apply`, the lowest position the replica has
@@ -2435,10 +2439,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         version: 69,
         name: "sync_void_ledger_and_position",
         up: "CREATE TABLE sync_voids (
-                 void_id BLOB PRIMARY KEY CHECK (length(void_id) = 32),
+                 ordinal INTEGER PRIMARY KEY CHECK (ordinal >= 1),
+                 void_id BLOB NOT NULL CHECK (length(void_id) = 32),
                  first   INTEGER NOT NULL CHECK (first >= 1),
                  last    INTEGER NOT NULL CHECK (last >= first),
-                 ordinal INTEGER NOT NULL UNIQUE CHECK (ordinal >= 1),
                  origin  TEXT NOT NULL CHECK (origin IN ('honored', 'seeded'))
              );
              CREATE TRIGGER sync_voids_next_ordinal BEFORE INSERT ON sync_voids
@@ -3992,8 +3996,7 @@ mod tests {
             insert(&conn, 3, 9, 8, 3).is_err(),
             "a range that runs backwards"
         );
-        assert!(insert(&conn, 1, 8, 9, 3).is_err(), "a repeated void id");
-        insert(&conn, 3, 7, 9, 3).unwrap();
+        insert(&conn, 1, 7, 9, 3).unwrap();
         assert!(conn
             .execute("UPDATE sync_voids SET origin = 'honored'", [])
             .is_err());
