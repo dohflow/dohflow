@@ -658,3 +658,206 @@ mod rows {
         assert_eq!(&a[..2], &[0, 2]);
     }
 }
+
+// ---- reading rows back: parse_row_line is the exact inverse of row_line --------------------------
+
+mod reading_rows {
+    use sync_core::row_digest::{Column, Kind, Value};
+    use sync_core::snapshot::{parse_row_line, row_line, ColumnEntry, OwnedValue, SnapshotError};
+
+    fn entries() -> Vec<ColumnEntry> {
+        ["a_int", "b_text", "c_uuid", "d_bytes"]
+            .into_iter()
+            .zip(["int", "text", "uuid", "bytes"])
+            .map(|(name, kind)| ColumnEntry {
+                name: name.to_owned(),
+                kind: kind.to_owned(),
+            })
+            .collect()
+    }
+
+    fn line(int: Value<'_>, text: Value<'_>, uuid: Value<'_>, bytes: Value<'_>) -> Vec<u8> {
+        row_line(&[
+            Column {
+                name: "a_int",
+                kind: Kind::Int,
+                value: int,
+            },
+            Column {
+                name: "b_text",
+                kind: Kind::Text,
+                value: text,
+            },
+            Column {
+                name: "c_uuid",
+                kind: Kind::Uuid,
+                value: uuid,
+            },
+            Column {
+                name: "d_bytes",
+                kind: Kind::Bytes,
+                value: bytes,
+            },
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn every_kind_round_trips_including_null_padding_and_awkward_text() {
+        let uuid = [0xab; 16];
+        for bytes in [
+            &b""[..],
+            b"a",
+            b"ab",
+            b"abc",
+            b"abcd",
+            &[0, 255, 254, 1, 0, 7],
+        ] {
+            for text in [
+                "",
+                "plain",
+                "quote \" backslash \\ slash / tab \t nl \n",
+                "héllo ✓ 𝄞",
+            ] {
+                for int in [0_i64, 1, -1, 42, i64::MAX, i64::MIN] {
+                    let encoded = line(
+                        Value::Int(int),
+                        Value::Text(text.as_bytes()),
+                        Value::Blob(&uuid),
+                        Value::Blob(bytes),
+                    );
+                    assert_eq!(
+                        parse_row_line(&encoded, &entries()).unwrap(),
+                        vec![
+                            OwnedValue::Int(int),
+                            OwnedValue::Text(text.to_owned()),
+                            OwnedValue::Blob(uuid.to_vec()),
+                            OwnedValue::Blob(bytes.to_vec()),
+                        ]
+                    );
+                }
+            }
+        }
+        // NULL is null in any kind.
+        let encoded = line(Value::Null, Value::Null, Value::Null, Value::Null);
+        assert_eq!(
+            parse_row_line(&encoded, &entries()).unwrap(),
+            vec![OwnedValue::Null; 4]
+        );
+    }
+
+    #[test]
+    fn a_line_that_is_not_the_canonical_encoding_of_its_columns_is_refused() {
+        let good = line(
+            Value::Int(5),
+            Value::Text(b"x"),
+            Value::Blob(&[1; 16]),
+            Value::Blob(b"ab"),
+        );
+        let text = String::from_utf8(good.clone()).unwrap();
+        let malformed = |bytes: &[u8]| {
+            assert_eq!(
+                parse_row_line(bytes, &entries()).unwrap_err(),
+                SnapshotError::MalformedRow,
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        };
+        // No newline, two newlines, whitespace, and a non-canonical key order.
+        malformed(text.trim_end().as_bytes());
+        malformed(format!("{text}\n").as_bytes());
+        malformed(text.replace("\":\"", "\": \"").as_bytes());
+        malformed(b"[]\n");
+        malformed(b"null\n");
+        malformed(b"\n");
+        // A missing column and an extra one.
+        let one_fewer = &entries()[..3];
+        assert_eq!(
+            parse_row_line(&good, one_fewer).unwrap_err(),
+            SnapshotError::MalformedRow
+        );
+        let mut one_more = entries();
+        one_more.push(ColumnEntry {
+            name: "e_more".to_owned(),
+            kind: "int".to_owned(),
+        });
+        assert_eq!(
+            parse_row_line(&good, &one_more).unwrap_err(),
+            SnapshotError::MalformedRow
+        );
+    }
+
+    #[test]
+    fn a_value_in_any_spelling_but_the_canonical_one_is_refused_naming_its_column() {
+        // One column at a time, each value a non-canonical spelling of its kind.
+        let refused = |kind: &str, json_value: &str| {
+            let columns = [ColumnEntry {
+                name: "v".to_owned(),
+                kind: kind.to_owned(),
+            }];
+            let line = format!("{{\"v\":{json_value}}}\n");
+            assert_eq!(
+                parse_row_line(line.as_bytes(), &columns).unwrap_err(),
+                SnapshotError::KindMismatch {
+                    column: "v".to_owned()
+                },
+                "{kind} {json_value}"
+            );
+        };
+        for bad in [
+            "\"+5\"",
+            "\"05\"",
+            "\"-0\"",
+            "\"5.0\"",
+            "\"1e3\"",
+            "\"\"",
+            "\"9223372036854775808\"",
+            "true",
+            "[]",
+        ] {
+            refused("int", bad);
+        }
+        for bad in [
+            "\"ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB\"",
+            "\"abcdefabcdefabcdefabcdefabcdefab\"",
+            "\"abcdefab-cdef-abcd-efab-cdefabcdefa\"",
+            "\"abcdefab-cdef-abcd-efab-cdefabcdefabc\"",
+            "\"gbcdefab-cdef-abcd-efab-cdefabcdefab\"",
+        ] {
+            refused("uuid", bad);
+        }
+        for bad in [
+            "\"YWI\"",     // unpadded
+            "\"YWI=\\n\"", // whitespace
+            "\"YW=I\"",    // padding in the middle
+            "\"YR==\"",    // non-zero trailing bits (not the canonical spelling of any byte string)
+            "\"YWJj====\"",
+            "\"!!!!\"",
+        ] {
+            refused("bytes", bad);
+        }
+        refused("text", "true");
+        // A bare number is not canonical JSON in this subset at all.
+        for kind in ["int", "uuid", "bytes", "text"] {
+            let columns = [ColumnEntry {
+                name: "v".to_owned(),
+                kind: kind.to_owned(),
+            }];
+            assert_eq!(
+                parse_row_line(b"{\"v\":5}\n", &columns).unwrap_err(),
+                SnapshotError::MalformedRow,
+                "{kind}"
+            );
+        }
+        refused("float", "\"1\"");
+        // U+0000 in any string is refused by the canonical parser: such a row cannot exist.
+        let columns = [ColumnEntry {
+            name: "v".to_owned(),
+            kind: "text".to_owned(),
+        }];
+        assert_eq!(
+            parse_row_line(b"{\"v\":\"a\\u0000b\"}\n", &columns).unwrap_err(),
+            SnapshotError::MalformedRow
+        );
+    }
+}

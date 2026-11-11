@@ -532,11 +532,25 @@ primary_key = ["command_id"]
 columns = ["command_id:uuid", "op_seq:int", "state:text", "write_set_keys:bytes", "sealed_container:bytes", "bound_seq:int", "result_ref:bytes", "created_at:text", "issued_at:int"]
 
 [[table]]
+name = "sync_position"
+class = "3"
+write_set = "none"
+primary_key = ["singleton"]
+columns = ["singleton:int", "snapshot_root:int", "next_to_apply:int"]
+
+[[table]]
 name = "sync_saved_snapshot"
 class = "3"
 write_set = "none"
 primary_key = ["vault_id", "key_epoch", "fingerprint", "object_type"]
 columns = ["vault_id:uuid", "key_epoch:int", "fingerprint:bytes", "object_type:int", "object_id:uuid", "base_seq:int", "plaintext_sha256:bytes", "container_sha256:bytes", "container_len:int", "counter:int"]
+
+[[table]]
+name = "sync_voids"
+class = "3"
+write_set = "none"
+primary_key = ["ordinal"]
+columns = ["ordinal:int", "void_id:bytes", "first:int", "last:int", "origin:text"]
 
 [[table]]
 name = "system_ledger_accounts"

@@ -15,6 +15,14 @@ vi.mock("@/vault/touchIdEnabled", () => ({
 
 // personal-cfo-xuu (4 of 4): the unlock screen's Touch ID button and what it says for each rule.
 
+// A status the hook reports whatever the host says, for the cases that must prove the SCREEN's own checks of the flag: with
+// the hook itself returning "on and offered", only the screen's gates stand between that status and the button.
+const hook = vi.hoisted(() => ({ forced: null as null | { status: unknown; loaded: boolean; refresh: () => Promise<unknown>; setStatus: () => void } }));
+vi.mock("@/vault/useTouchIdStatus", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/vault/useTouchIdStatus")>();
+  return { ...real, useTouchIdStatus: () => hook.forced ?? real.useTouchIdStatus() };
+});
+
 const mocks = vi.hoisted(() => ({
   touchIdStatus: vi.fn(),
   unlockVault: vi.fn(),
@@ -59,6 +67,26 @@ beforeEach(() => {
 describe("Touch ID switched off (v0.4.1)", () => {
   afterEach(() => {
     flag.on = true;
+    hook.forced = null;
+  });
+
+  it("the screen's own checks hide the button and the rule text even when the status hook reports Touch ID on and offered", async () => {
+    flag.on = false;
+    hook.forced = { status: status({}), loaded: true, refresh: async () => status({}), setStatus: () => undefined };
+    render(<UnlockScreen />);
+    expect(await screen.findByLabelText(/master password/i)).toBeInTheDocument();
+    expect(touchButton()).not.toBeInTheDocument();
+    expect(screen.queryByText(/touch id/i)).not.toBeInTheDocument();
+    hook.forced = { status: status({ offered: false, reason: "after_restart" }), loaded: true, refresh: async () => undefined, setStatus: () => undefined };
+    render(<UnlockScreen />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("the same forced status shows the button with the flag on (so the case above proves the gates, not a broken setup)", async () => {
+    flag.on = true;
+    hook.forced = { status: status({}), loaded: true, refresh: async () => status({}), setStatus: () => undefined };
+    render(<UnlockScreen />);
+    expect(await screen.findByRole("button", { name: /unlock with touch id/i })).toBeEnabled();
   });
 
   it("shows no Touch ID button and says nothing about Touch ID, even if the host would offer it", async () => {

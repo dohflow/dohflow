@@ -7,8 +7,8 @@ use common::*;
 use sync_core::envelope::ReceiverError;
 use sync_core::membership::EpochAtPosition;
 use sync_core::status::{
-    ApplyFailureCode, EngineVersion, HaltEvidence, SnapshotFacts, StopReason, SyncEvent,
-    SyncStatus, UpdateRequired,
+    snapshot_is_valid_root, ApplyFailureCode, EngineVersion, HaltEvidence, SnapshotFacts,
+    StopReason, SyncEvent, SyncStatus, UpdateRequired,
 };
 use sync_core::void::{
     snapshot_passes_stop, verify_void, Honor, HonorContext, HonoredVoid, VoidBody, VoidLedger,
@@ -675,4 +675,77 @@ fn a_permit_for_one_stop_at_a_position_does_not_clear_another_stop_there() {
     let mut other_digest = SyncStatus::Healthy;
     healthy_apply_stop(&mut other_digest, 5, 9);
     assert_eq!(other_digest.observe_rebootstrapped(permit), None);
+}
+
+// -- the shared root predicate (personal-cfo-1cltt.5) ------------------------------------------
+
+fn void_range(first: u64, last: u64) -> HonoredVoid {
+    HonoredVoid {
+        void_id: [first as u8; 32],
+        first,
+        last,
+    }
+}
+
+#[test]
+fn a_root_is_valid_only_for_this_builds_version_outside_held_voids_and_above_every_recorded_void() {
+    let own = v("dohflow-engine-1");
+    let other = v("dohflow-engine-2");
+    assert!(snapshot_is_valid_root(&facts(10, &own, &[], &[])));
+    assert!(!snapshot_is_valid_root(&facts(10, &other, &[], &[])));
+    // Held voids: inside is refused, edges included; outside is fine.
+    assert!(!snapshot_is_valid_root(&facts(10, &own, &[], &[(10, 19)])));
+    assert!(!snapshot_is_valid_root(&facts(19, &own, &[], &[(10, 19)])));
+    assert!(snapshot_is_valid_root(&facts(20, &own, &[], &[(10, 19)])));
+    assert!(snapshot_is_valid_root(&facts(9, &own, &[], &[(10, 19)])));
+    // V1: every recorded void lies below the root, and the records ascend without overlap.
+    let below = [void_range(2, 3), void_range(5, 9)];
+    assert!(snapshot_is_valid_root(&facts(10, &own, &below, &[])));
+    let reaching = [void_range(2, 3), void_range(5, 10)];
+    assert!(!snapshot_is_valid_root(&facts(10, &own, &reaching, &[])));
+    let beyond = [void_range(2, 12)];
+    assert!(!snapshot_is_valid_root(&facts(10, &own, &beyond, &[])));
+    let overlapping = [void_range(2, 6), void_range(6, 8)];
+    assert!(!snapshot_is_valid_root(&facts(10, &own, &overlapping, &[])));
+    let backwards = [void_range(6, 2)];
+    assert!(!snapshot_is_valid_root(&facts(10, &own, &backwards, &[])));
+    let descending = [void_range(5, 9), void_range(2, 3)];
+    assert!(!snapshot_is_valid_root(&facts(10, &own, &descending, &[])));
+}
+
+#[test]
+fn whenever_a_stop_accepts_a_snapshot_it_is_a_valid_root() {
+    // One rule set: no stop accepts what a first bootstrap would refuse. Every stop kind, over a
+    // grid of roots, versions, recorded voids and held voids.
+    let own = v("dohflow-engine-1");
+    let other = v("dohflow-engine-2");
+    let mut update = SyncStatus::Healthy;
+    update.observe_engine_version(5, [1; 32], v("dohflow-engine-2"), own);
+    let mut mismatch = SyncStatus::Healthy;
+    mismatch.observe_write_set_mismatch(5, [1; 32], [2; 32]);
+    let statuses = [update, mismatch, SyncStatus::Healthy];
+    let recorded_sets: [&[HonoredVoid]; 4] = [
+        &[],
+        &[void_range(3, 6)],
+        &[void_range(3, 6), void_range(8, 12)],
+        &[void_range(4, 20)],
+    ];
+    let held_sets: [&[(u64, u64)]; 3] = [&[], &[(10, 19)], &[(1, 2), (30, 40)]];
+    let mut accepted = 0;
+    for status in &statuses {
+        for root in [0_u64, 4, 5, 9, 10, 12, 19, 20, 35, 50] {
+            for version in [&own, &other] {
+                for recorded in recorded_sets {
+                    for held in held_sets {
+                        let f = facts(root, version, recorded, held);
+                        if status.rebootstrap_permit(&f).is_some() {
+                            accepted += 1;
+                            assert!(snapshot_is_valid_root(&f), "{root} {recorded:?} {held:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(accepted > 0, "the grid must reach the permit");
 }

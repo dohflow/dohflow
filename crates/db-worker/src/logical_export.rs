@@ -149,6 +149,19 @@ pub fn export_genesis_with_mark(
     input: &ExportInput<'_>,
 ) -> Result<(Vec<u8>, u64), ExportError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Deferred)?;
+    export_within(&tx, input)
+}
+
+/// [`export_genesis_with_mark`] over a connection whose current view is the state to export: the
+/// caller owns the transaction. The snapshot installer calls it inside its write transaction to
+/// prove that what it installed re-exports to exactly the snapshot it was given.
+///
+/// # Errors
+/// [`ExportError`], as [`export_genesis_plaintext`].
+pub(crate) fn export_within(
+    tx: &Connection,
+    input: &ExportInput<'_>,
+) -> Result<(Vec<u8>, u64), ExportError> {
     let high_water: i64 = tx.query_row(
         "SELECT COALESCE(MAX(op_seq), 0) FROM operation_log",
         [],
@@ -167,7 +180,7 @@ pub fn export_genesis_with_mark(
     let mut stored: BTreeMap<&str, Vec<Row>> = BTreeMap::new();
     for spec in &tables {
         let projection = manifest.projection_of(&spec.name);
-        stored.insert(&spec.name, read_table(&tx, spec, projection)?);
+        stored.insert(&spec.name, read_table(tx, spec, projection)?);
     }
 
     let mut files = Vec::with_capacity(tables.len());
@@ -523,7 +536,7 @@ fn folded_child_file(
     })
 }
 
-const fn kind_name(kind: Kind) -> &'static str {
+pub(crate) const fn kind_name(kind: Kind) -> &'static str {
     match kind {
         Kind::Int => "int",
         Kind::Text => "text",
