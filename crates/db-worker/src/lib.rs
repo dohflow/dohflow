@@ -8599,9 +8599,9 @@ fn apply_command(
             idempotency_key, operation_type, affected_entities, metadata, node_id,
             vault_schema_version, hlc_timestamp, created_at,
             payload, payload_schema_version, write_set_hash, engine_version, applied_base_seq,
-            rebased_from
+            rebased_from, issued_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                  ?19)",
+                  ?19, ?20)",
         params![
             meta.command_id,
             meta.correlation_id,
@@ -8622,6 +8622,7 @@ fn apply_command(
             ENGINE_VERSION,
             sync_applied_base_seq,
             rebased_from,
+            meta.issued_at.as_unix_micros(),
         ],
     )?;
     let op_seq = tx.last_insert_rowid();

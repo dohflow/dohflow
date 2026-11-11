@@ -326,7 +326,7 @@ name = "operation_log"
 class = "1"
 write_set = "none"
 primary_key = ["op_seq"]
-columns = ["op_seq:int", "command_id:uuid", "correlation_id:uuid", "causation_id:uuid", "actor_type:text", "actor_id:text", "idempotency_key:text", "operation_type:text", "affected_entities:bytes", "metadata:bytes", "node_id:uuid", "vault_schema_version:int", "hlc_timestamp:int", "created_at:text", "payload:bytes", "payload_schema_version:int", "write_set_hash:bytes", "engine_version:text", "applied_base_seq:int", "rebased_from:int"]
+columns = ["op_seq:int", "command_id:uuid", "correlation_id:uuid", "causation_id:uuid", "actor_type:text", "actor_id:text", "idempotency_key:text", "operation_type:text", "affected_entities:bytes", "metadata:bytes", "node_id:uuid", "vault_schema_version:int", "hlc_timestamp:int", "created_at:text", "payload:bytes", "payload_schema_version:int", "write_set_hash:bytes", "engine_version:text", "applied_base_seq:int", "rebased_from:int", "issued_at:int"]
 
 [[table]]
 name = "outbox_queue"

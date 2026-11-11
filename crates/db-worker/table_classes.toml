@@ -10,8 +10,8 @@ table = "operation_log"
 class = "1"
 owner_bead = "personal-cfo-0s0"
 note = "Canonical command history and accepted-envelope evidence; class-1 rows are ordered by the Sync tail and retained for replay provenance. The write-set hash never depends on these columns. created_at (the recording device wall clock) and hlc_timestamp (an advisory per-process counter, ADR 0017) are device-local, and node_id is per vault (ADR 0074 section 9); none of the three enters a cross-replica or snapshot comparison (tests/replay_property.rs, tests/engine_pin.rs; personal-cfo-32fmp.4 AC2). applied_base_seq and rebased_from (personal-cfo-bxsbz.1) are device-local in the same way."
-device_local_columns = "created_at, applied_base_seq, rebased_from"
-device_local_note = "These columns are written by this device, are outside the write set, and are excluded from every cross-replica and snapshot comparison. applied_base_seq is the server seq of the base the row was applied on (for a re-applied local row, the new base's seq); rebased_from is the op_seq this row replaced when re-applied in a rebase, otherwise null."
+device_local_columns = "created_at, applied_base_seq, rebased_from, issued_at"
+device_local_note = "These columns are written by this device, are outside the write set, and are excluded from every cross-replica and snapshot comparison. applied_base_seq is the server seq of the base the row was applied on (for a re-applied local row, the new base's seq); rebased_from is the op_seq this row replaced when re-applied in a rebase, otherwise null; issued_at is the instant the command was issued (Unix microseconds, the encoding of sync_outbox.issued_at), null for a row written before the column, which the genesis-gap replay reads."
 
 [[table]]
 table = "ledger_accounts"

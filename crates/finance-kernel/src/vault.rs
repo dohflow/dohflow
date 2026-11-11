@@ -1577,6 +1577,7 @@ mod old_backup_settings_tests {
                  DROP TRIGGER sync_voids_ascending;
                  DROP TRIGGER sync_voids_next_ordinal;
                  DROP TABLE sync_voids;
+                 ALTER TABLE operation_log DROP COLUMN issued_at;
                  ALTER TABLE staged_transactions DROP COLUMN row_ordinal;
                  ALTER TABLE sync_outbox DROP COLUMN issued_at;
                  DROP INDEX idx_sync_notices_pending;

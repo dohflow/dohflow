@@ -2585,8 +2585,17 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
-    // Version 72 (personal-cfo-1cltt.5, slice C; provisional: 73 if another migration lands first):
-    // `sync_genesis` records **which snapshot the genesis was and the SHA-256 of the container this
+    // Version 72 (personal-cfo-1cltt.5, slice C; provisional: 73 if another migration lands first).
+    // Two device-local additions:
+    // * `operation_log.issued_at` (INTEGER, nullable, Unix microseconds, the encoding of
+    //   `sync_outbox.issued_at`) is the instant the command was issued, which `apply` reads for
+    //   every id and timestamp it mints. Until now it lived only in the outbox row, so a command
+    //   taken after the genesis export and before Sync was armed (no outbox row) lost it and could
+    //   not be replayed faithfully. `apply` now records it on every row (a local command, a server
+    //   envelope, a rebase step), Sync on or off. A row written before this column has NULL. It is
+    //   device-local like `created_at`: outside the write set, and out of every cross-replica and
+    //   snapshot comparison.
+    // * `sync_genesis` records **which snapshot the genesis was and the SHA-256 of the container this
     // device sent**: `genesis_snapshot_id` and `genesis_container_sha256`, written in the transaction
     // that records the genesis as published and BEFORE the saved container is dropped. The saved
     // container (and its `sync_saved_snapshot` record) is the only other place either lives, and it
@@ -2597,7 +2606,8 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 72,
         name: "sync_genesis_snapshot_identity",
-        up: "ALTER TABLE sync_genesis ADD COLUMN genesis_snapshot_id BLOB
+        up: "ALTER TABLE operation_log ADD COLUMN issued_at INTEGER;
+             ALTER TABLE sync_genesis ADD COLUMN genesis_snapshot_id BLOB
                  CHECK (genesis_snapshot_id IS NULL OR length(genesis_snapshot_id) = 16);
              ALTER TABLE sync_genesis ADD COLUMN genesis_container_sha256 BLOB
                  CHECK (genesis_container_sha256 IS NULL
@@ -2614,7 +2624,8 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         down: Some(
             "DROP TRIGGER sync_genesis_snapshot_identity_whole;
              ALTER TABLE sync_genesis DROP COLUMN genesis_container_sha256;
-             ALTER TABLE sync_genesis DROP COLUMN genesis_snapshot_id;",
+             ALTER TABLE sync_genesis DROP COLUMN genesis_snapshot_id;
+             ALTER TABLE operation_log DROP COLUMN issued_at;",
         ),
         rebuilds_read_models: false,
         foreign_keys_off: false,

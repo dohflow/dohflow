@@ -189,7 +189,7 @@ fn the_new_log_columns_are_nullable_and_checked() {
     let tail: Vec<(&str, &str, bool)> = columns
         .iter()
         .rev()
-        .take(2)
+        .take(3)
         .rev()
         .map(|(n, t, nn)| (n.as_str(), t.as_str(), *nn))
         .collect();
@@ -197,7 +197,8 @@ fn the_new_log_columns_are_nullable_and_checked() {
         tail,
         vec![
             ("applied_base_seq", "INTEGER", false),
-            ("rebased_from", "INTEGER", false)
+            ("rebased_from", "INTEGER", false),
+            ("issued_at", "INTEGER", false)
         ]
     );
     // A negative base or a zero origin is refused when the row is written.
@@ -490,4 +491,66 @@ fn a_command_replayed_from_its_recorded_issue_time_mints_the_same_ids_and_stamps
             "the replay's metadata commits to what a seal made before the rollback bound"
         );
     }
+}
+
+// ---- the issue time on the log row (personal-cfo-1cltt.5, migration 72) ------------------------
+
+/// `apply` records the command's `issued_at` on every operation-log row, Sync on or off: a command
+/// taken before Sync is armed has no outbox row, and the log row is then the only place the instant
+/// lives.
+#[test]
+fn the_log_row_records_the_issue_time_with_sync_off_and_on() {
+    let (_dir, worker) = worker();
+    let issued = |meta: &CommandMeta| meta.issued_at.as_unix_micros();
+    let recorded = |worker: &DbWorker, command_id: Uuid| -> Option<i64> {
+        worker
+            .lock()
+            .conn
+            .query_row(
+                "SELECT issued_at FROM operation_log WHERE command_id = ?1",
+                [command_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+
+    // Sync off: no outbox row, and the instant is still on the log row.
+    let first = meta();
+    worker
+        .dispatch(
+            first.clone(),
+            liquid_account_cmd(AccountId::new(), Currency::Usd, 1),
+        )
+        .unwrap();
+    assert_eq!(count(&worker, "sync_outbox"), 0);
+    assert_eq!(recorded(&worker, first.command_id), Some(issued(&first)));
+
+    // Sync on: the log row and the outbox row agree.
+    enable_sync(&worker, 7);
+    let second = meta();
+    worker
+        .dispatch(
+            second.clone(),
+            liquid_account_cmd(AccountId::new(), Currency::Usd, 2),
+        )
+        .unwrap();
+    assert_eq!(recorded(&worker, second.command_id), Some(issued(&second)));
+    assert_eq!(
+        outbox_issued_at(&worker.lock().conn, &second.command_id).unwrap(),
+        second.issued_at
+    );
+
+    // The instant is not the wall clock at apply: an old `issued_at` is kept as given.
+    let mut old = meta();
+    old.issued_at = IssuedAt::from_unix_micros(1_700_000_000_000_000);
+    worker
+        .dispatch(
+            old.clone(),
+            liquid_account_cmd(AccountId::new(), Currency::Usd, 3),
+        )
+        .unwrap();
+    assert_eq!(
+        recorded(&worker, old.command_id),
+        Some(1_700_000_000_000_000)
+    );
 }
