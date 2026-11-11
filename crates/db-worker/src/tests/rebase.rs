@@ -195,6 +195,46 @@ fn the_scratch_vault_is_the_base_not_the_live_vault_and_the_live_vault_is_untouc
 }
 
 #[test]
+fn a_scratch_vault_can_be_built_from_another_image_at_the_position_the_caller_names() {
+    let (dir, live, account, scratch_path) = live_with_base();
+    // An image that is not the live vault's own base: a copy, so the test can tell it apart from
+    // `sync/base.db` by its position and by what it is left as.
+    let image = dir.path().join("genesis-image.db");
+    std::fs::copy(crate::base_image::base_image_path(live.db_path()), &image).unwrap();
+    let image_before = std::fs::read(&image).unwrap();
+    live.dispatch(meta(), rename(account, "Renamed after the base"))
+        .unwrap();
+    let live_before = live.snapshot_bytes().unwrap();
+
+    let scratch = live.scratch_from_image(&image, 3, &scratch_path).unwrap();
+
+    // The position is the caller's, not the live base's (5).
+    assert_eq!((scratch.base_seq(), scratch.head_seq()), (3, 3));
+    assert_eq!(account_name(scratch.worker(), account), "Checking");
+    scratch
+        .worker()
+        .dispatch(meta(), rename(account, "Written to the copy"))
+        .unwrap();
+    drop(scratch);
+    assert_eq!(
+        std::fs::read(&image).unwrap(),
+        image_before,
+        "the image is only ever copied"
+    );
+    assert_eq!(live.snapshot_bytes().unwrap(), live_before);
+    assert!(matches!(
+        live.scratch_from_image(&image, 3, &scratch_path),
+        Err(RebaseError::ScratchExists)
+    ));
+    let missing = dir.path().join("rebase").join("none.db");
+    assert!(matches!(
+        live.scratch_from_image(&dir.path().join("absent.db"), 3, &missing),
+        Err(RebaseError::Db(_))
+    ));
+    assert!(!missing.exists(), "a failed copy leaves nothing behind");
+}
+
+#[test]
 fn a_scratch_path_that_exists_is_refused_and_left_alone() {
     let (_dir, live, _account, scratch_path) = live_with_base();
     std::fs::create_dir_all(scratch_path.parent().unwrap()).unwrap();

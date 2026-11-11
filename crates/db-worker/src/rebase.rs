@@ -251,13 +251,40 @@ impl DbWorker {
                 base_seq,
             });
         }
+        self.scratch_from(&base_image_path(&self.path), base_seq, scratch_path)
+    }
+
+    /// A scratch vault built from a base image **other than this vault's own** (the genesis gap's
+    /// replay, `personal-cfo-1cltt.5` slice C): copy `image` to `scratch_path` and open the copy
+    /// under this vault's key, exactly as [`Self::rollback_to`] does with `sync/base.db`. The caller
+    /// says which log position the image is of (`base_seq`); this vault's own base is neither read
+    /// nor changed, and nothing is checked about the image beyond that it opens under this key. The
+    /// image is never modified: only the copy is.
+    ///
+    /// # Errors
+    /// [`RebaseError::ScratchExists`] or [`RebaseError::Db`].
+    pub fn scratch_from_image(
+        &self,
+        image: &Path,
+        base_seq: i64,
+        scratch_path: &Path,
+    ) -> Result<Scratch<'_>, RebaseError> {
+        self.scratch_from(image, base_seq, scratch_path)
+    }
+
+    fn scratch_from(
+        &self,
+        image: &Path,
+        base_seq: i64,
+        scratch_path: &Path,
+    ) -> Result<Scratch<'_>, RebaseError> {
         if scratch_path.exists() {
             return Err(RebaseError::ScratchExists);
         }
         if let Some(dir) = scratch_path.parent() {
             fs::create_dir_all(dir)?;
         }
-        if let Err(error) = copy_file_synced(&base_image_path(&self.path), scratch_path) {
+        if let Err(error) = copy_file_synced(image, scratch_path) {
             let _ = fs::remove_file(scratch_path);
             return Err(error.into());
         }
