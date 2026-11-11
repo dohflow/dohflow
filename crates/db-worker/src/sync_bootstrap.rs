@@ -35,7 +35,7 @@ use sync_core::void::{HonoredVoid, LedgerError, VoidLedger};
 use thiserror::Error;
 use vault_crypto::Dek;
 
-use crate::base_image::{base_image_path, base_image_temp_path, BaseCapture, BaseImageError};
+use crate::base_image::{base_image_path, sha256_file, BaseCapture, BaseImageError};
 use crate::snapshot_install::{install_snapshot, InstallError, InstalledSnapshot};
 use crate::{
     migrations, open_existing_keyed_raw, open_keyed_raw, DbError, DbWorker, KeyMaterial, VaultLease,
@@ -196,27 +196,45 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
+/// Whether `base.db` beside the vault at `path` is the base image the stale temporary replica
+/// captured: the temporary replica opens under `dek`, its `sync_base` row is `Ready`, and the
+/// recorded digest is the digest of the file on disk. Anything else (it cannot be opened, it has no
+/// base, the digests differ, there is no file) is "not its own", and the file is left alone.
+fn base_is_the_stale_replicas(temp: &Path, path: &Path, dek: &Dek) -> bool {
+    let image = base_image_path(path);
+    let Ok(on_disk) = sha256_file(&image) else {
+        return false;
+    };
+    let Ok(conn) = open_existing_keyed_raw(temp, dek) else {
+        return false;
+    };
+    let recorded: rusqlite::Result<Option<Vec<u8>>> = conn.query_row(
+        "SELECT base_digest FROM sync_base WHERE singleton = 1 AND state = 'Ready'",
+        [],
+        |r| r.get(0),
+    );
+    matches!(recorded, Ok(Some(digest)) if digest.as_slice() == on_disk.as_slice())
+}
+
 /// Remove a temporary replica a crashed bootstrap left: that exact name and its journal files. A
-/// bootstrap cut after its base capture also left `sync/base.db` (and the capture's temporary
-/// copy), which belong to no vault: no vault exists at `path` (the caller checked), and the
-/// temporary replica was the only thing that recorded the base, so they go with it. A base image
-/// is only ever removed together with a stale temporary replica, never on its own.
-fn discard_stale(temp: &Path, path: &Path) -> io::Result<()> {
-    let mut found = false;
+/// bootstrap cut after its base capture also left `sync/base.db`, which belongs to no vault. It is
+/// removed only when **no vault exists at `path`** (the caller checked) **and the file is the
+/// abandoned bootstrap's own** ([`base_is_the_stale_replicas`]); any other base image is never
+/// touched. The capture's in-flight copy is left to the next capture, which removes it first.
+fn discard_stale(temp: &Path, path: &Path, dek: &Dek) -> io::Result<()> {
+    let own_base = temp.exists() && base_is_the_stale_replicas(temp, path, dek);
     for suffix in ["", "-wal", "-shm", "-journal"] {
         match fs::remove_file(with_suffix(temp, suffix)) {
-            Ok(()) => found = true,
+            Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
     }
-    if found {
-        for image in [base_image_path(path), base_image_temp_path(path)] {
-            match fs::remove_file(image) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
+    if own_base {
+        match fs::remove_file(base_image_path(path)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
     }
     Ok(())
@@ -323,7 +341,7 @@ pub fn bootstrap_replica(
     // A crash left a temporary replica: discard it, and the base image it captured before the
     // crash, and begin again.
     let temp = bootstrapping_path(path);
-    discard_stale(&temp, path)?;
+    discard_stale(&temp, path, dek)?;
 
     // 1. Create and install.
     let mut conn = open_keyed_raw(&temp, dek)?;

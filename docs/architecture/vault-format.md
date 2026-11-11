@@ -2144,7 +2144,7 @@ credentials stripped) all land there. Class-2 tables are never shipped, so a new
 them empty. Only then is the file
 synced and renamed to the vault path and the directory synced. A vault that exists therefore always has
 its base, so no command can be taken, unrecorded, between the install and the base. A start that finds
-a `<vault>.bootstrapping` file discards that file (and its journal files) and the base image it had captured (`sync/base.db`, which belongs to no vault until the rename) and begins again; a vault
+a `<vault>.bootstrapping` file discards that file (and its journal files) and begins again; it also discards `sync/base.db` when, and only when, no vault exists at the path and that file is the base the abandoned replica recorded (its `Ready` digest equals the file's), and touches no other base image; a vault
 file that already exists is never replaced.
 
 ## C.9 Artifact transport

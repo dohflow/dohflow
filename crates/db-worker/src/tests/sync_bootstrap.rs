@@ -520,7 +520,53 @@ fn an_abandoned_bootstrap_leaves_no_base_image_behind() {
         !base_image_path(&path).exists(),
         "discarded with the temporary replica"
     );
-    assert!(!crate::base_image::base_image_temp_path(&path).exists());
-    // A vault file that was never created is untouched, and a neighbor's base is not removed when
-    // there was no temporary replica: nothing here is a bootstrap of its own.
+}
+
+#[test]
+fn a_base_image_that_is_not_the_abandoned_bootstraps_own_is_never_removed() {
+    let (_origin_dir, origin, verified) = origin();
+    let (version, own) = (engine(), engine());
+    let src = source(&origin, &verified, 9, &version, &own, &[]);
+
+    // An existing vault: a stale temporary file beside it changes nothing, and its base survives.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("vault.db");
+    let dek = dek();
+    drop(bootstrap_replica(&path, &dek, &src).unwrap());
+    let base_before = std::fs::read(base_image_path(&path)).unwrap();
+    std::fs::write(bootstrapping_path(&path), b"stale").unwrap();
+    assert!(matches!(
+        bootstrap_replica(&path, &dek, &src),
+        Err(BootstrapError::VaultExists)
+    ));
+    assert_eq!(std::fs::read(base_image_path(&path)).unwrap(), base_before);
+    assert_eq!(std::fs::read(bootstrapping_path(&path)).unwrap(), b"stale");
+
+    // No vault, a stale temporary file that records no base of this image: the base is left alone
+    // (the next capture replaces it), while the temporary file goes.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("vault.db");
+    std::fs::create_dir_all(base_image_path(&path).parent().unwrap()).unwrap();
+    std::fs::write(base_image_path(&path), b"somebody else's base").unwrap();
+    std::fs::write(bootstrapping_path(&path), b"not even a database").unwrap();
+    let cut = cut_after(Step::Created, || bootstrap_replica(&path, &dek, &src));
+    assert!(matches!(cut, Err(BootstrapError::Cut(Step::Created))));
+    assert_eq!(
+        std::fs::read(base_image_path(&path)).unwrap(),
+        b"somebody else's base"
+    );
+
+    // No vault, a stale temporary replica that did capture a base, but the file on disk is no
+    // longer that base (changed since): also left alone.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("vault.db");
+    let cut = cut_after(Step::BaseImage, || bootstrap_replica(&path, &dek, &src));
+    assert!(matches!(cut, Err(BootstrapError::Cut(Step::BaseImage))));
+    std::fs::write(base_image_path(&path), b"changed since").unwrap();
+    let cut = cut_after(Step::Created, || bootstrap_replica(&path, &dek, &src));
+    assert!(matches!(cut, Err(BootstrapError::Cut(Step::Created))));
+    assert_eq!(
+        std::fs::read(base_image_path(&path)).unwrap(),
+        b"changed since"
+    );
 }
