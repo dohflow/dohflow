@@ -132,6 +132,18 @@ pub enum RebaseError {
         /// The command.
         command_id: Uuid,
     },
+    /// A scratch vault was asked for at a negative log position.
+    #[error("a scratch vault cannot be at log position {0}")]
+    NegativeBaseSeq(i64),
+    /// The image records its own position (a `sync_base` row) and it is not the one the caller
+    /// named: replaying from the wrong position would stamp wrong values or fail as a gap.
+    #[error("the image is of log position {recorded}, not {claimed}")]
+    ImagePositionMismatch {
+        /// The position the caller named.
+        claimed: i64,
+        /// The position the image records.
+        recorded: i64,
+    },
     /// The database or the filesystem failed.
     #[error(transparent)]
     Db(#[from] DbError),
@@ -258,18 +270,57 @@ impl DbWorker {
     /// replay, `personal-cfo-1cltt.5` slice C): copy `image` to `scratch_path` and open the copy
     /// under this vault's key, exactly as [`Self::rollback_to`] does with `sync/base.db`. The caller
     /// says which log position the image is of (`base_seq`); this vault's own base is neither read
-    /// nor changed, and nothing is checked about the image beyond that it opens under this key. The
-    /// image is never modified: only the copy is.
+    /// nor changed. The image is never modified or opened: only the copy is.
+    ///
+    /// `base_seq` is the caller's fact (a snapshot's root), never derived. It is checked as far as
+    /// the image can say: it must not be negative, and **if the image carries a `sync_base` row**
+    /// that row's `base_seq` must equal it. An image installed from a snapshot (slice A) may carry
+    /// no `sync_base` row, and then the caller's value is the only source of the position. Nothing
+    /// else about the image is checked beyond that it opens under this key.
     ///
     /// # Errors
-    /// [`RebaseError::ScratchExists`] or [`RebaseError::Db`].
+    /// [`RebaseError::NegativeBaseSeq`], [`RebaseError::ImagePositionMismatch`],
+    /// [`RebaseError::ScratchExists`] or [`RebaseError::Db`]; a refusal leaves no scratch vault.
     pub fn scratch_from_image(
         &self,
         image: &Path,
         base_seq: i64,
         scratch_path: &Path,
     ) -> Result<Scratch<'_>, RebaseError> {
-        self.scratch_from(image, base_seq, scratch_path)
+        if base_seq < 0 {
+            return Err(RebaseError::NegativeBaseSeq(base_seq));
+        }
+        let scratch = self.scratch_from(image, base_seq, scratch_path)?;
+        // Read the position from the COPY, so the image is never opened.
+        let recorded = scratch
+            .worker
+            .read_connection()
+            .map_err(RebaseError::from)
+            .and_then(|conn| {
+                rusqlite::OptionalExtension::optional(conn.query_row(
+                    "SELECT base_seq FROM sync_base WHERE singleton = 1",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                ))
+                .map_err(RebaseError::from)
+            });
+        let recorded = match recorded {
+            Ok(recorded) => recorded,
+            Err(error) => {
+                drop(scratch);
+                let _ = fs::remove_file(scratch_path);
+                return Err(error);
+            }
+        };
+        if let Some(recorded) = recorded.filter(|recorded| *recorded != base_seq) {
+            drop(scratch);
+            let _ = fs::remove_file(scratch_path);
+            return Err(RebaseError::ImagePositionMismatch {
+                claimed: base_seq,
+                recorded,
+            });
+        }
+        Ok(scratch)
     }
 
     fn scratch_from(

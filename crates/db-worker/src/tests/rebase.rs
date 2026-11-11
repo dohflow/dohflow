@@ -235,6 +235,34 @@ fn a_scratch_vault_can_be_built_from_another_image_at_the_position_the_caller_na
 }
 
 #[test]
+fn an_image_that_records_its_position_must_agree_with_the_caller_and_a_negative_one_is_refused() {
+    let (dir, live, _account, scratch_path) = live_with_base();
+    // The vault's own bytes carry a `sync_base` row (position 5); the base image does not.
+    let image = dir.path().join("recorded-position.db");
+    std::fs::write(&image, live.snapshot_bytes().unwrap()).unwrap();
+    for claimed in [3, 6] {
+        let error = live
+            .scratch_from_image(&image, claimed, &scratch_path)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                RebaseError::ImagePositionMismatch { claimed: c, recorded: 5 } if c == claimed
+            ),
+            "{claimed}: {error:?}"
+        );
+        assert!(!scratch_path.exists(), "a refusal leaves no scratch vault");
+    }
+    assert!(matches!(
+        live.scratch_from_image(&image, -1, &scratch_path),
+        Err(RebaseError::NegativeBaseSeq(-1))
+    ));
+    assert!(!scratch_path.exists());
+    let scratch = live.scratch_from_image(&image, 5, &scratch_path).unwrap();
+    assert_eq!((scratch.base_seq(), scratch.head_seq()), (5, 5));
+}
+
+#[test]
 fn a_scratch_path_that_exists_is_refused_and_left_alone() {
     let (_dir, live, _account, scratch_path) = live_with_base();
     std::fs::create_dir_all(scratch_path.parent().unwrap()).unwrap();
