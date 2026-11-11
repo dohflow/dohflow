@@ -234,6 +234,8 @@ describe("SettingsView", () => {
     expect(copy).toHaveAttribute("aria-hidden", "true");
     expect(copy).toHaveClass("hidden", "compact:@max-[15rem]:block");
     expect(copy.parentElement).toHaveClass("@container");
+    fireEvent.change(screen.getByLabelText(/base currency/i), { target: { value: "EUR" } });
+    await waitFor(() => expect(screen.getByTestId("base-currency-value")).toHaveTextContent("Euro (EUR)"));
   });
 
   // personal-cfo-i93n3.28 slice 7: reflow only at the largest text size on a phone (compact-only classes; desktop unchanged).

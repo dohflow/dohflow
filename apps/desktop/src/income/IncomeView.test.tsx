@@ -129,8 +129,9 @@ describe("IncomeView", () => {
       expect(copy.parentElement).toHaveClass("@container");
     }
     expect(account).toHaveTextContent("No deposit account");
-    fireEvent.change(screen.getByLabelText("Frequency"), { target: { value: "weekly" } });
-    expect(frequency).toHaveTextContent("Weekly");
+    // Not the first option, so a copy that always shows the first one fails.
+    fireEvent.change(screen.getByLabelText("Frequency"), { target: { value: "monthly" } });
+    expect(frequency).toHaveTextContent("Monthly");
   });
 
   it("lists a source with its frequency label, next pay date, and amount", async () => {

@@ -691,4 +691,14 @@ describe("the type and subtype selects on a narrow field", () => {
     fireEvent.change(screen.getByLabelText("Type"), { target: { value: "CreditFacility" } });
     expect(screen.getByTestId("account-type-value")).toHaveTextContent(/credit/i);
   });
+
+  test("the subtype copy follows the choice, not the first option", () => {
+    renderWithClient(<AccountEditorDrawer account={null} defaultCurrency="USD" onClose={vi.fn()} />);
+    const subtype = screen.getByTestId("account-subtype-value");
+    expect(subtype).toHaveAttribute("aria-hidden", "true");
+    expect(subtype).toHaveClass("hidden", "compact:@max-[10rem]:block");
+    expect(subtype).toHaveTextContent("— None —");
+    fireEvent.change(screen.getByLabelText("Subtype"), { target: { value: "savings" } });
+    expect(screen.getByTestId("account-subtype-value")).toHaveTextContent("Savings");
+  });
 });
