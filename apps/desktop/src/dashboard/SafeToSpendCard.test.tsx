@@ -43,6 +43,16 @@ describe("SafeToSpendCard", () => {
     expect(screen.getByText(/\$1,800\.00 committed/)).toBeInTheDocument();
   });
 
+  // personal-cfo-i93n3.27 (found by measuring the populated Dashboard at the largest text size): the hero figure never outgrows the
+  // window on a phone; a desktop window keeps its size.
+  it("caps the hero figure to the window width on a phone and wraps its breakdown line (i93n3.27)", async () => {
+    mocks.cashAvailability.mockResolvedValue(ok(availability()));
+    renderWithClient(<SafeToSpendCard />);
+    const figure = await screen.findByText("$3,200.00");
+    expect(figure).toHaveClass("text-4xl", "compact:text-[min(2.25rem,9vw)]", "compact:[overflow-wrap:anywhere]");
+    expect(screen.getByText(/\$5,000\.00 available/)).toHaveClass("compact:[overflow-wrap:anywhere]");
+  });
+
   it("warns when net headroom is below the household floor", async () => {
     mocks.cashAvailability.mockResolvedValue(
       ok(availability({ net_headroom: usd(50_000), floor: usd(100_000), below_floor: true })),
