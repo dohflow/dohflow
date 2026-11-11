@@ -99,7 +99,7 @@ export function IncomeView({
       tabIndex={-1}
       className="mx-auto flex w-full max-w-2xl flex-col gap-4 outline-none"
     >
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between compact:flex-wrap compact:gap-2">
         <h2
           data-removal-heading
           tabIndex={-1}
@@ -108,7 +108,7 @@ export function IncomeView({
           Income
         </h2>
         {!adding && (
-          <Button size="sm" onClick={() => setAdding(true)}>
+          <Button size="sm" className="compact:h-auto compact:max-w-full compact:whitespace-normal" onClick={() => setAdding(true)}>
             <Plus aria-hidden />
             Add income
           </Button>

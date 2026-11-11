@@ -107,6 +107,17 @@ describe("IncomeView", () => {
     expect(await screen.findByText(/no income yet/i)).toBeInTheDocument();
   });
 
+  // personal-cfo-i93n3.28 slice 7: reflow only at the largest text size on a phone (compact-only classes; desktop unchanged).
+  it("lets the header row and its Add button wrap on a phone, and nothing wraps unconditionally", async () => {
+    mocks.incomeSourceList.mockResolvedValue(ok([source()]));
+    renderWithClient(<IncomeView />);
+    await screen.findByText("Acme Corp");
+    const add = screen.getByRole("button", { name: /Add income/ });
+    expect(add).toHaveClass("compact:whitespace-normal", "compact:max-w-full", "compact:h-auto");
+    expect(add.parentElement).toHaveClass("compact:flex-wrap");
+    expect(add.parentElement).not.toHaveClass("flex-wrap");
+  });
+
   it("lists a source with its frequency label, next pay date, and amount", async () => {
     mocks.incomeSourceList.mockResolvedValue(ok([source()]));
     renderWithClient(<IncomeView />);
