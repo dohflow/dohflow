@@ -9,8 +9,8 @@ use sync_core::membership::EpochAtPosition;
 use sync_core::status::HaltEvidence;
 use sync_core::status::{InvalidEnvelope, StopReason, SyncEvent, SyncStatus};
 use sync_core::void::{
-    verify_void, ForkSuspected, Honor, HonorContext, HonoredVoid, Inert, OfferError, VerifiedVoid,
-    VoidBody, VoidError, VoidLedger,
+    verify_void, ForkSuspected, Honor, HonorContext, HonoredVoid, Inert, LedgerError, OfferError,
+    VerifiedVoid, VoidBody, VoidError, VoidLedger,
 };
 
 // -- format ------------------------------------------------------------------------------------
@@ -748,4 +748,103 @@ fn re_verifying_a_skipped_or_applied_position_does_not_reopen_a_stop() {
         ),
         Some(SyncEvent::EnvelopeInvalid(_))
     ));
+}
+
+// -- a ledger seeded from a snapshot (personal-cfo-1cltt.5; Addendum E) -------------------------
+
+fn recorded(void_id: [u8; 32], first: u64, last: u64) -> HonoredVoid {
+    HonoredVoid {
+        void_id,
+        first,
+        last,
+    }
+}
+
+#[test]
+fn a_seeded_void_whose_id_later_appears_past_the_root_is_judged_as_a_new_void_not_a_fork() {
+    // One member records the id of a void it will sign LATER at a made-up range below the root,
+    // then appends that void after the root. A replica that bootstrapped from the snapshot must
+    // judge the void on its own merits, or the one snapshot halts every replica built from it.
+    let c = chain();
+    let v = void_at(&c, 12, 14);
+    let mut ledger = VoidLedger::from_snapshot(&[recorded(*v.id(), 3, 4)], 10).unwrap();
+    let status = stopped_at(12);
+    let honor_ctx = HonorContext {
+        status: &status,
+        next_to_apply: 12,
+        snapshot_root: Some(10),
+        target_not_determinable: false,
+    };
+    let outcomes = ledger.offer_in_order(&[v], &honor_ctx).unwrap();
+    assert!(
+        matches!(
+            outcomes.as_slice(),
+            [Honor::Honored(HonoredVoid {
+                first: 12,
+                last: 13,
+                ..
+            })]
+        ),
+        "{outcomes:?}"
+    );
+    assert_eq!(ledger.seeded().len(), 1);
+    assert_eq!(ledger.honored().len(), 1);
+    // A snapshot this replica publishes later records both, ascending (rule 8).
+    let all = ledger.recorded();
+    assert_eq!((all[0].first, all[1].first), (3, 12));
+}
+
+#[test]
+fn a_seeded_range_is_skipped_but_never_counts_as_a_void_honored_here() {
+    let c = chain();
+    let ledger = VoidLedger::from_snapshot(&[recorded([7; 32], 3, 4)], 10).unwrap();
+    assert!(ledger.skips(3) && ledger.skips(4) && !ledger.skips(5));
+    assert!(ledger.honored().is_empty());
+    // A void for a position inside the seeded range is PrecedesRoot (the replica never evaluated
+    // it), never AlreadyCovered.
+    let status = stopped_at(11);
+    let honor_ctx = HonorContext {
+        status: &status,
+        next_to_apply: 11,
+        snapshot_root: Some(10),
+        target_not_determinable: false,
+    };
+    let mut ledger = ledger;
+    let outcomes = ledger
+        .offer_in_order(&[void_at(&c, 4, 9)], &honor_ctx)
+        .unwrap();
+    assert_eq!(outcomes, vec![Honor::Inert(Inert::PrecedesRoot)]);
+}
+
+#[test]
+fn a_ledger_is_never_seeded_from_a_record_the_root_rule_refuses() {
+    // A recorded range reaching the root, a range running backwards, and ranges that overlap.
+    assert_eq!(
+        VoidLedger::from_snapshot(&[recorded([1; 32], 8, 10)], 10),
+        Err(LedgerError::NotBelowRoot)
+    );
+    assert_eq!(
+        VoidLedger::from_snapshot(&[recorded([1; 32], 5, 4)], 10),
+        Err(LedgerError::NotAscending)
+    );
+    assert_eq!(
+        VoidLedger::from_snapshot(&[recorded([1; 32], 2, 6), recorded([2; 32], 6, 8)], 10),
+        Err(LedgerError::NotAscending)
+    );
+    assert!(
+        VoidLedger::from_snapshot(&[recorded([1; 32], 2, 5), recorded([2; 32], 6, 8)], 10).is_ok()
+    );
+    // The persisted form rebuilds the same ledger, and refuses seeded and honored ranges that
+    // overlap.
+    let seeded = vec![recorded([1; 32], 2, 5)];
+    let honored = vec![recorded([2; 32], 12, 13)];
+    let rebuilt = VoidLedger::from_parts(seeded.clone(), honored.clone()).unwrap();
+    assert_eq!(
+        (rebuilt.seeded(), rebuilt.honored()),
+        (&seeded[..], &honored[..])
+    );
+    assert_eq!(
+        VoidLedger::from_parts(seeded, vec![recorded([2; 32], 5, 13)]),
+        Err(LedgerError::NotAscending)
+    );
 }

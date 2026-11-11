@@ -75,6 +75,10 @@ const TEXT_KEY_BOUNDS: &[(&str, &str, usize, &str)] = &[
     ("system_ledger_accounts", "currency", 8, "construction"),
 ];
 
+/// BLOB columns whose name ends in `_id` but that are not 16-byte identifiers: a void id is the
+/// 32-byte SHA-256 of the void record.
+const BYTES_BLOBS: &[(&str, &str)] = &[("sync_voids", "void_id")];
+
 /// BLOB columns that hold a 16-byte identifier although their name does not say so.
 const UUID_BLOBS: &[(&str, &str)] = &[
     ("forecast_assumption_events", "superseded_by"),
@@ -189,9 +193,10 @@ fn kind_of(table: &str, col: &Col) -> &'static str {
         "INTEGER" => "int",
         "TEXT" => "text",
         "BLOB" => {
-            let uuid = col.name == "id"
-                || col.name.ends_with("_id")
-                || UUID_BLOBS.contains(&(table, col.name.as_str()));
+            let uuid = !BYTES_BLOBS.contains(&(table, col.name.as_str()))
+                && (col.name == "id"
+                    || col.name.ends_with("_id")
+                    || UUID_BLOBS.contains(&(table, col.name.as_str())));
             if uuid {
                 "uuid"
             } else {

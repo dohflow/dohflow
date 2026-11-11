@@ -323,6 +323,50 @@ pub struct RecordedVoid {
     pub last: u64,
 }
 
+impl Manifest {
+    /// The voids the snapshot records, in the manifest's (ascending) order. [`verify`] has already
+    /// refused a manifest whose void entries are not canonical, so on a verified manifest this
+    /// cannot fail; a manifest that was not verified is refused here for the same reasons.
+    ///
+    /// # Errors
+    /// [`SnapshotError::ManifestInvalid`].
+    pub fn recorded_voids(&self) -> Result<Vec<RecordedVoid>, SnapshotError> {
+        self.voids
+            .iter()
+            .map(|entry| {
+                let (Some(first), Some(last), Some(void_id)) = (
+                    decimal_u64(&entry.first),
+                    decimal_u64(&entry.last),
+                    unhex32(&entry.void_id),
+                ) else {
+                    return Err(SnapshotError::ManifestInvalid("a void entry is not valid"));
+                };
+                Ok(RecordedVoid {
+                    void_id,
+                    first,
+                    last,
+                })
+            })
+            .collect()
+    }
+}
+
+/// 32 bytes from 64 lowercase hex digits.
+fn unhex32(text: &str) -> Option<[u8; 32]> {
+    if !is_hex_of(text, 32) {
+        return None;
+    }
+    let mut out = [0_u8; 32];
+    for (byte, pair) in out.iter_mut().zip(text.as_bytes().chunks(2)) {
+        let digit = |c: u8| match c {
+            b'0'..=b'9' => c - b'0',
+            _ => c - b'a' + 10,
+        };
+        *byte = (digit(pair[0]) << 4) | digit(pair[1]);
+    }
+    Some(out)
+}
+
 /// The header fields a producer supplies; the table entries are derived from the files.
 #[derive(Debug, Clone)]
 pub struct Header<'a> {

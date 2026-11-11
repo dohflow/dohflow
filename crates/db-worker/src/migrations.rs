@@ -2414,6 +2414,80 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // SYNC-3e device-local state (personal-cfo-1cltt.5; vault-format.md B.2, C.8, C.10). Two more
+    // class-3 tables: never replicated, never part of a snapshot or a write set.
+    //
+    // * `sync_voids` is the void ledger (ADR 0074 Addendum D and E): the voids this replica
+    //   skips, each with the id of the void record, the range of log positions it skips and its
+    //   `origin`: `seeded` from the snapshot the replica bootstrapped from (recorded by the
+    //   snapshot's producer, never judged here, so never a fork check's input) or `honored` here.
+    //   The table is append-only: an entry is never updated or deleted (a re-bootstrap builds a
+    //   NEW vault), `ordinal` is dense and in the order the entries were written (a trigger
+    //   refuses any other), and the ranges ascend without overlap (a trigger refuses any other).
+    // * `sync_position` is a singleton: `snapshot_root`, the last log position of the snapshot the
+    //   replica bootstrapped from (NULL for the origin, which was never bootstrapped, and never
+    //   changed after the row is written), and `next_to_apply`, the lowest position the replica has
+    //   neither applied nor skipped. `next_to_apply` can pass positions the replica never applied
+    //   (it moves past a range once a void for it is honored), so it is not derivable from
+    //   `sync_base.base_seq`; it only increases. A row exists only once a replica has bootstrapped
+    //   or Sync is armed on an origin: the ledger and the cursor are written in one transaction.
+    Migration {
+        version: 69,
+        name: "sync_void_ledger_and_position",
+        up: "CREATE TABLE sync_voids (
+                 void_id BLOB PRIMARY KEY CHECK (length(void_id) = 32),
+                 first   INTEGER NOT NULL CHECK (first >= 1),
+                 last    INTEGER NOT NULL CHECK (last >= first),
+                 ordinal INTEGER NOT NULL UNIQUE CHECK (ordinal >= 1),
+                 origin  TEXT NOT NULL CHECK (origin IN ('honored', 'seeded'))
+             );
+             CREATE TRIGGER sync_voids_next_ordinal BEFORE INSERT ON sync_voids
+             WHEN NEW.ordinal <> COALESCE((SELECT MAX(ordinal) FROM sync_voids), 0) + 1
+             BEGIN
+                 SELECT RAISE(ABORT, 'a void takes the next ordinal');
+             END;
+             CREATE TRIGGER sync_voids_ascending BEFORE INSERT ON sync_voids
+             WHEN COALESCE((SELECT MAX(last) FROM sync_voids), 0) >= NEW.first
+             BEGIN
+                 SELECT RAISE(ABORT, 'void ranges ascend without overlap');
+             END;
+             CREATE TRIGGER sync_voids_no_update BEFORE UPDATE ON sync_voids
+             BEGIN
+                 SELECT RAISE(ABORT, 'sync_voids is append-only');
+             END;
+             CREATE TRIGGER sync_voids_no_delete BEFORE DELETE ON sync_voids
+             BEGIN
+                 SELECT RAISE(ABORT, 'sync_voids is append-only');
+             END;
+             CREATE TABLE sync_position (
+                 singleton     INTEGER PRIMARY KEY CHECK (singleton = 1),
+                 snapshot_root INTEGER CHECK (snapshot_root IS NULL OR snapshot_root >= 0),
+                 next_to_apply INTEGER NOT NULL CHECK (next_to_apply >= 1),
+                 CHECK (snapshot_root IS NULL OR next_to_apply > snapshot_root)
+             );
+             CREATE TRIGGER sync_position_forward BEFORE UPDATE ON sync_position
+             WHEN NEW.next_to_apply < OLD.next_to_apply
+                 OR NEW.snapshot_root IS NOT OLD.snapshot_root
+             BEGIN
+                 SELECT RAISE(ABORT, 'sync_position only moves forward and keeps its root');
+             END;
+             CREATE TRIGGER sync_position_no_delete BEFORE DELETE ON sync_position
+             BEGIN
+                 SELECT RAISE(ABORT, 'sync_position is never deleted');
+             END;",
+        down: Some(
+            "DROP TRIGGER sync_position_no_delete;
+             DROP TRIGGER sync_position_forward;
+             DROP TABLE sync_position;
+             DROP TRIGGER sync_voids_no_delete;
+             DROP TRIGGER sync_voids_no_update;
+             DROP TRIGGER sync_voids_ascending;
+             DROP TRIGGER sync_voids_next_ordinal;
+             DROP TABLE sync_voids;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
@@ -2551,11 +2625,32 @@ pub(crate) fn run_migrations(conn: &mut Connection) -> Result<u64, DbError> {
     apply(conn, MIGRATIONS)
 }
 
+/// Apply the migrations up to and including `target` and stamp `PRAGMA user_version` with
+/// `target`, for a new vault that must be at a snapshot's schema version before the snapshot is
+/// installed (`personal-cfo-1cltt.5`); [`run_migrations`] then carries it the rest of the way, over
+/// the installed rows, as it carries any older vault.
+///
+/// # Errors
+/// [`DbError::UnsupportedSchema`] when `target` is not a migration's version (or 0), otherwise as
+/// [`apply`].
+pub(crate) fn run_migrations_to(conn: &mut Connection, target: i64) -> Result<u64, DbError> {
+    if !MIGRATIONS.iter().any(|m| m.version == target) {
+        return Err(DbError::UnsupportedSchema);
+    }
+    let through = MIGRATIONS.partition_point(|m| m.version <= target);
+    apply_to(conn, &MIGRATIONS[..through], target)
+}
+
 /// Apply pending migrations from `migrations` (split out so tests can drive a
 /// synthetic set). Each migration commits in its own transaction; a tracker row
 /// records its content hash. If any applied migration rebuilds read models, the
 /// transaction-display projection is rebuilt afterward.
 pub(crate) fn apply(conn: &mut Connection, migrations: &[Migration]) -> Result<u64, DbError> {
+    apply_to(conn, migrations, CURRENT_VERSION)
+}
+
+/// [`apply`], stamping `PRAGMA user_version` with `stamp` instead of the build's version.
+fn apply_to(conn: &mut Connection, migrations: &[Migration], stamp: i64) -> Result<u64, DbError> {
     // Defensive last line of defense for callers that bypass DbWorker::open.
     // In particular, never let an unknown future row reach ensure_tracker or
     // the unconditional user_version stamp below.
@@ -2603,7 +2698,7 @@ pub(crate) fn apply(conn: &mut Connection, migrations: &[Migration]) -> Result<u
         needs_rebuild |= m.rebuilds_read_models;
     }
 
-    conn.pragma_update(None, "user_version", CURRENT_VERSION)?;
+    conn.pragma_update(None, "user_version", stamp)?;
     if needs_rebuild {
         projection::rebuild(conn)?;
     }
@@ -3838,7 +3933,7 @@ mod tests {
                 .collect()
         };
         let mut conn = Connection::open_in_memory().unwrap();
-        apply(&mut conn, MIGRATIONS).unwrap();
+        apply(&mut conn, &MIGRATIONS[..68]).unwrap();
         assert_eq!(
             tables(&conn),
             [
@@ -3855,6 +3950,96 @@ mod tests {
         assert_eq!(tables(&conn).len(), 3);
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM sync_genesis", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    /// 69 adds the void ledger and the applied cursor; down drops both with their triggers, and up
+    /// creates them again empty. Each trigger is exercised: the ledger is append-only with a dense
+    /// ordinal and ascending ranges, and the cursor only moves forward and keeps its root.
+    #[test]
+    fn v69_creates_the_ledger_and_the_cursor_with_their_guards_and_down_drops_them() {
+        let objects = |conn: &Connection| -> Vec<String> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE name LIKE 'sync_voids%'
+                     OR name LIKE 'sync_position%' ORDER BY name",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(objects(&conn).len(), 8, "two tables and six triggers");
+
+        let insert = |conn: &Connection, id: u8, first: i64, last: i64, ordinal: i64| {
+            conn.execute(
+                "INSERT INTO sync_voids (void_id, first, last, ordinal, origin)
+                 VALUES (?1, ?2, ?3, ?4, 'seeded')",
+                rusqlite::params![vec![id; 32], first, last, ordinal],
+            )
+        };
+        insert(&conn, 1, 2, 3, 1).unwrap();
+        insert(&conn, 2, 5, 6, 2).unwrap();
+        assert!(insert(&conn, 3, 8, 9, 4).is_err(), "a gap in the ordinals");
+        assert!(insert(&conn, 3, 8, 9, 2).is_err(), "a repeated ordinal");
+        assert!(insert(&conn, 3, 6, 9, 3).is_err(), "overlapping ranges");
+        assert!(insert(&conn, 3, 4, 4, 3).is_err(), "a range below the last");
+        assert!(
+            insert(&conn, 3, 9, 8, 3).is_err(),
+            "a range that runs backwards"
+        );
+        assert!(insert(&conn, 1, 8, 9, 3).is_err(), "a repeated void id");
+        insert(&conn, 3, 7, 9, 3).unwrap();
+        assert!(conn
+            .execute("UPDATE sync_voids SET origin = 'honored'", [])
+            .is_err());
+        assert!(conn.execute("DELETE FROM sync_voids", []).is_err());
+
+        conn.execute(
+            "INSERT INTO sync_position (singleton, snapshot_root, next_to_apply) VALUES (1, 10, 11)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO sync_position (singleton, snapshot_root, next_to_apply)
+                 VALUES (1, 10, 11)",
+                []
+            )
+            .is_err(),
+            "one row"
+        );
+        conn.execute("UPDATE sync_position SET next_to_apply = 15", [])
+            .unwrap();
+        assert!(conn
+            .execute("UPDATE sync_position SET next_to_apply = 14", [])
+            .is_err());
+        assert!(conn
+            .execute("UPDATE sync_position SET snapshot_root = 11", [])
+            .is_err());
+        assert!(conn
+            .execute("UPDATE sync_position SET snapshot_root = NULL", [])
+            .is_err());
+        assert!(conn.execute("DELETE FROM sync_position", []).is_err());
+        let origin = conn.execute(
+            "UPDATE sync_position SET next_to_apply = 15 WHERE singleton = 1",
+            [],
+        );
+        assert!(origin.is_ok(), "an unchanged cursor is not a move back");
+
+        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 1);
+        assert!(
+            objects(&conn).is_empty(),
+            "down drops both tables and every trigger"
+        );
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(objects(&conn).len(), 8);
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_voids", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 0);
     }
