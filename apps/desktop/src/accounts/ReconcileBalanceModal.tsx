@@ -193,14 +193,14 @@ export function ReconcileBalanceModal({
           </p>
         </div>
 
-        <div className="flex items-center justify-between rounded-md bg-muted px-3 py-2 text-sm">
+        <div className="flex items-center justify-between rounded-md bg-muted px-3 py-2 text-sm compact:flex-wrap compact:gap-x-3">
           <span className="text-muted-foreground">Remaining to reconcile</span>
           {remainingMinor === null ? (
             <span className="text-muted-foreground">—</span>
           ) : reconciled ? (
             <span className="font-medium text-gain">Reconciled ✓</span>
           ) : (
-            <span className="font-medium tabular-nums">
+            <span className="font-medium tabular-nums compact:[overflow-wrap:anywhere]">
               {/* The remaining gap stays in the stored frame so its sign lines up with the
                   in/out direction picker below (a positive gap ⇒ "money in" closes it). */}
               {formatSignedMoney({ minor_units: remainingMinor, currency })}
