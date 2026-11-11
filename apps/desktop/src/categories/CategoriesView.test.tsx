@@ -98,6 +98,19 @@ describe("CategoriesView", () => {
     expect(add.parentElement).toHaveClass("compact:flex-wrap");
   });
 
+  it("shows the chosen type and parent as text under their selects on a narrow field (a native select cannot wrap)", async () => {
+    renderWithClient(<CategoriesView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Add category" }));
+    const type = await screen.findByTestId("category-type-value");
+    const parent = screen.getByTestId("category-parent-value");
+    for (const copy of [type, parent]) {
+      expect(copy).toHaveAttribute("aria-hidden", "true");
+      expect(copy).toHaveClass("hidden", "compact:@max-[10rem]:block");
+      expect(copy.parentElement).toHaveClass("@container");
+    }
+    expect(parent).toHaveTextContent("Top level");
+  });
+
   it("creates a user category with an emoji + color at creation (kogu)", async () => {
     renderWithClient(<CategoriesView />);
     await screen.findByText("Coffee");

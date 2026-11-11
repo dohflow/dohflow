@@ -372,7 +372,9 @@ describe("AccountDetailView", () => {
     expect(copy).toHaveTextContent("Everyday Checking");
     expect(copy).toHaveAttribute("aria-hidden", "true");
     expect(copy).toHaveClass("hidden", "compact:@max-[15rem]:block", "[overflow-wrap:anywhere]");
-    expect(screen.getByLabelText("Switch account").parentElement).toHaveClass("compact:max-w-full", "compact:min-w-0");
+    expect(copy.parentElement).toHaveClass("@container");
+    expect(screen.getByLabelText("Switch account").closest("label")).toHaveClass("compact:@max-[15rem]:flex-col");
+    expect(screen.getByLabelText("Switch account").closest("label")).not.toHaveClass("flex-col");
     fireEvent.change(screen.getByLabelText("Switch account"), { target: { value: CARD.id } });
     expect(await screen.findByTestId("switch-account-value")).toHaveTextContent("Venture X");
   });

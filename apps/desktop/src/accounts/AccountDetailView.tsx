@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable, type DataTableColumn } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
-import { NativeSelect } from "@/components/ui/native-select";
+import { NativeSelect, NativeSelectValue } from "@/components/ui/native-select";
 import { PaginationControls } from "@/components/ui/pagination";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -234,11 +234,10 @@ export function AccountDetailView({
         </div>
         {spendingAccounts.length > 1 && (
           <div className="@container compact:w-full">
-            <label className="flex items-center gap-2 text-xs text-muted-foreground compact:flex-wrap">
+            <label className="flex items-center gap-2 text-xs text-muted-foreground compact:@max-[15rem]:flex-col compact:@max-[15rem]:items-stretch compact:@max-[15rem]:gap-1">
               Account
               <NativeSelect
                 aria-label="Switch account"
-                className="compact:min-w-0 compact:max-w-full compact:flex-1"
                 value={selectedId}
                 onChange={(e) => setSelectedId(e.target.value)}
               >
@@ -249,16 +248,9 @@ export function AccountDetailView({
                 ))}
               </NativeSelect>
             </label>
-            {/* A native select cannot wrap, so at the largest text size its closed value is cut off sideways.
-                On a narrow card the selected name is also shown as text (FRONTEND.md, Reflow). The select
-                already announces its own value, so this copy is for the eyes only. */}
-            <p
-              aria-hidden="true"
-              data-testid="switch-account-value"
-              className="mt-1 hidden text-sm font-medium [overflow-wrap:anywhere] compact:@max-[15rem]:block"
-            >
+            <NativeSelectValue data-testid="switch-account-value" className="mt-1">
               {spendingAccounts.find((a) => a.id === selectedId)?.name}
-            </p>
+            </NativeSelectValue>
           </div>
         )}
       </div>

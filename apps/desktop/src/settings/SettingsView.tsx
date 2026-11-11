@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { Label } from "@/components/ui/label";
+import { NativeSelectValue } from "@/components/ui/native-select";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -101,7 +102,7 @@ export function SettingsView({
                 <CardDescription>Defaults that apply across the app.</CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
-                <div className="flex flex-col gap-1.5">
+                <div className="@container flex flex-col gap-1.5">
                   <Label htmlFor="base-currency">Base currency</Label>
                   <select
                     id="base-currency"
@@ -116,6 +117,9 @@ export function SettingsView({
                       </option>
                     ))}
                   </select>
+                  <NativeSelectValue data-testid="base-currency-value">
+                    {CURRENCIES.find((currency) => currency.value === value)?.label}
+                  </NativeSelectValue>
                   <p className="text-xs text-muted-foreground">
                     New accounts, income, and bills default to this currency. You can
                     still override the currency on each one.

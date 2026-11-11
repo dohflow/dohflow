@@ -118,6 +118,21 @@ describe("IncomeView", () => {
     expect(add.parentElement).not.toHaveClass("flex-wrap");
   });
 
+  it("shows the chosen frequency and deposit account as text under their selects on a narrow field (a native select cannot wrap)", async () => {
+    renderWithClient(<IncomeView />);
+    fireEvent.click(await screen.findByRole("button", { name: /Add income/ }));
+    const frequency = await screen.findByTestId("income-frequency-value");
+    const account = screen.getByTestId("income-account-value");
+    for (const copy of [frequency, account]) {
+      expect(copy).toHaveAttribute("aria-hidden", "true");
+      expect(copy).toHaveClass("hidden", "compact:@max-[10rem]:block");
+      expect(copy.parentElement).toHaveClass("@container");
+    }
+    expect(account).toHaveTextContent("No deposit account");
+    fireEvent.change(screen.getByLabelText("Frequency"), { target: { value: "weekly" } });
+    expect(frequency).toHaveTextContent("Weekly");
+  });
+
   it("lists a source with its frequency label, next pay date, and amount", async () => {
     mocks.incomeSourceList.mockResolvedValue(ok([source()]));
     renderWithClient(<IncomeView />);

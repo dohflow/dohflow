@@ -226,6 +226,16 @@ describe("SettingsView", () => {
     expect(await screen.findByText(/saved/i)).toBeInTheDocument();
   });
 
+  it("shows the selected base currency as text under the select on a narrow card (a native select cannot wrap)", async () => {
+    renderWithClient(<SettingsView />);
+    await waitFor(() => expect(screen.getByLabelText(/base currency/i)).toHaveValue("USD"));
+    const copy = screen.getByTestId("base-currency-value");
+    expect(copy).toHaveTextContent("US Dollar (USD)");
+    expect(copy).toHaveAttribute("aria-hidden", "true");
+    expect(copy).toHaveClass("hidden", "compact:@max-[15rem]:block");
+    expect(copy.parentElement).toHaveClass("@container");
+  });
+
   // personal-cfo-i93n3.28 slice 7: reflow only at the largest text size on a phone (compact-only classes; desktop unchanged).
   it("lets every button in Settings wrap on a phone (one container rule), and the theme control fill its row", async () => {
     const { container } = renderWithClient(<SettingsView />);
