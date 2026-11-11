@@ -287,8 +287,8 @@ export function BillsView({
       )}
 
       {bills !== null && bills.length > 0 && (
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1">
+        <div className="flex items-center gap-2 compact:flex-wrap">
+          <div className="relative flex-1 compact:min-w-0 compact:basis-full">
             <Search
               className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
               aria-hidden
@@ -307,7 +307,7 @@ export function BillsView({
             aria-label="Sort bills"
             value={sort}
             onChange={(e) => setSort(e.target.value as BillSort)}
-            className="w-40 shrink-0"
+            className="w-40 shrink-0 compact:w-full compact:shrink"
           >
             {BILL_SORT_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -527,11 +527,11 @@ function BillRow({
       ref={rowRef}
       className="flex flex-col gap-1 border-b px-5 py-3 last:border-0"
     >
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center justify-between gap-3 compact:flex-wrap">
         <button
           type="button"
           onClick={() => onOpenDrawer(bill)}
-          className="min-w-0 flex-1 text-left"
+          className="min-w-0 flex-1 text-left compact:basis-full compact:[overflow-wrap:anywhere]"
           aria-label={`Open ${bill.name} detail`}
         >
           <div className="flex items-center gap-2">
@@ -554,11 +554,11 @@ function BillRow({
             </div>
           )}
         </button>
-        <div className="flex items-center gap-3">
-          <span className="font-medium tabular-nums text-loss">
+        <div className="flex items-center gap-3 compact:flex-wrap">
+          <span className="font-medium tabular-nums text-loss compact:[overflow-wrap:anywhere]">
             {formatMoney(bill.amount)}
           </span>
-          <div className="flex gap-1">
+          <div className="flex gap-1 compact:flex-wrap">
             {confirmingDelete ? (
               <RemoveConfirm
                 name={bill.name}

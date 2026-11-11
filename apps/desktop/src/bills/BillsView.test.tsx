@@ -164,6 +164,24 @@ describe("BillsView", () => {
     expect(screen.getByText("Family plan")).toBeInTheDocument();
   });
 
+  // personal-cfo-i93n3.28 slice 7: reflow only at the largest text size on a phone (compact-only classes; desktop unchanged).
+  it("reflows on a phone: the toolbar, the row and its actions wrap and break long words; nothing wraps unconditionally", async () => {
+    mocks.recurringBillList.mockResolvedValue(ok([bill()]));
+    renderWithClient(<BillsView />);
+    await screen.findByText("Netflix");
+    const open = screen.getByRole("button", { name: "Open Netflix detail" });
+    expect(open).toHaveClass("compact:basis-full", "compact:[overflow-wrap:anywhere]");
+    expect(open.parentElement).toHaveClass("compact:flex-wrap");
+    const amountGroup = screen.getByText(/\$15\.99/).parentElement!;
+    expect(amountGroup).toHaveClass("compact:flex-wrap");
+    expect(screen.getByRole("button", { name: "Archive Netflix" }).parentElement).toHaveClass("compact:flex-wrap");
+    const search = screen.getByRole("searchbox", { name: "Search bills" });
+    expect(search.parentElement).toHaveClass("compact:basis-full", "compact:min-w-0");
+    expect(search.parentElement!.parentElement).toHaveClass("compact:flex-wrap");
+    expect(screen.getByRole("combobox", { name: "Sort bills" }).parentElement).toHaveClass("compact:w-full");
+    for (const el of [open.parentElement!, amountGroup, search.parentElement!.parentElement!]) expect(el).not.toHaveClass("flex-wrap");
+  });
+
   it("creates a bill on a custom interval, resolving the every_N token (ADR 0048)", async () => {
     mocks.accountList.mockResolvedValue(ok([]));
     mocks.recurringBillList.mockResolvedValue(ok([]));

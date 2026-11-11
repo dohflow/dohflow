@@ -239,6 +239,10 @@ describe("SettingsView", () => {
     expect(group).toHaveClass("inline-flex", "w-fit");
     expect(group).toHaveClass("compact:flex", "compact:w-full", "compact:flex-wrap");
     expect(screen.getByRole("radio", { name: "System" })).toHaveClass("compact:flex-1");
+    // The comfort band's two edge fields fit as many columns as the text size allows (their cells may shrink).
+    const grid = (await screen.findByLabelText(/Upper edge/)).closest("div.grid")!;
+    expect(grid.className).toContain("compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]");
+    expect(grid.className).toContain("grid-cols-2");
   });
 
   it("renders the Appearance card (personal-cfo-17u1)", async () => {
