@@ -99,6 +99,8 @@ jobs:
   gate:
     name: iOS gate (visibility and changed paths)
     runs-on: ubuntu-24.04
+    # personal-cfo-56w.6: job timeout. A cheap Linux gate that decides what to run: a few seconds in practice.
+    timeout-minutes: 5
     outputs:
       check: ${{ steps.decide.outputs.check }}
       simulator: ${{ steps.decide.outputs.simulator }}
