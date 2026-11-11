@@ -351,7 +351,29 @@ pub fn enable_sync<W: RollbackWitness, Service: SnapshotService>(
         // A genesis is never published as a re-snapshot.
         _ => return Err(PublishError::GenesisSource.into()),
     };
-    worker.write_sync_state(|tx| sync_genesis::advance(tx, terminal, &now))?;
+    // The genesis snapshot's id and container digest are read from the saved record BEFORE the
+    // file and the record are dropped, and recorded in the transaction that records the outcome:
+    // a bootstrap's genesis check needs them, and nothing else keeps them. A genesis that was not
+    // published (refused, or lost) has no container of its own to record.
+    let saved = if terminal == GenesisState::Published {
+        sealer
+            .saved_record(&snapshot_id)
+            .map_err(PublishError::Snapshot)?
+    } else {
+        None
+    };
+    worker.write_sync_state(|tx| {
+        sync_genesis::advance(tx, terminal, &now)?;
+        if let Some(saved) = &saved {
+            sync_genesis::record_genesis_snapshot(
+                tx,
+                &saved.object_id,
+                &saved.container_sha256,
+                &now,
+            )?;
+        }
+        Ok::<(), GenesisStoreError>(())
+    })?;
     sealer
         .discard(&snapshot_id)
         .map_err(PublishError::Snapshot)?;

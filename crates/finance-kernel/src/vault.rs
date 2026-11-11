@@ -1564,11 +1564,11 @@ mod old_backup_settings_tests {
             // What a 63 build had on disk: the unprefixed names, no tracker row for 64 or any
             // later migration, and none of their objects (66 adds the device-local Sync state, 67 the
             // outbox's issue time, 68 the counter register and the genesis, 69 the void ledger and
-            // the applied cursor, 70 the artifact mapping, 71 the Sync notices).
+            // the applied cursor, 70 the artifact mapping, 71 the Sync notices, 72 the genesis snapshot's identity).
             let conn = kernel.worker.read_connection().unwrap();
             conn.execute_batch(
                 "UPDATE settings SET key = substr(key, 6) WHERE key LIKE 'user.%';
-                 DELETE FROM schema_migrations WHERE version IN (64, 65, 66, 67, 68, 69, 70, 71);
+                 DELETE FROM schema_migrations WHERE version IN (64, 65, 66, 67, 68, 69, 70, 71, 72);
                  DROP TRIGGER sync_position_no_delete;
                  DROP TRIGGER sync_position_forward;
                  DROP TABLE sync_position;

@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=40 -->
-<!-- vault-format: schema-version=71 -->
+<!-- vault-format: spec-version=41 -->
+<!-- vault-format: schema-version=72 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -272,6 +272,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 41` (personal-cfo-1cltt.5, slice C, schema version 72; provisional: it settles at merge) records, in the device-local `sync_genesis` row, **which snapshot the genesis was and the SHA-256 of the container this device sent for it** (`genesis_snapshot_id` and `genesis_container_sha256`), written in the transaction that records the genesis as `Published` and before the saved container is dropped (C.8 "The genesis snapshot's id and a resume"): the saved container is the only other place either lives. A bootstrap that reconciles the genesis gap fetches the genesis snapshot and checks it against these, so it never trusts the service's copy of what this device published. A row recorded by an earlier build has neither (NULL). No wire layout, write-set rule, vector or `engine_version` change.
 - `spec-version = 40` (personal-cfo-0g528.2, part S2c part 2, first commit: the spec before any code; provisional, it settles at merge)
   closes the cases in which one member, alone, could stop every replica at a position, and settles
   what a receiver may judge. (1) **The ciphertext binding (T5).** A new header field 18,
@@ -693,7 +694,7 @@ therefore requires reviewing this inventory.
 | `outbox_queue` | 3 | exclude | exclude | Device-local state: the commands a rebase queued for the user, with their reason, envelope and audit evidence. |
 | `sync_counter_register` | 3 | exclude | exclude | Device-local state: the durable `next_counter` of each `(vault_id, key_epoch, fingerprint, object_type)` context (C.4). A row is never 0. Written under the writer lock, so a restore rolls it back and the independent witness detects it. |
 | `sync_saved_snapshot` | 3 | exclude | exclude | Device-local state: the sealed snapshot saved beside the register for an exact-byte retransmission, with the hashes of what it was sealed from. |
-| `sync_genesis` | 3 | exclude | exclude | Device-local state: the genesis records this device minted at sync-enable, persisted before any key is installed from them, how far enabling got (`Persisted`, `Installed`, `Published`, or a terminal `VaultKnown` or `GenesisResumeLost`), and the `operation_log` high-water mark of the export. The records never change. |
+| `sync_genesis` | 3 | exclude | exclude | Device-local state: the genesis records this device minted at sync-enable, persisted before any key is installed from them, how far enabling got (`Persisted`, `Installed`, `Published`, or a terminal `VaultKnown` or `GenesisResumeLost`), the `operation_log` high-water mark of the export, and, once the genesis is `Published`, the id of the genesis snapshot and the SHA-256 of the container this device sent for it (`genesis_snapshot_id`, `genesis_container_sha256`; both or neither, NULL for a genesis recorded by an earlier build). The records never change. |
 | `sync_notices` | 3 | exclude | exclude | Device-local notices that Sync discarded something the user was in the middle of. The only kind is `import_discarded`: a received batch replaced the rows of an import still being reviewed on this device, and the staged import for that batch (`staged_transactions`, `staged_balances`, `staged_accounts`, `dedupe_decisions`) was removed in the same transaction (C.9), so the user must run the import again. `source_name` is the file name the user chose, so the notice can name it; it is shown to the user and never logged. |
 | `sync_artifacts` | 3 | exclude | exclude | Device-local mapping from a class-1b artifact's service address in an epoch (`sync_artifact_id_e`) to the local identity that carries it, with the `ciphertext_sha256` this device verified when it published the artifact or fetched it (the only hash a producer binds; a cache for the no-refetch rule that never decides a verdict, C.9) and, for a producer, whether a durable receipt matched. For an attachment received from a peer, the `staged_*` columns hold the receiver-local crypto fields from materialization until the attach command's `apply` creates the class-4 `attachments` row from them; the same transaction sets them to `NULL`, so the `attachments` row is the only long-lived copy of the key material. While staged, a key rotation re-wraps and re-addresses them like an `attachments` row. A backup carries the database and every blob as they are, so a restore returns a staged row together with its blob; a staged row whose blob is missing is a cache miss, and the artifact is fetched again from the retained closure. The portable export and every Sync snapshot exclude the table. Their presence is tied to `kind` = attachment, all present or all absent. |
 | `sync_voids` | 3 | exclude | exclude | Device-local state: the void ledger, one row per void this replica skips (the void id, the range of log positions it skips, a dense `ordinal` in write order) with its `origin`: `seeded` from the snapshot the replica bootstrapped from, or `honored` here. Append-only; a row is never updated or deleted. The key is the `ordinal`, not the void id: one id can hold more than one entry (a snapshot may record one id at two ranges, and a recorded void may later be honored here as a new void). |
@@ -2137,7 +2138,8 @@ and burn a counter), and Sync status shows it with the support path. A resume th
 container is different: it is the container the service already holds, so a refused stage, an
 `ObjectConflict` or an already-published answer all go on to `installEpoch`, whose `200` decides. The
 client records the outcome (`Published`, `VaultKnown` or `GenesisResumeLost`) **before** it drops the
-saved container. The enable sequence persists the genesis records before it installs any key from
+saved container, and for a `Published` genesis it records in the same transaction the snapshot's id and
+the SHA-256 of the container it sent (`genesis_snapshot_id`, `genesis_container_sha256`). The enable sequence persists the genesis records before it installs any key from
 them, and a vault that holds a persisted genesis never mints another. A vault that holds a sync base
 or any outbox row and no persisted genesis never mints a genesis; it joins as a replica. And no
 genesis is exported from the live vault once it holds either.
