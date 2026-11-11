@@ -91,7 +91,7 @@ function setup(over: Partial<Parameters<typeof BulkTransactionActions>[0]> = {})
 test("stacks its controls at full width on a phone, scrolls when tall and clears the home indicator; desktop keeps one wrapping row", () => {
   setup();
   const bar = screen.getByText("2 selected").parentElement!;
-  for (const rule of ["compact:flex-col", "compact:items-stretch", "compact:max-h-[60dvh]", "compact:overflow-y-auto", "compact:w-[calc(100vw-2rem)]", "compact:bottom-[max(1.25rem,var(--safe-area-bottom))]"]) {
+  for (const rule of ["compact:flex-col", "compact:flex-nowrap", "compact:items-stretch", "compact:max-h-[60dvh]", "compact:overflow-y-auto", "compact:w-[calc(100vw-2rem)]", "compact:bottom-[max(1.25rem,var(--safe-area-bottom))]"]) {
     expect(bar.className).toContain(rule);
   }
   expect(bar).toHaveClass("flex-wrap", "fixed", "bottom-5");
