@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=37 -->
-<!-- vault-format: schema-version=69 -->
+<!-- vault-format: spec-version=40 -->
+<!-- vault-format: schema-version=70 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -272,7 +272,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
-- `spec-version = 37` (personal-cfo-bxsbz.5, schema version 69) lets a `Bound` `sync_outbox` row carry no
+- `spec-version = 40` (personal-cfo-bxsbz.5, schema version 70) lets a `Bound` `sync_outbox` row carry no
   result. The accepted-envelope record (C.10) already allows an accepted command with no `result_ref`
   and says a present one is 1 to 64 bytes, because an empty one would be a second encoding of an absent
   one; migration 66 had required the column non-null on a `Bound` row. The `Bound` arm of the table's
@@ -280,6 +280,16 @@ synthetic no-app recovery test before any such public claim.
   `Pending` and `Approved` still require NULL. The table is rebuilt in the migration transaction, and
   the down migration fails closed rather than inventing a result. No wire layout, write-set rule,
   vector or `engine_version` changes.
+- `spec-version = 39` (personal-cfo-1cltt.5, schema version 69) adds the SQLite home of the void
+  ledger and of a replica's applied cursor: the class-3 tables `sync_voids` and `sync_position`
+  (inventory rows, both excluded from both formats), and states how a replica is born from a
+  snapshot (C.8 "Replica bootstrap"): the snapshot's rows are written into a new, unseeded vault
+  that carries the origin's `vault_id` and creation time, the recorded voids are seeded into the
+  ledger as `seeded` entries (never inputs to a fork check, so one member's snapshot cannot halt
+  every replica built from it), and the replica becomes the vault only when all of it, base image
+  included, is on disk. A snapshot is a valid root only if it is of this build's `engine_version`,
+  is not rooted inside a held void's range, and records no void at or above its root. No wire
+  layout, write-set rule, vector or `engine_version` change.
 - `spec-version = 36` (personal-cfo-1cltt.4, part C) states how the genesis snapshot is named and
   resumed (C.8 "The genesis snapshot's id and a resume": a derived id, the saved container is what
   a resume sends, a fresh container is sent only when the service does not hold the id, the persisted
@@ -663,6 +673,8 @@ therefore requires reviewing this inventory.
 | `sync_counter_register` | 3 | exclude | exclude | Device-local state: the durable `next_counter` of each `(vault_id, key_epoch, fingerprint, object_type)` context (C.4). A row is never 0. Written under the writer lock, so a restore rolls it back and the independent witness detects it. |
 | `sync_saved_snapshot` | 3 | exclude | exclude | Device-local state: the sealed snapshot saved beside the register for an exact-byte retransmission, with the hashes of what it was sealed from. |
 | `sync_genesis` | 3 | exclude | exclude | Device-local state: the genesis records this device minted at sync-enable, persisted before any key is installed from them, how far enabling got (`Persisted`, `Installed`, `Published`, or a terminal `VaultKnown` or `GenesisResumeLost`), and the `operation_log` high-water mark of the export. The records never change. |
+| `sync_voids` | 3 | exclude | exclude | Device-local state: the void ledger, one row per void this replica skips (the void id, the range of log positions it skips, a dense `ordinal` in write order) with its `origin`: `seeded` from the snapshot the replica bootstrapped from, or `honored` here. Append-only; a row is never updated or deleted. The key is the `ordinal`, not the void id: one id can hold more than one entry (a snapshot may record one id at two ranges, and a recorded void may later be honored here as a new void). |
+| `sync_position` | 3 | exclude | exclude | Device-local state: the applied cursor of a replica that has bootstrapped: `snapshot_root` (the last position of the snapshot it was built from; NULL for an origin; never changes) and `next_to_apply` (only increases). Written with the void ledger in one transaction. |
 <!-- inventory:end -->
 
 Rules that apply to the whole inventory:
@@ -2095,6 +2107,53 @@ and the client refuses to publish a snapshot after the genesis whose source is t
 **While halted or stopped.** A replica halted at a poisoned position, or stopped at an invalid
 envelope or an engine version it does not run, publishes no snapshot (ADR 0074 Addendum D rule 5);
 the client refuses locally, before it seals, spends a counter or makes a request.
+
+### Replica bootstrap
+
+A device with no vault becomes a replica by installing a snapshot, never by seeding (`personal-cfo-1cltt.5`).
+
+**Install.** The installer is the exact inverse of the export. Into a new vault at the snapshot's
+schema version that holds no identity and no row of any replicated table, one transaction writes the
+origin's `vault_id` and `vault_created_at` (from the manifest) first, then every row of every table
+the manifest lists, in the manifest's order, with foreign keys deferred to the commit. A new vault is
+seeded only when it is created (`vault_metadata` and the seed rows are one transaction), and a replica
+is never created that way: its seed rows are the origin's, so a legacy origin whose seeded rows hold
+random ids keeps them. Every data-file line must be the one canonical encoding of its row (B.3: a
+decimal integer with no sign, leading zero or `-0`; a lowercase hyphenated uuid; padded base64 with
+zero trailing bits; exactly the table's columns). Before it commits, the installed state is exported
+again inside the same transaction and must equal the snapshot table by table (the same file hash, row
+count and state digest); any difference installs nothing. A snapshot that lists a table or column this
+build does not replicate, omits one it does, or needs artifacts (a non-empty closure, an attachment
+row) is refused whole. A snapshot of a **newer** schema is update-required and never installed; one of
+an equal or older schema installs by migrating the new vault to the snapshot's version first and to the
+build's afterwards, so no migration ever runs over rows it was not written for.
+
+**Valid roots.** A snapshot may be the root a replica builds on only if its `engine_version` equals
+this build's (any other is update-required itself), the root is not inside the range of any void the
+replica holds (a first bootstrap holds none, so it passes the ranges of the void records positioned
+after the root, which it must pull anyway, before it installs anything), and every void the snapshot
+records lies strictly below the root and the records ascend without overlap. A recorded range reaching
+the root would make the seeded ledger skip positions every other replica applies. The same rule
+admits a re-bootstrap out of a stop (C.10): there is one rule set.
+
+**The ledger.** The replica's void ledger (B.2 `sync_voids`) is seeded from the snapshot's recorded
+voids with origin `seeded`, in ascending order, and its cursor (`sync_position`) starts at
+`next_to_apply = root + 1` with `snapshot_root = root`; both are written in one transaction. A
+`seeded` entry is history: the engine skips its positions and a snapshot the replica later publishes
+records it, but it never feeds the same-void-at-two-positions fork check or the already-covered
+outcome, which concern voids this replica honored. A void whose id a snapshot recorded below the root
+and which later appears past the root is judged as a new void, and is then a second entry for that id (the
+ledger is keyed by position in it, not by id). A snapshot may record one id at two ranges; each is its own
+entry.
+
+**Becoming the vault.** The replica is built at `<vault>.bootstrapping` beside the vault path, under
+the vault's lease: the install, the ledger and the first base image (`sync_base` `Ready` at `root`,
+credentials stripped) all land there. Class-2 tables are never shipped, so a new replica starts with
+them empty. Only then is the file
+synced and renamed to the vault path and the directory synced. A vault that exists therefore always has
+its base, so no command can be taken, unrecorded, between the install and the base. A start that finds
+a `<vault>.bootstrapping` file discards that file (and its journal files) and begins again; it also discards `sync/base.db` when, and only when, no vault exists at the path and that file is the base the abandoned replica recorded (its `Ready` digest equals the file's), and touches no other base image; a vault
+file that already exists is never replaced.
 
 ## C.9 Artifact transport
 

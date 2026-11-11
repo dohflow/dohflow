@@ -26,7 +26,16 @@ import sys
 LOCKFILES = [None, "apps/desktop/src-tauri/Cargo.lock"]  # None = the root workspace
 
 # (advisory id, crate, version) -> reason. Every entry carries an expiry and the bead that
-# removes it. An exception is NEVER matched by advisory id alone. There are none today.
+# removes it. An exception is NEVER matched by advisory id alone. There is one today.
+#
+# RUSTSEC-2026-0459 on libsqlite3-sys 0.38.2 (personal-cfo-5vto5): SQLite before 3.54.0 can
+# return uninitialized page-cache memory when it opens a database together with a sibling -wal
+# file whose page size differs from the database's. rusqlite's bundled-sqlcipher build has no
+# release on a fixed SQLite yet (sqlcipher-src 419.0.6 bundles SQLite 3.53.4), so there is
+# nothing to update to. The trigger is local, and every SQLCipher open of a vault now refuses a
+# mismatched -wal first (crates/db-worker/src/wal_guard.rs), which closes it. The exception
+# expires 2026-12-10; if no fixed build exists by then its renewal goes back to the owner, it is
+# never silently extended.
 #
 # History: RUSTSEC-2026-0381 on webpki-roots 0.26.11 (a re-export shim of the fixed
 # webpki-roots 1.0.10; owner decision 2026-10-20, personal-cfo-md8h2.13) was allowed here until
@@ -34,7 +43,27 @@ LOCKFILES = [None, "apps/desktop/src-tauri/Cargo.lock"]  # None = the root works
 # designed ("matches nothing") and the entry was removed. personal-cfo-pxi.23 (ureq 2 -> 3)
 # still drops the shim itself. To add an exception, give it all of: id, crate, version,
 # expires (YYYY-MM-DD), removed_by (a bead), decision, reason.
-EXCEPTIONS = []
+EXCEPTIONS = [
+    {
+        "id": "RUSTSEC-2026-0459",
+        "crate": "libsqlite3-sys",
+        "version": "0.38.2",
+        "expires": "2026-12-10",
+        "removed_by": "personal-cfo-5vto5",
+        "decision": (
+            "Owner decision 2026-11-10, given directly in 01-planning's session, answering "
+            "'Approve the guard plus a security-check exception until Dec 10, along with filing the "
+            "bead?': \"Yes, approve\". Confirmed to the implementing session by the owner "
+            "(2026-11-11): add it."
+        ),
+        "reason": (
+            "No patched SQLCipher build exists (rusqlite's bundled-sqlcipher feature is still on "
+            "SQLite 3.53.4). The trigger is local: someone has to place a -wal file with a different "
+            "page size beside the database. The WAL header guard refuses such a file before every "
+            "SQLCipher open of a vault or backup and leaves it untouched, which closes the trigger."
+        ),
+    },
+]
 
 
 def run_audit(lockfile):

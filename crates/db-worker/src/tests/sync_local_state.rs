@@ -245,7 +245,7 @@ fn the_outbox_states_carry_exactly_the_columns_they_need() {
     assert!(insert("Pending", "zeroblob(4)", "NULL", "NULL").is_err());
     assert!(insert("Approved", "NULL", "NULL", "NULL").is_err());
     assert!(insert("Approved", "zeroblob(4)", "9", "NULL").is_err());
-    // An accepted command may have no result (bxsbz.5, migration 69), and a present one is 1 to 64
+    // An accepted command may have no result (bxsbz.5, migration 70), and a present one is 1 to 64
     // bytes.
     assert!(insert("Bound", "zeroblob(4)", "9", "NULL").is_ok());
     assert!(insert("Bound", "zeroblob(4)", "9", "zeroblob(0)").is_err());

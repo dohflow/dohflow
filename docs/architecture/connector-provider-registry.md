@@ -10,7 +10,7 @@ used at all, and how the Connections picker turns that into a connect flow.
   enter the free app, the ship conditions, the picker order and the affiliate
   stance).
 - **Built by:** `personal-cfo-5jjz` (the registry), `personal-cfo-r2pow` (the
-  second adapter, LunchFlow, registered disabled until v0.4.0) and `personal-cfo-dto2j` (the
+  second adapter, LunchFlow, registered disabled until v0.4.1, the first published release that enables it) and `personal-cfo-dto2j` (the
   picker).
 - **Scope:** describes what is merged. It introduces no provider, cost claim
   or enablement.
@@ -100,7 +100,7 @@ only once ADR 0076 decision 3's ship conditions hold: cross-provider dedupe,
 the currency refusal, help and disclosure placements, and the threat model's
 egress row.
 
-At the time of writing (v0.4.0), **SimpleFIN and LunchFlow are both
+At the time of writing (v0.4.1; v0.4.0 was tagged but never published), **SimpleFIN and LunchFlow are both
 enabled**. `personal-cfo-p3f7r` flipped LunchFlow's flag.
 
 The refusal is `connector_link_registered_impl`

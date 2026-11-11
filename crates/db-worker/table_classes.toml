@@ -399,6 +399,24 @@ rebase_preservation = "preserve the row byte for byte across the swap; a rebase 
 reference_validation = "the records must verify as a chain for vault_id before any key is installed from them; a VaultKnown or GenesisResumeLost genesis is never published"
 
 [[table]]
+table = "sync_voids"
+class = "3"
+owner_bead = "personal-cfo-1cltt"
+note = "Device-local, append-only void ledger: the voids this replica skips (void id, the range of log positions it skips, a dense ordinal in write order) and their origin: seeded from the snapshot the replica bootstrapped from (recorded by the snapshot's producer, never judged here, so never a fork check's input) or honored here. An entry is never updated or deleted; a re-bootstrap builds a new vault. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "the swap appends the live rows the swapped-in vault is missing, in ordinal order: the base's copy is stale, and a rebase after an honored void that restored the ledger as it was at base capture could re-admit a voided position"
+reference_validation = "ordinals are dense from 1 and the ranges ascend without overlap; every seeded range lies below sync_position.snapshot_root"
+
+[[table]]
+table = "sync_position"
+class = "3"
+owner_bead = "personal-cfo-1cltt"
+note = "Device-local singleton: the applied cursor of a replica that has bootstrapped. snapshot_root is the last log position of the snapshot it bootstrapped from (NULL for an origin) and never changes; next_to_apply is the lowest position it has neither applied nor skipped, and only increases. Written with the void ledger in one transaction. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "the swap writes the swapped-in vault's applied cursor as a forward-only update, never an overlay of an older live value: the rebase applies pulled envelopes in its scratch vault, so the swapped-in cursor may be ahead of the live one"
+reference_validation = "next_to_apply exceeds snapshot_root, and no honored void's range reaches next_to_apply"
+
+[[table]]
 table = "vault_meta"
 class = "3"
 owner_bead = "personal-cfo-bxsbz"
