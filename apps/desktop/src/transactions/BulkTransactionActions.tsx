@@ -1,3 +1,4 @@
+import { COMPACT_WRAP_BUTTONS } from "@/lib/sheet";
 import { useRef, useState } from "react";
 import { Check, Loader2, Trash2, X } from "lucide-react";
 
@@ -252,7 +253,7 @@ export function BulkTransactionActions({
   return (
     // A floating bar pinned to the bottom of the viewport (feedback 2026-07-03): the user can
     // keep scrolling and selecting without losing the actions off-screen.
-    <div className="fixed bottom-5 left-1/2 z-40 flex max-w-[calc(100vw-3rem)] -translate-x-1/2 flex-wrap items-center gap-2 rounded-xl border bg-card px-3 py-2 text-sm shadow-lg">
+    <div className={`fixed bottom-5 left-1/2 z-40 flex max-w-[calc(100vw-3rem)] -translate-x-1/2 flex-wrap items-center gap-2 rounded-xl border bg-card px-3 py-2 text-sm shadow-lg ${COMPACT_WRAP_BUTTONS} compact:bottom-[max(1.25rem,var(--safe-area-bottom))] compact:max-h-[60dvh] compact:w-[calc(100vw-2rem)] compact:max-w-none compact:flex-col compact:flex-nowrap compact:items-stretch compact:overflow-y-auto`}>
       <span className="font-medium">{count} selected</span>
       {count < total && (
         // Scope: every selectable row currently visible across BOTH lists — the inbox's
@@ -262,7 +263,7 @@ export function BulkTransactionActions({
         </Button>
       )}
 
-      <div className="w-44">
+      <div className="w-44 compact:w-full">
         {/* Fire-once action: value stays null so the trigger always reads
             "Categorize…" and each pick fires the bulk run (j0cg.4 reset pattern). */}
         <CategoryCombobox
@@ -284,11 +285,11 @@ export function BulkTransactionActions({
           tag (suggested via the datalist) or a new name — Enter/Add creates + applies it to
           the whole selection. set_tags REPLACES the tag set, so applyTag merges with each
           row's current tags, read fresh just before the writes. */}
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1 compact:w-full">
         <input
           aria-label="Add or create tag"
           list="bulk-tag-options"
-          className={SELECT_CLASS}
+          className={`${SELECT_CLASS} compact:min-w-0 compact:flex-1`}
           placeholder="Tag…"
           disabled={busy}
           value={tagDraft}
@@ -370,7 +371,7 @@ export function BulkTransactionActions({
       <Button
         size="sm"
         variant="ghost"
-        className="ml-auto"
+        className="ml-auto compact:ml-0 compact:self-start"
         disabled={busy}
         onClick={() => onSelectionChange([])}
       >

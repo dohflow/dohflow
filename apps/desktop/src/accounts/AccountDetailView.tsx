@@ -220,7 +220,7 @@ export function AccountDetailView({
         <div className="min-w-0">
           <BackLink onBack={onBack} />
           <div className="mt-2 flex flex-wrap items-center gap-2.5">
-            <h2 className="text-2xl font-semibold tracking-tight">
+            <h2 className="text-2xl font-semibold tracking-tight compact:[overflow-wrap:anywhere]">
               {account?.name ?? "Account"}
             </h2>
             {account && (
@@ -280,12 +280,13 @@ export function AccountDetailView({
       {!loading && account && (
         <>
           <div className="flex flex-wrap items-end justify-between gap-4">
-            <div>
+            <div className="compact:min-w-0 compact:max-w-full">
               <p className="text-xs font-medium text-muted-foreground">
                 {figureLabelForRole(account.cashflow_role)}
               </p>
-              <div className="mt-1 flex items-center gap-3">
-                <span className="text-4xl font-semibold tracking-tight tabular-nums">
+              <div className="mt-1 flex items-center gap-3 compact:flex-wrap">
+                {/* On a phone the figure never outgrows the window: the smaller of its size and a share of the window width. */}
+                <span className="text-4xl font-semibold tracking-tight tabular-nums compact:text-[min(2.25rem,9vw)] compact:[overflow-wrap:anywhere]">
                   {formatMoney({
                     minor_units: storedToShownMinor(
                       account.cashflow_role,
@@ -299,12 +300,12 @@ export function AccountDetailView({
                 </Button>
               </div>
               {todayIso && (
-                <p className="mt-1.5 text-xs text-muted-foreground">
+                <p className="mt-1.5 text-xs text-muted-foreground compact:[overflow-wrap:anywhere]">
                   as of {formatIsoDate(todayIso)} · manual account, you keep it current
                 </p>
               )}
             </div>
-            <div className="flex flex-col items-end gap-1.5">
+            <div className="flex flex-col items-end gap-1.5 compact:items-start compact:max-w-full">
               <span className="text-[0.6875rem] text-muted-foreground">History & horizon</span>
               <div
                 role="group"

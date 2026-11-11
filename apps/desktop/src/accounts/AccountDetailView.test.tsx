@@ -240,6 +240,19 @@ describe("AccountDetailView", () => {
     }
   });
 
+  // personal-cfo-i93n3.28 slice 8: found by opening Account detail on the simulator at the largest text size (its balance row ran to 861 pt in a 402 pt
+  // window): the figure is capped to the window width and its row wraps, long words break; desktop sizes are unchanged.
+  it("reflows its balance row on a phone: the figure is capped to the window and the row, name and as-of line wrap (compact-only)", async () => {
+    renderWithClient(<AccountDetailView accountId={CHECKING.id} onBack={vi.fn()} />);
+    const name = await screen.findByRole("heading", { name: "Everyday Checking" });
+    expect(name).toHaveClass("compact:[overflow-wrap:anywhere]");
+    const figure = (await screen.findAllByText("$8,412.55"))[0]!;
+    expect(figure).toHaveClass("text-4xl", "compact:text-[min(2.25rem,9vw)]", "compact:[overflow-wrap:anywhere]");
+    expect(figure.parentElement).toHaveClass("compact:flex-wrap");
+    expect(figure.parentElement).not.toHaveClass("flex-wrap");
+    expect(screen.getByText(/manual account, you keep it current/)).toHaveClass("compact:[overflow-wrap:anywhere]");
+  });
+
   it("renders a liquid account: balance, chart, upcoming event, and posted activity with a running balance", async () => {
     renderWithClient(
       <AccountDetailView accountId={CHECKING.id} onBack={vi.fn()} />,

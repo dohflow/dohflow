@@ -43,7 +43,7 @@ export function PaginationControls<T>({
           ? `No ${noun}`
           : `${rangeStart}–${rangeEnd} of ${total} ${noun}`}
       </span>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 compact:flex-wrap">
         <label className="flex items-center gap-1.5">
           <span>Show</span>
           <select
@@ -59,7 +59,7 @@ export function PaginationControls<T>({
             ))}
           </select>
         </label>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 compact:flex-wrap">
           <Button
             type="button"
             variant="outline"

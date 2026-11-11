@@ -36,7 +36,7 @@ import { SplitEditor } from "./SplitEditor";
 import { useSetSplits, useTransactionSplits } from "./useSplits";
 import { useTransactionAttachments } from "./useTransactionAttachments";
 import { useImportedTransactionFields } from "./useImportedTransactionFields";
-import { COMPACT_DRAWER_PADDED_6 } from "@/lib/sheet";
+import { COMPACT_DRAWER_PADDED_6, COMPACT_WRAP_BUTTONS } from "@/lib/sheet";
 
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
@@ -301,7 +301,7 @@ export function TransactionDetailDrawer({
       <div
         role="dialog"
         aria-label="Transaction detail"
-        className={`relative flex h-full w-full max-w-md flex-col gap-4 overflow-y-auto border-l bg-background p-6 shadow-xl ${COMPACT_DRAWER_PADDED_6}`}
+        className={`relative flex h-full w-full max-w-md flex-col gap-4 overflow-y-auto border-l bg-background p-6 shadow-xl ${COMPACT_DRAWER_PADDED_6} ${COMPACT_WRAP_BUTTONS}`}
       >
         <div className="flex items-start justify-between">
           <div className="min-w-0">

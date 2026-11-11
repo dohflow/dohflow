@@ -45,7 +45,7 @@ function Point({ text }: { text: string }) {
   return (
     <li className="flex gap-2">
       <span aria-hidden>·</span>
-      <span>
+      <span className="compact:min-w-0 compact:[overflow-wrap:anywhere]">
         {lead ? (
           <>
             <b>{lead}</b> {rest}
