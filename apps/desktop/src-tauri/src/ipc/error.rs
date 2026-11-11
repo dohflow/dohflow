@@ -96,7 +96,9 @@ impl From<KernelError> for IpcError {
             KernelError::Persistence(message) => IpcError::Persistence(message),
             // The sizes are the message: it tells the person what was found beside the vault, and the
             // file itself was left untouched (personal-cfo-5vto5).
-            error @ KernelError::WalHeaderMismatch { .. } => IpcError::Persistence(error.to_string()),
+            error @ KernelError::WalHeaderMismatch { .. } => {
+                IpcError::Persistence(error.to_string())
+            }
             KernelError::VaultUnlockFailed => IpcError::VaultUnlockFailed,
             KernelError::NewerVaultSchema { .. } => IpcError::NewerVaultSchema,
             KernelError::UnsupportedVaultSchema => IpcError::UnsupportedVaultSchema,
