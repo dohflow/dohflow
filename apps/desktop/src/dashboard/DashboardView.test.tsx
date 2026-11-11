@@ -106,6 +106,19 @@ describe("DashboardView", () => {
     expect(label).toHaveClass("truncate", "compact:whitespace-normal", "compact:overflow-visible");
   });
 
+  // personal-cfo-i93n3.27 (found by measuring the populated Dashboard at the largest text size): the stat cards stack in one column
+  // no wider than the window and their figures never outgrow it; nothing is capped on a desktop window.
+  it("keeps the stat cards in one window-wide column on a phone and caps each figure to the window width (i93n3.27)", async () => {
+    renderWithClient(<DashboardView />);
+    const label = await screen.findByText("Liquid cash today");
+    const figure = label.nextElementSibling!;
+    expect(figure).toHaveClass("compact:text-[min(1.5rem,7.5vw)]", "compact:[overflow-wrap:anywhere]");
+    // Desktop keeps its size and its three columns.
+    expect(figure).toHaveClass("text-2xl");
+    const grid = label.closest("div.grid")!;
+    expect(grid).toHaveClass("compact:grid-cols-1", "sm:grid-cols-3");
+  });
+
   it("shows a loading state until the forecast resolves", () => {
     mocks.futureCashForecast.mockReturnValue(new Promise(() => {}));
     renderWithClient(<DashboardView />);
