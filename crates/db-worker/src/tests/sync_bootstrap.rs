@@ -542,6 +542,18 @@ fn a_base_image_that_is_not_the_abandoned_bootstraps_own_is_never_removed() {
     assert_eq!(std::fs::read(base_image_path(&path)).unwrap(), base_before);
     assert_eq!(std::fs::read(bootstrapping_path(&path)).unwrap(), b"stale");
 
+    // No vault and no stale temporary file at all: a base image beside the path is left alone.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("vault.db");
+    std::fs::create_dir_all(base_image_path(&path).parent().unwrap()).unwrap();
+    std::fs::write(base_image_path(&path), b"no temporary file").unwrap();
+    let cut = cut_after(Step::Created, || bootstrap_replica(&path, &dek, &src));
+    assert!(matches!(cut, Err(BootstrapError::Cut(Step::Created))));
+    assert_eq!(
+        std::fs::read(base_image_path(&path)).unwrap(),
+        b"no temporary file"
+    );
+
     // No vault, a stale temporary file that records no base of this image: the base is left alone
     // (the next capture replaces it), while the temporary file goes.
     let dir = tempfile::TempDir::new().unwrap();
