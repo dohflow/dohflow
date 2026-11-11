@@ -61,6 +61,8 @@ describe("SafeToSpendCard", () => {
 
     const alert = await screen.findByText(/below your \$1,000\.00 floor/i);
     expect(alert).toBeInTheDocument();
+    // On a phone the message may shrink to the window and break long words (i93n3.27), above-floor pill included.
+    expect(alert.parentElement).toHaveClass("compact:max-w-full", "compact:[overflow-wrap:anywhere]");
   });
 
   it("reassures when headroom is above the floor", async () => {
@@ -69,9 +71,9 @@ describe("SafeToSpendCard", () => {
     );
     renderWithClient(<SafeToSpendCard />);
 
-    expect(
-      await screen.findByText(/above your \$1,000\.00 floor/i),
-    ).toBeInTheDocument();
+    const pill = await screen.findByText(/above your \$1,000\.00 floor/i);
+    expect(pill).toBeInTheDocument();
+    expect(pill.parentElement).toHaveClass("compact:max-w-full", "compact:[overflow-wrap:anywhere]");
   });
 
   it("hides the floor line when no floor is set", async () => {
