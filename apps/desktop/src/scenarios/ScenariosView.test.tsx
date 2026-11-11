@@ -77,6 +77,23 @@ describe("ScenariosView (personal-cfo-4d8.27.6.1 / .6.6)", () => {
     expect(screen.getByText("3")).toBeInTheDocument();
   });
 
+  // personal-cfo-i93n3.28 slice 7: reflow only at the largest text size on a phone (compact-only classes; desktop unchanged).
+  it("reflows on a phone: the header wraps its button, a native date field and the name field take their column's width", async () => {
+    renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
+    await screen.findByText("Maternity leave");
+    const newScenario = screen.getByRole("button", { name: /New scenario/ });
+    expect(newScenario).toHaveClass("compact:whitespace-normal", "compact:max-w-full");
+    expect(newScenario.parentElement).toHaveClass("compact:flex-wrap");
+    const expiry = screen.getByLabelText(/Expiry for Maternity leave/);
+    // WebKit gives a native date field an intrinsic minimum width that min-width cannot lower.
+    expect(expiry).toHaveClass("compact:appearance-none", "compact:w-full", "compact:max-w-full");
+    // Desktop keeps its fixed widths and its native control.
+    expect(expiry).toHaveClass("w-36");
+    fireEvent.click(newScenario);
+    const name = await screen.findByLabelText("Name");
+    expect(name).toHaveClass("w-64", "compact:w-full");
+  });
+
   it("archives without confirmation, because archiving keeps everything (ADR 0051 §1)", async () => {
     renderWithClient(<ScenariosView onOpenInCashFlow={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: /archive maternity leave/i }));

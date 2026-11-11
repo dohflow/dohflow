@@ -114,10 +114,10 @@ export function CategoriesView() {
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between compact:flex-wrap compact:gap-2">
         <h2 className="text-lg font-semibold tracking-tight">Categories</h2>
         {!adding && (
-          <Button size="sm" onClick={() => setAdding(true)}>
+          <Button size="sm" className="compact:h-auto compact:max-w-full compact:whitespace-normal" onClick={() => setAdding(true)}>
             <Plus aria-hidden />
             Add category
           </Button>
@@ -278,10 +278,10 @@ function CategoryNode({
           />
         ) : (
           <div
-            className="flex items-center justify-between gap-3"
+            className="flex items-center justify-between gap-3 compact:flex-wrap"
             style={{ paddingLeft: depth * 16 }}
           >
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 compact:min-w-0 compact:flex-wrap">
               {node.color && (
                 <span
                   aria-hidden
@@ -289,7 +289,7 @@ function CategoryNode({
                   style={{ backgroundColor: node.color }}
                 />
               )}
-              <span className="font-medium">{node.name}</span>
+              <span className="font-medium compact:[overflow-wrap:anywhere]">{node.name}</span>
               <span className="text-xs text-muted-foreground">
                 {TYPE_LABEL[node.category_type] ?? node.category_type}
               </span>
@@ -304,7 +304,7 @@ function CategoryNode({
                 </span>
               )}
             </div>
-            <div className="flex gap-1">
+            <div className="flex gap-1 compact:flex-wrap">
               {node.archived ? (
                 <Button
                   size="sm"

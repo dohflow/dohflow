@@ -75,6 +75,16 @@ describe("RecurringTransfersView", () => {
     expect(screen.getByText(/Monthly/)).toBeInTheDocument();
   });
 
+  // personal-cfo-i93n3.28 slice 7: reflow only at the largest text size on a phone (compact-only classes; desktop unchanged).
+  it("lets the header row and its Add button wrap on a phone, and nothing wraps unconditionally", async () => {
+    renderWithClient(<RecurringTransfersView />);
+    await screen.findByText("Checking");
+    const add = screen.getByRole("button", { name: /Add recurring transfer/ });
+    expect(add).toHaveClass("compact:whitespace-normal", "compact:max-w-full", "compact:h-auto");
+    expect(add.parentElement).toHaveClass("compact:flex-wrap");
+    expect(add.parentElement).not.toHaveClass("flex-wrap");
+  });
+
   it("shows the empty state with no scheduled transfers", async () => {
     mocks.recurringTransferList.mockResolvedValue(ok([]));
     renderWithClient(<RecurringTransfersView />);

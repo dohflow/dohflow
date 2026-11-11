@@ -228,7 +228,7 @@ export function DebtPayoffCompare({ accountIds }: { accountIds?: string[] } = {}
                   <div
                     role="group"
                     aria-label="Per-debt paydown strategy"
-                    className="flex gap-1 rounded-md bg-muted p-0.5 text-xs"
+                    className="flex gap-1 rounded-md bg-muted p-0.5 text-xs compact:flex-wrap"
                   >
                     {STRATEGY_ORDER.map((s) => (
                       <button

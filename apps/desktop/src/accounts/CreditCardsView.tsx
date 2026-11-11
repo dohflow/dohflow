@@ -126,13 +126,13 @@ function CardPanel({
   return (
     <Card>
       <CardContent className="flex flex-col gap-3 p-4">
-        <div className="flex items-start justify-between">
+        <div className="flex items-start justify-between compact:flex-wrap compact:gap-x-3">
           <div className="flex items-center gap-2">
             <CreditCardIcon className="size-4 text-muted-foreground" aria-hidden />
-            <span className="font-semibold">{card.account_name}</span>
+            <span className="font-semibold compact:[overflow-wrap:anywhere]">{card.account_name}</span>
           </div>
           {utilization !== null && (
-            <span className="text-xs text-muted-foreground">
+            <span className="text-xs text-muted-foreground compact:[overflow-wrap:anywhere]">
               {money(owed, card.currency)} of {money(card.credit_limit_minor, card.currency)} used
             </span>
           )}
@@ -246,13 +246,13 @@ function StoredStatements({ card }: { card: CardStatementForecastDto }) {
     <div className="flex flex-col gap-1 text-xs">
       <span className="text-muted-foreground">Recorded statements</span>
       {card.stored_statements.map((row) => (
-        <div key={row.close_date} className="flex items-center justify-between gap-2">
+        <div key={row.close_date} className="flex items-center justify-between gap-2 compact:flex-wrap">
           <span className="flex items-center gap-1.5 text-muted-foreground">
             {formatIsoDate(row.close_date)}
             {!row.applied && <Badge variant="warning">Not yet closed — ignored</Badge>}
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="font-medium tabular-nums">
+            <span className="font-medium tabular-nums compact:[overflow-wrap:anywhere]">
               {money(row.statement_balance_minor, card.currency)}
             </span>
             <Button
@@ -306,7 +306,7 @@ function StatementRow({ card }: { card: CardStatementForecastDto }) {
     const minor = dollarsToMinorUnits(value);
     return (
       <div className="flex flex-col gap-1">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center justify-between gap-2 compact:flex-wrap">
           <span className="text-muted-foreground">Actual statement</span>
           <div className="flex items-center gap-1.5">
             <Input
@@ -356,13 +356,13 @@ function StatementRow({ card }: { card: CardStatementForecastDto }) {
   // the backend write guard across timezones.
   const closed = next.is_closed;
   return (
-    <div className="flex items-center justify-between gap-2">
+    <div className="flex items-center justify-between gap-2 compact:flex-wrap">
       <span className="flex items-center gap-1.5 text-muted-foreground">
         {next.statement_is_actual ? "Statement" : "Projected statement"}
         {next.statement_is_actual && <Badge variant="gain">Actual</Badge>}
       </span>
-      <span className="flex items-center gap-1.5">
-        <span className="font-medium tabular-nums">
+      <span className="flex items-center gap-1.5 compact:flex-wrap">
+        <span className="font-medium tabular-nums compact:[overflow-wrap:anywhere]">
           {money(next.statement_balance_minor, card.currency)}
         </span>
         {closed && (
@@ -399,9 +399,9 @@ function StatementRow({ card }: { card: CardStatementForecastDto }) {
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between">
+    <div className="flex items-center justify-between compact:flex-wrap compact:gap-x-3">
       <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium tabular-nums">{value}</span>
+      <span className="font-medium tabular-nums compact:[overflow-wrap:anywhere]">{value}</span>
     </div>
   );
 }
@@ -456,7 +456,7 @@ function StatementHistory({ card }: { card: CardStatementForecastDto }) {
           const minor = dollarsToMinorUnits(value);
           const editing = editingClose === row.close_date;
           return (
-            <div key={row.close_date} className="flex items-center justify-between gap-2">
+            <div key={row.close_date} className="flex items-center justify-between gap-2 compact:flex-wrap">
               <span className="text-muted-foreground">{formatIsoDate(row.close_date)}</span>
               {editing ? (
                 <span className="flex items-center gap-1.5">
@@ -490,7 +490,7 @@ function StatementHistory({ card }: { card: CardStatementForecastDto }) {
                 <span className="flex items-center gap-1.5">
                   {row.stored_statement_minor !== null ? (
                     <>
-                      <span className="font-medium tabular-nums">
+                      <span className="font-medium tabular-nums compact:[overflow-wrap:anywhere]">
                         {money(row.stored_statement_minor, card.currency)}
                       </span>
                       <Badge variant="gain">Actual</Badge>

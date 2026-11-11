@@ -31,6 +31,19 @@ describe("DebtScopeBar (personal-cfo-39xn)", () => {
     expect(chip).toHaveAttribute("aria-pressed", "true");
   });
 
+  // personal-cfo-i93n3.28 slice 7: reflow only at the largest text size on a phone (compact-only classes; desktop unchanged).
+  it("reflows on a phone: the header row wraps, a chip wraps its words and keeps its width, All debts wraps its label", () => {
+    render(<DebtScopeBar accounts={[debt()]} selected={[]} onChange={vi.fn()} />);
+    const chip = screen.getByRole("button", { name: /Visa/ });
+    expect(chip).toHaveClass("compact:whitespace-normal", "compact:max-w-full", "compact:flex-wrap");
+    expect(chip.parentElement).toHaveClass("compact:basis-full", "compact:min-w-0");
+    expect(chip.parentElement!.parentElement).toHaveClass("compact:flex-wrap");
+    expect(screen.getByRole("button", { name: "All debts" })).toHaveClass("compact:whitespace-normal", "compact:max-w-full");
+    // Nothing wraps unconditionally: a chip stays one line on a desktop window.
+    expect(chip).toHaveClass("whitespace-nowrap");
+    expect(chip).not.toHaveClass("flex-wrap");
+  });
+
   it("starts from everything on the first untick", () => {
     // An empty selection means ALL, so unticking one must leave the OTHERS — not select
     // only the one that was clicked. That inversion is what this representation invites.

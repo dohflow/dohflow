@@ -112,6 +112,21 @@ test("shows utilization and the upcoming statement details", async () => {
   expect(screen.getByText("$25.00")).toBeInTheDocument();
 });
 
+// personal-cfo-i93n3.28 slice 7: the card rows reflow at the largest text size on a phone (compact-only; desktop unchanged).
+test("the card's rows wrap on a phone and break long names and figures, and stay single lines on a desktop window", async () => {
+  mocks.cardStatementForecast.mockResolvedValue(ok([card()]));
+  renderWithClient(<CreditCardsView />);
+  const name = await screen.findByText("Visa");
+  expect(name).toHaveClass("compact:[overflow-wrap:anywhere]");
+  // The header row (name and "of limit used") wraps.
+  expect(name.parentElement!.parentElement).toHaveClass("compact:flex-wrap");
+  const minimum = screen.getByText("$25.00");
+  expect(minimum).toHaveClass("compact:[overflow-wrap:anywhere]");
+  expect(minimum.closest("div.flex")).toHaveClass("compact:flex-wrap");
+  // Nothing wraps unconditionally.
+  expect(minimum.closest("div.flex")).not.toHaveClass("flex-wrap");
+});
+
 test("flags an interest risk when the projected statement exceeds projected cash on the due date", async () => {
   mocks.cardStatementForecast.mockResolvedValue(ok([card()]));
   renderWithClient(<CreditCardsView />);

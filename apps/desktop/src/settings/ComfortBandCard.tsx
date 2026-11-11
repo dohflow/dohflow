@@ -131,7 +131,7 @@ export function ComfortBandCard() {
       </CardHeader>
       <CardContent>
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-3 compact:grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))] compact:[&>*]:min-w-0">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="comfort-band-lower">Lower edge (floor)</Label>
               <Input

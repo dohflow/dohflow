@@ -80,7 +80,10 @@ export function SettingsView({
 
   return (
     // The page is a container: its sections lay out against the width of the main pane, not the window.
-    <div className="@container w-full">
+    // On a phone every button in Settings may wrap its label and grow taller (the shared Button is nowrap and fixed-height, so
+    // "Run the setup guide again" ran past the screen at the largest text size). One rule here, not a class at every call site;
+    // the 44 pt floor in globals.css still holds.
+    <div className="@container w-full compact:[&_button]:h-auto compact:[&_button]:max-w-full compact:[&_button]:whitespace-normal">
       <div className="flex flex-col gap-4">
         <PageHeader title="Settings" />
         <SettingsGrid>

@@ -32,7 +32,7 @@ export function RecurringTransfersView() {
 
   return (
     <div data-removal-scope tabIndex={-1} className="flex flex-col gap-2 outline-none">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between compact:flex-wrap compact:gap-2">
         <h3
           data-removal-heading
           tabIndex={-1}
@@ -43,6 +43,7 @@ export function RecurringTransfersView() {
         {!adding && (
           <Button
             size="sm"
+            className="compact:h-auto compact:max-w-full compact:whitespace-normal"
             // The locked form skips the one-off/recurring toggle, so this button
             // carries the toggle's own guard: a recurring transfer must be funded
             // from cash (adversarial review of 4d8.25.12).

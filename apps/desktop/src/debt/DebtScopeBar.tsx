@@ -46,14 +46,14 @@ export function DebtScopeBar({
 
   return (
     <div className="flex flex-col gap-2.5 rounded-lg border bg-card px-4 py-3.5">
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 compact:flex-wrap">
         <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Showing
         </span>
         {/* Chips wrap rather than scroll: a household with a dozen cards gets a taller bar,
             which is legible, instead of a horizontal scroller that hides part of the scope
             — and hiding part of the scope is the exact failure this control exists to fix. */}
-        <div className="flex flex-1 flex-wrap items-center gap-2">
+        <div className="flex flex-1 flex-wrap items-center gap-2 compact:min-w-0 compact:basis-full">
           {accounts.length === 0 ? (
             <span className="text-sm text-muted-foreground">No debts to scope yet.</span>
           ) : (
@@ -66,7 +66,7 @@ export function DebtScopeBar({
                   aria-pressed={on}
                   onClick={() => toggle(account.id)}
                   className={cn(
-                    "flex items-center gap-2 whitespace-nowrap rounded-full border py-1.5 pl-2.5 pr-3 text-sm transition-colors",
+                    "flex items-center gap-2 whitespace-nowrap rounded-full border py-1.5 pl-2.5 pr-3 text-sm transition-colors compact:h-auto compact:max-w-full compact:flex-wrap compact:whitespace-normal compact:text-left",
                     on
                       ? "border-primary/40 bg-primary/10 font-medium text-foreground"
                       : "border-border bg-transparent text-muted-foreground hover:bg-muted",
@@ -76,7 +76,7 @@ export function DebtScopeBar({
                     aria-hidden
                     className={cn("size-3.5 shrink-0", on ? "opacity-100" : "opacity-0")}
                   />
-                  <span>
+                  <span className="compact:min-w-0 compact:[overflow-wrap:anywhere]">
                     {accountLabel(
                       { id: account.id, name: account.name, subtype: account.subtype },
                       labelled,
@@ -99,6 +99,7 @@ export function DebtScopeBar({
         <Button
           size="sm"
           variant="ghost"
+          className="compact:h-auto compact:max-w-full compact:whitespace-normal"
           disabled={all || accounts.length === 0}
           onClick={() => onChange([])}
         >
