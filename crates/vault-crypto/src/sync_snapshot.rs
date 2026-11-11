@@ -41,11 +41,11 @@ use std::path::{Path, PathBuf};
 
 use platform_traits::{CounterContext, RollbackWitness};
 use sha2::{Digest, Sha256};
-use sync_core::artifact::ArtifactId;
-use sync_core::envelope::ArtifactManifest;
+use sync_core::artifact::{ArtifactId, MAX_SNAPSHOT_CLOSURE};
+use sync_core::envelope::{binding_commitment, ArtifactManifest, BoundArtifact};
 use sync_core::header::{
-    encode_container, parse_container, ClearHeader, Fingerprint, ManifestCommitment, NonceDomain,
-    ObjectKind, ParsedContainer, OBJECT_SNAPSHOT,
+    encode_container, parse_container, BindingCommitment, ClearHeader, Fingerprint,
+    ManifestCommitment, NonceDomain, ObjectKind, ParsedContainer, OBJECT_SNAPSHOT,
 };
 use sync_core::membership::VerifiedState;
 use sync_core::snapshot::verify as verify_plaintext;
@@ -115,41 +115,73 @@ fn context_of(key: &EpochKey, fingerprint: &Fingerprint) -> CounterContext {
     }
 }
 
-/// The commitment to the closure a snapshot plaintext names (C.3 "Artifact manifest commitment"):
-/// the plaintext is verified as a whole (C.8 framing, manifest and file hashes), the manifest's
-/// artifact ids are decoded, and the commitment is taken over them in their ascending order. It is
-/// the value header field 17 must carry, the commitment of the empty closure included.
+/// The commitment to the closure a snapshot plaintext names (C.3 "Artifact manifest commitment"),
+/// the value header field 17 must carry: see [`closure_commitments_of`] for field 18 too.
 ///
 /// # Errors
-/// [`SnapshotSealError::PlaintextInvalid`] if the plaintext does not verify or its closure is not a
-/// strictly ascending list of at most 4096 ids.
+/// As [`closure_commitments_of`].
 pub fn closure_commitment_of(plaintext: &[u8]) -> Result<ManifestCommitment, SnapshotSealError> {
-    // `verify` already requires strictly ascending ids; the manifest type orders and refuses a
-    // duplicate or an oversized closure again, so the commitment is over a list that is.
-    Ok(ArtifactManifest::new(closure_bytes_of(plaintext)?)
-        .map_err(|_| SnapshotSealError::PlaintextInvalid)?
-        .commitment())
+    Ok(closure_commitments_of(plaintext)?.manifest)
 }
 
-fn closure_bytes_of(plaintext: &[u8]) -> Result<Vec<[u8; 32]>, SnapshotSealError> {
-    fn id_of(hex: &str) -> Option<[u8; 32]> {
-        if hex.len() != 64 {
-            return None;
-        }
-        let mut out = [0_u8; 32];
-        for (i, byte) in out.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()?;
-        }
-        Some(out)
+/// The two commitments a snapshot's closure fixes in the header (C.3, C.4): field 17, over the ids,
+/// and field 18, over the ciphertext hashes bound to them in the ids' order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosureCommitments {
+    /// Header field 17.
+    pub manifest: ManifestCommitment,
+    /// Header field 18.
+    pub binding: BindingCommitment,
+}
+
+fn hex32(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
     }
+    let mut out = [0_u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
+fn closure_bound_of(plaintext: &[u8]) -> Result<Vec<BoundArtifact>, SnapshotSealError> {
     let verified = verify_plaintext(plaintext).map_err(|_| SnapshotSealError::PlaintextInvalid)?;
     verified
         .manifest
         .artifacts
         .iter()
-        .map(|id| id_of(id))
+        .map(|entry| {
+            Some(BoundArtifact {
+                id: hex32(&entry.id)?,
+                ciphertext_sha256: hex32(&entry.ciphertext_sha256)?,
+            })
+        })
         .collect::<Option<Vec<_>>>()
         .ok_or(SnapshotSealError::PlaintextInvalid)
+}
+
+/// Both commitments of the closure a snapshot plaintext names: the plaintext is verified as a whole
+/// (C.8 framing, manifest and file hashes), the manifest's entries are decoded, and each commitment
+/// is taken over its list in the ids' strictly ascending order. They are the values header fields 17
+/// and 18 must carry, the commitments of the empty closure included.
+///
+/// # Errors
+/// [`SnapshotSealError::PlaintextInvalid`] if the plaintext does not verify or its closure is not a
+/// strictly ascending list of at most 4096 ids.
+pub fn closure_commitments_of(plaintext: &[u8]) -> Result<ClosureCommitments, SnapshotSealError> {
+    let bound = closure_bound_of(plaintext)?;
+    // `verify` already requires strictly ascending ids; the manifest type orders and refuses a
+    // duplicate or an oversized closure again, so the commitments are over lists that are.
+    let ids: Vec<[u8; 32]> = bound.iter().map(|entry| entry.id).collect();
+    let hashes: Vec<[u8; 32]> = bound.iter().map(|entry| entry.ciphertext_sha256).collect();
+    Ok(ClosureCommitments {
+        manifest: ArtifactManifest::new(ids)
+            .map_err(|_| SnapshotSealError::PlaintextInvalid)?
+            .commitment(),
+        binding: binding_commitment(&hashes, MAX_SNAPSHOT_CLOSURE)
+            .map_err(|_| SnapshotSealError::PlaintextInvalid)?,
+    })
 }
 
 /// The artifact ids a snapshot plaintext's manifest names, ascending: the closure sidecar that
@@ -157,11 +189,11 @@ fn closure_bytes_of(plaintext: &[u8]) -> Result<Vec<[u8; 32]>, SnapshotSealError
 /// artifacts into a genesis.
 ///
 /// # Errors
-/// [`SnapshotSealError::PlaintextInvalid`], as [`closure_commitment_of`].
+/// [`SnapshotSealError::PlaintextInvalid`], as [`closure_commitments_of`].
 pub fn closure_ids_of(plaintext: &[u8]) -> Result<Vec<ArtifactId>, SnapshotSealError> {
-    Ok(closure_bytes_of(plaintext)?
+    Ok(closure_bound_of(plaintext)?
         .into_iter()
-        .map(ArtifactId::from_derived)
+        .map(|entry| ArtifactId::from_derived(entry.id))
         .collect())
 }
 
@@ -181,15 +213,15 @@ pub fn seal_snapshot(
     if plaintext.len() > MAX_SNAPSHOT_PLAINTEXT {
         return Err(SnapshotSealError::SnapshotTooLarge);
     }
-    let commitment = closure_commitment_of(plaintext)?;
-    seal_with_commitment(key, sealer, fields, commitment, reservation, plaintext)
+    let commitments = closure_commitments_of(plaintext)?;
+    seal_with_commitment(key, sealer, fields, commitments, reservation, plaintext)
 }
 
 fn seal_with_commitment(
     key: &EpochKey,
     sealer: &SealerIdentity,
     fields: &SnapshotFields,
-    commitment: ManifestCommitment,
+    commitments: ClosureCommitments,
     reservation: CounterReservation,
     plaintext: &[u8],
 ) -> Result<Vec<u8>, SnapshotSealError> {
@@ -212,7 +244,8 @@ fn seal_with_commitment(
         vault_id: sealer.vault_id,
         key_epoch: key.key_epoch(),
         object: ObjectKind::Snapshot {
-            artifact_manifest_commitment: commitment,
+            artifact_manifest_commitment: commitments.manifest,
+            artifact_binding_commitment: commitments.binding,
         },
         object_id: fields.object_id,
         device_id: sealer.device_id,
@@ -265,6 +298,11 @@ pub enum SnapshotOpenFailure {
     /// Header field 17 is not the commitment of the closure the plaintext's manifest names.
     #[error("the header's closure commitment is not the manifest's")]
     ClosureCommitmentMismatch,
+    /// Header field 18 is not the binding commitment of the hashes the plaintext's manifest binds.
+    /// A snapshot like this is deterministically invalid at every opener, never "not
+    /// determinable" (C.8).
+    #[error("the header's binding commitment is not the manifest's")]
+    BindingCommitmentMismatch,
 }
 
 /// The receiver path for snapshots: the key is derived from the expected vault and epoch and the
@@ -325,13 +363,22 @@ impl<'a> SnapshotOpener<'a> {
         .map_err(|()| SnapshotOpenFailure::NotOpenable)?;
         // After authenticated decryption, the receiver checks the commitment of header field 17
         // against the plaintext's own manifest (C.4 receiver check 4, for a snapshot).
-        let commitment =
-            closure_commitment_of(&plaintext).map_err(|_| SnapshotOpenFailure::PlaintextInvalid)?;
+        let commitments = closure_commitments_of(&plaintext)
+            .map_err(|_| SnapshotOpenFailure::PlaintextInvalid)?;
         match header.object {
             ObjectKind::Snapshot {
                 artifact_manifest_commitment,
-            } if artifact_manifest_commitment == commitment => Ok(plaintext),
-            _ => Err(SnapshotOpenFailure::ClosureCommitmentMismatch),
+                artifact_binding_commitment,
+            } => {
+                if artifact_manifest_commitment != commitments.manifest {
+                    Err(SnapshotOpenFailure::ClosureCommitmentMismatch)
+                } else if artifact_binding_commitment != commitments.binding {
+                    Err(SnapshotOpenFailure::BindingCommitmentMismatch)
+                } else {
+                    Ok(plaintext)
+                }
+            }
+            ObjectKind::Envelope { .. } => Err(SnapshotOpenFailure::ClosureCommitmentMismatch),
         }
     }
 }
@@ -612,7 +659,7 @@ impl<S: RegisterStore, W: RollbackWitness> SnapshotSealer<'_, S, W> {
             return Err(SnapshotSealError::SnapshotTooLarge.into());
         }
         // A plaintext no replica could verify is refused before a counter is spent.
-        let commitment = closure_commitment_of(plaintext)?;
+        let commitments = closure_commitments_of(plaintext)?;
         let plaintext_sha256 = sha256(plaintext);
         if let Some(saved) = self.reusable(fields, &plaintext_sha256)? {
             return Ok(saved);
@@ -625,7 +672,7 @@ impl<S: RegisterStore, W: RollbackWitness> SnapshotSealer<'_, S, W> {
             self.key,
             self.sealer,
             fields,
-            commitment,
+            commitments,
             reservation,
             plaintext,
         )?;

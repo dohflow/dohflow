@@ -9,8 +9,8 @@ use sync_core::accepted::PushIdentity;
 use sync_core::accepted::{decide_push, InMemoryIndex, PushDecision};
 use sync_core::cbe::WireError;
 use sync_core::envelope::{
-    canonical_envelope_digest, check_envelope, ArtifactManifest, EnvelopePlaintext, IdempotencyKey,
-    ImmutableMeta, ReceiverError,
+    canonical_envelope_digest, check_envelope, EnvelopePlaintext, IdempotencyKey, ImmutableMeta,
+    ReceiverError,
 };
 use sync_core::header::{
     encode_container, parse_container, ClearHeader, Fingerprint, IdempotencyKeyTag,
@@ -136,6 +136,7 @@ fn parts(dev: &Dev, command: u8, key_epoch: u64) -> (ClearHeader, EnvelopePlaint
             idempotency_key_tag: test_tag(&meta.idempotency_key),
             immutable_metadata_commitment: meta.commitment().unwrap(),
             artifact_manifest_commitment: None,
+            artifact_binding_commitment: None,
         },
         object_id: meta.command_id,
         device_id: dev.device_id,
@@ -150,7 +151,7 @@ fn parts(dev: &Dev, command: u8, key_epoch: u64) -> (ClearHeader, EnvelopePlaint
     let plaintext = EnvelopePlaintext {
         meta,
         write_set_hash: [0x44; 32],
-        delta_manifest: ArtifactManifest::new(vec![]).unwrap(),
+        delta_manifest: sync_core::envelope::BoundManifest::empty(),
         payload: b"{}".to_vec(),
     };
     (header, plaintext)
@@ -252,10 +253,13 @@ fn every_inconsistent_sealing_is_refused_with_its_reason_and_nothing_is_approved
             Box::new(|h, p| {
                 if let ObjectKind::Envelope {
                     artifact_manifest_commitment,
+                    artifact_binding_commitment,
                     ..
                 } = &mut h.object
                 {
+                    // Fields 17 and 18 travel together; the manifest check is the first to fail.
                     *artifact_manifest_commitment = Some(p.delta_manifest.commitment());
+                    *artifact_binding_commitment = Some(p.delta_manifest.binding());
                 }
             }),
             ReceiverError::ManifestCommitmentMismatch,
@@ -263,13 +267,21 @@ fn every_inconsistent_sealing_is_refused_with_its_reason_and_nothing_is_approved
         (
             "manifest commitment of the wrong manifest",
             Box::new(|h, p| {
-                p.delta_manifest = ArtifactManifest::new(vec![[7; 32]]).unwrap();
+                p.delta_manifest = sync_core::envelope::BoundManifest::new(vec![
+                    sync_core::envelope::BoundArtifact {
+                        id: [7; 32],
+                        ciphertext_sha256: [0x77; 32],
+                    },
+                ])
+                .unwrap();
                 if let ObjectKind::Envelope {
                     artifact_manifest_commitment,
+                    artifact_binding_commitment,
                     ..
                 } = &mut h.object
                 {
                     *artifact_manifest_commitment = Some(ManifestCommitment::from_derived([9; 32]));
+                    *artifact_binding_commitment = Some(p.delta_manifest.binding());
                 }
             }),
             ReceiverError::ManifestCommitmentMismatch,
@@ -372,6 +384,7 @@ fn the_service_parses_first_and_refuses_what_the_lookup_cannot_use() {
     let mut snapshot = header.clone();
     snapshot.object = ObjectKind::Snapshot {
         artifact_manifest_commitment: ManifestCommitment::from_derived([1; 32]),
+        artifact_binding_commitment: sync_core::header::BindingCommitment::from_derived([1; 32]),
     };
     assert_eq!(
         parse_push(&push_bytes(&snapshot), &VAULT),

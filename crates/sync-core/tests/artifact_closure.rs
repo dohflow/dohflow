@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 
 use sync_core::artifact::{ArtifactId, ArtifactKind, LogicalBinding, TransportPlaintext};
 use sync_core::artifact_closure::{
-    build_delta, check_batch_canonical, check_closure, check_delta, ArtifactDirectory, BuildError,
-    DeltaArtifact, LiveClosure, LogicalRef, Mismatch, PayloadRef, ReceiptState,
+    build_delta, check_batch_canonical, check_closure, check_delta, ArtifactDirectory,
+    BoundPlaintext, BuildError, DeltaArtifact, LiveClosure, LogicalRef, Mismatch, PayloadRef,
+    ReceiptState,
 };
 use sync_core::source_batch::{record_json, BatchRow, RecordRow, SourceBatch};
 
@@ -16,6 +17,16 @@ fn aid(n: u8) -> ArtifactId {
 }
 fn rid(n: u8) -> [u8; 16] {
     [n; 16]
+}
+
+/// The hash bound to artifact `id` in these tests.
+fn hash(id: u8) -> [u8; 32] {
+    [id ^ 0xff; 32]
+}
+fn durable(id: u8) -> ReceiptState {
+    ReceiptState::Durable {
+        ciphertext_sha256: hash(id),
+    }
 }
 
 fn part(id: u8, batch: u8, index: u32, count: u32, records: &[u8]) -> DeltaArtifact {
@@ -27,6 +38,7 @@ fn part(id: u8, batch: u8, index: u32, count: u32, records: &[u8]) -> DeltaArtif
             part_count: count,
         },
         records: records.iter().map(|r| rid(*r)).collect(),
+        ciphertext_sha256: hash(id),
     }
 }
 fn attachment(id: u8, attachment: u8) -> DeltaArtifact {
@@ -36,6 +48,7 @@ fn attachment(id: u8, attachment: u8) -> DeltaArtifact {
             attachment_id: rid(attachment),
         },
         records: Vec::new(),
+        ciphertext_sha256: hash(id),
     }
 }
 fn record(n: u8) -> PayloadRef {
@@ -184,7 +197,7 @@ fn an_attachment_bound_to_two_artifacts_in_one_delta_is_a_mismatch() {
 fn live_with(batch: u8, ids: &[u8]) -> LiveClosure {
     let mut live = LiveClosure::new();
     for id in ids {
-        live.insert(LogicalRef::Batch(rid(batch)), aid(*id));
+        live.insert(LogicalRef::Batch(rid(batch)), aid(*id), hash(*id));
     }
     live
 }
@@ -211,7 +224,7 @@ fn a_rebinding_of_a_live_batch_or_attachment_is_a_mismatch() {
         Ok(())
     );
     let mut live = LiveClosure::new();
-    live.insert(LogicalRef::Attachment(rid(7)), aid(12));
+    live.insert(LogicalRef::Attachment(rid(7)), aid(12), hash(12));
     assert_eq!(
         check_closure(&[att(7)], &[attachment(13, 7)], &live),
         Err(Mismatch::Rebinding(LogicalRef::Attachment(rid(7))))
@@ -285,14 +298,11 @@ fn directory() -> Directory {
     d.batch_of.insert(rid(2), rid(0xb1));
     d.artifacts.insert(
         (LogicalRef::Batch(rid(0xb1)), 1),
-        vec![
-            (aid(11), ReceiptState::Durable),
-            (aid(10), ReceiptState::Durable),
-        ],
+        vec![(aid(11), durable(11)), (aid(10), durable(10))],
     );
     d.artifacts.insert(
         (LogicalRef::Attachment(rid(7)), 1),
-        vec![(aid(12), ReceiptState::Durable)],
+        vec![(aid(12), durable(12))],
     );
     d
 }
@@ -310,6 +320,63 @@ fn a_delta_is_every_referenced_artifact_sorted_with_its_commitment() {
 }
 
 #[test]
+fn a_delta_binds_the_hash_each_receipt_recorded_and_commits_to_them_in_id_order() {
+    let built = build_delta(&directory(), &[record(1), record(2), att(7)], 1).unwrap();
+    let bound: Vec<([u8; 32], [u8; 32])> = built
+        .manifest()
+        .entries()
+        .iter()
+        .map(|e| (e.id, e.ciphertext_sha256))
+        .collect();
+    assert_eq!(
+        bound,
+        vec![
+            ([10; 32], hash(10)),
+            ([11; 32], hash(11)),
+            ([12; 32], hash(12))
+        ],
+        "each id carries the hash its receipt verified"
+    );
+    // Field 18 is present exactly when field 17 is, and is the commitment of those hashes.
+    assert_eq!(built.header_binding(), Some(built.manifest().binding()));
+    assert_eq!(
+        built.header_binding(),
+        Some(
+            sync_core::envelope::binding_commitment(&[hash(10), hash(11), hash(12)], 4096).unwrap()
+        )
+    );
+    let empty = build_delta(&directory(), &[], 1).unwrap();
+    assert_eq!(empty.header_commitment(), None);
+    assert_eq!(empty.header_binding(), None);
+}
+
+#[test]
+fn an_id_the_live_closure_holds_with_another_hash_is_a_mismatch_and_a_cache_is_not_consulted() {
+    // The live closure at the preceding position holds batch 0xb1 as {10} with hash(10); the delta
+    // binds the same id to a different hash.
+    let live = live_with(0xb1, &[10]);
+    let mut rebound = part(10, 0xb1, 0, 1, &[1]);
+    rebound.ciphertext_sha256 = [0x99; 32];
+    assert_eq!(
+        check_closure(&[record(1)], &[rebound.clone()], &live),
+        Err(Mismatch::HashDiffersFromLive(aid(10)))
+    );
+    // With the right hash it is fine, and with no live entry at all (a replica that tailed and kept a
+    // local copy under another hash holds a cache, not the live closure) there is nothing to differ
+    // from.
+    assert_eq!(
+        check_closure(&[record(1)], &[part(10, 0xb1, 0, 1, &[1])], &live),
+        Ok(())
+    );
+    assert_eq!(
+        check_closure(&[record(1)], &[rebound], &LiveClosure::new()),
+        Ok(())
+    );
+    assert_eq!(live.hash_of(&aid(10)), Some(hash(10)));
+    assert_eq!(live.hash_of(&aid(11)), None);
+}
+
+#[test]
 fn an_empty_delta_has_no_header_commitment() {
     let built = build_delta(&directory(), &[], 1).unwrap();
     assert!(built.manifest().is_empty());
@@ -321,10 +388,7 @@ fn a_reference_cannot_be_built_without_a_durable_receipt() {
     let mut d = directory();
     d.artifacts.insert(
         (LogicalRef::Batch(rid(0xb1)), 1),
-        vec![
-            (aid(10), ReceiptState::Durable),
-            (aid(11), ReceiptState::None),
-        ],
+        vec![(aid(10), durable(10)), (aid(11), ReceiptState::None)],
     );
     assert_eq!(
         build_delta(&d, &[record(1)], 1),
@@ -378,7 +442,12 @@ fn a_delta_over_the_envelope_bound_is_refused() {
         artifact[..4].copy_from_slice(&n.to_be_bytes());
         d.artifacts.insert(
             (LogicalRef::Attachment(attachment_id), 1),
-            vec![(ArtifactId::from_derived(artifact), ReceiptState::Durable)],
+            vec![(
+                ArtifactId::from_derived(artifact),
+                ReceiptState::Durable {
+                    ciphertext_sha256: [1; 32],
+                },
+            )],
         );
         refs.push(PayloadRef::Attachment(attachment_id));
     }
@@ -426,12 +495,15 @@ fn meta(index: u32, count: u32) -> Vec<u8> {
     .into_bytes()
 }
 
-fn plaintext<'a>(id: u8, metadata: &'a [u8], blob: &'a [u8]) -> TransportPlaintext<'a> {
-    TransportPlaintext {
-        artifact_id: aid(id),
-        kind: ArtifactKind::SourceBatchPart,
-        logical_metadata: metadata,
-        blob,
+fn plaintext<'a>(id: u8, metadata: &'a [u8], blob: &'a [u8]) -> BoundPlaintext<'a> {
+    BoundPlaintext {
+        plaintext: TransportPlaintext {
+            artifact_id: aid(id),
+            kind: ArtifactKind::SourceBatchPart,
+            logical_metadata: metadata,
+            blob,
+        },
+        ciphertext_sha256: hash(id),
     }
 }
 
@@ -454,7 +526,10 @@ fn a_real_batch_part_builds_its_stage_9_input_with_its_record_ids() {
         blob: b"x",
     };
     assert_eq!(
-        DeltaArtifact::from_plaintext(&attachment),
+        DeltaArtifact::from_plaintext(&BoundPlaintext {
+            plaintext: attachment,
+            ciphertext_sha256: hash(12),
+        }),
         Ok(self::attachment(12, 7))
     );
 }
@@ -569,7 +644,13 @@ fn an_authenticated_artifact_with_metadata_naming_no_binding_is_a_mismatch() {
         logical_metadata: br#"{"mime_type":"text/plain"}"#,
         blob: b"x",
     };
-    assert_eq!(DeltaArtifact::from_plaintext(&attachment), bad);
+    assert_eq!(
+        DeltaArtifact::from_plaintext(&BoundPlaintext {
+            plaintext: attachment,
+            ciphertext_sha256: hash(10),
+        }),
+        bad
+    );
 }
 
 // ---- T1: a batch is its canonical split --------------------------------------------------------------
@@ -615,7 +696,7 @@ fn delta_of(blobs: &[Vec<u8>]) -> Vec<(u8, Vec<u8>, Vec<u8>)> {
 
 fn verdict(refs: &[PayloadRef], blobs: &[Vec<u8>]) -> Result<(), Mismatch> {
     let owned = delta_of(blobs);
-    let plaintexts: Vec<TransportPlaintext<'_>> = owned
+    let plaintexts: Vec<BoundPlaintext<'_>> = owned
         .iter()
         .map(|(id, metadata, blob)| plaintext(*id, metadata, blob))
         .collect();
@@ -727,7 +808,7 @@ fn a_record_held_by_a_delta_batch_and_a_different_live_batch_is_a_mismatch() {
     // The same batch re-referenced holds the same records: fine.
     let mut live = LiveClosure::new();
     live.insert_record(rid(0xb1), rid(1));
-    live.insert(LogicalRef::Batch(rid(0xb1)), aid(10));
+    live.insert(LogicalRef::Batch(rid(0xb1)), aid(10), hash(10));
     assert_eq!(
         check_closure(&[record(1)], &[part(10, 0xb1, 0, 1, &[1])], &live),
         Ok(())
@@ -770,7 +851,7 @@ fn a_canonical_batch_passes_whatever_order_its_parts_arrive_in() {
     let mut rotated = delta_of(&blobs);
     rotated.rotate_left(1);
     for owned in [reversed, rotated] {
-        let plaintexts: Vec<TransportPlaintext<'_>> = owned
+        let plaintexts: Vec<BoundPlaintext<'_>> = owned
             .iter()
             .map(|(id, metadata, blob)| plaintext(*id, metadata, blob))
             .collect();

@@ -1300,7 +1300,8 @@ follow.
 Decision 1's class-1b closure describes an artifact's id at its first publication only. This addendum
 records three choices that the SYNC-2c artifact work (`personal-cfo-0g528.2`) depends on, before any
 code does. They are engineering within Decision 9's epoch design; nothing here is business-sensitive
-(ADR 0082, public tier). The bytes are specified in vault-format.md C.3, C.8 and C.9 (spec-version 32).
+(ADR 0082, public tier). The bytes are specified in vault-format.md C.3, C.4, C.8 and C.9 (spec-version 32; decisions 4 and 5
+below, spec-version 38).
 
 1. **First-publication ids and chained re-address ids.** The first id keeps the formula above, with
    its input pinned as the **raw 32 bytes** of the local address (C.3), not the text of the hex form
@@ -1327,6 +1328,31 @@ code does. They are engineering within Decision 9's epoch design; nothing here i
    equal the payload's references. A manifest is a sorted list of ids with no logical binding, so a lazy
    fetch cannot find the object a row needs; lazy attachment fetch needs an encrypted binding from a
    logical reference to an id, which is a format change and is deferred.
+
+4. **Stage 9's verdict classes, and the batch rules (2026-11-06, S2c part 2).** The closure check of
+   Addendum D's recovery rules must give every replica the same verdict, and the part 1 work found
+   cases where it did not. (a) A batch is valid only as its canonical split, so a deterministic defect
+   of a batch (two parts carrying one record, a part that does not decode, an empty part, records out of
+   order, an over-large or non-greedy part) is a verdict of the envelope, never a materialization
+   failure; a record id held by two batches of the delta, or by a delta batch and a different live batch,
+   likewise. (b) The materializer judges against the live closure at the preceding position, never
+   against which rows a replica happens to hold: a tailing replica and one bootstrapped at that position
+   must end with equal state. (c) Materialization fails only for a reason local to the device.
+5. **A ciphertext binding in the sealed header.** Without it, one member acting alone can reference an
+   id whose stored bytes fail the outer AEAD: every replica then sees "not determinable" forever, so no
+   void can be honored and the vault halts, which breaks Addendum D rule 3 (a malicious member cannot
+   block recovery). Binding a single pair commitment into field 17 was rejected: at the point where a
+   closure sidecar is staged some receipts may not exist yet, and one commitment over id and hash pairs
+   could not tell a wrong id list (`MalformedObject`) from a wrong hash (`ArtifactBindingMismatch`).
+   So field 17 stays the commitment over the ids, and a **separate** header field 18 commits to the
+   `ciphertext_sha256` of each artifact in the ids' order, for envelopes and snapshots alike. The ids
+   and hashes travel only in the encrypted delta manifest and `manifest.json`, so the sidecar and its
+   bounds are unchanged. Verdicts: bytes that do not hash to the bound value are not determinable (a
+   service or transport fault); bytes that do, and fail the AEAD or the descriptor, are the producer's
+   fault and voidable. This also closes the collusion residual Addendum I recorded in decision 3. The
+   binding is one sync-core function that the service calls as well (`personal-cfo-v98vd` AC31). The
+   cost is one header field: the container maxima in the protocol rise by 33 bytes and the C.4
+   vectors change, under spec-version 38 and `dohflow-engine-3`.
 
 Open (an owner question routed through `05-decisions`, not decided here): an artifact lost from the
 service and from every device blocks a revocation cutover permanently under C.9's rule that a closure

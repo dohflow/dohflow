@@ -145,7 +145,7 @@
           "body": {
             "part_size": "8388608",
             "sha256": "caf57dc46d804a42cb10d333b01f8e23ecbf8388f92103bfd4d6b243964b9683",
-            "size": "1073742104"
+            "size": "1073742137"
           },
           "credential": "A",
           "expect": {
@@ -164,7 +164,7 @@
           "body": {
             "part_size": "8388608",
             "sha256": "caf57dc46d804a42cb10d333b01f8e23ecbf8388f92103bfd4d6b243964b9683",
-            "size": "1073742105"
+            "size": "1073742138"
           },
           "credential": "A",
           "expect": {
@@ -1289,7 +1289,7 @@
           "body": {
             "part_size": "8388608",
             "sha256": "caf57dc46d804a42cb10d333b01f8e23ecbf8388f92103bfd4d6b243964b9683",
-            "size": "1073742105"
+            "size": "1073742138"
           },
           "conditions": {
             "writes_permitted": false

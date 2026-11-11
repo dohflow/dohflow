@@ -199,8 +199,84 @@ fn rewrap_attachments(
             new: new_storage_id.as_str().to_owned(),
         });
     }
+    // Storage ids are content-addressed, so a staged blob and an attachment holding the same bytes
+    // share one file: it is renamed once.
+    for rename in rewrap_staged_artifacts(&tx, old_dek, new_dek, blobs)? {
+        if !renames
+            .iter()
+            .any(|seen| seen.old == rename.old && seen.new == rename.new)
+        {
+            renames.push(rename);
+        }
+    }
     tx.commit()?;
     drop(conn);
+    Ok(renames)
+}
+
+/// Re-wrap and re-address the crypto fields a received attachment artifact has staged in
+/// `sync_artifacts` (personal-cfo-0g528.2, ADR 0083): until the attach command's `apply` creates the
+/// `attachments` row from them they are key material like an `attachments` row's, so nothing may
+/// stay wrapped under the retired key.
+fn rewrap_staged_artifacts(
+    tx: &rusqlite::Transaction<'_>,
+    old_dek: &Dek,
+    new_dek: &Dek,
+    blobs: &Path,
+) -> Result<Vec<BlobRename>, DbError> {
+    type Staged = (i64, Vec<u8>, String, Vec<u8>, Vec<u8>, Vec<u8>);
+    let rows: Vec<Staged> = {
+        let mut stmt = tx.prepare(
+            "SELECT key_epoch, sync_artifact_id, staged_storage_id, staged_wrapped_content_key,
+                    staged_content_key_nonce, staged_content_nonce
+               FROM sync_artifacts WHERE staged_storage_id IS NOT NULL
+              ORDER BY staged_storage_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut renames = Vec::with_capacity(rows.len());
+    for (epoch, artifact_id, old_storage_id, wrapped, key_nonce, content_nonce) in rows {
+        let wrapped = WrappedContentKey {
+            nonce: attachments::to_nonce(&key_nonce)?,
+            ciphertext: wrapped,
+        };
+        let content_key = vault_crypto::unwrap_content_key(old_dek, &wrapped)?;
+        let blob = attachments::read_blob(
+            blobs,
+            &old_storage_id,
+            attachments::to_nonce(&content_nonce)?,
+        )?;
+        let plaintext = Zeroizing::new(vault_crypto::decrypt_blob(&content_key, &blob)?);
+        let new_storage_id = vault_crypto::storage_id(new_dek, &plaintext);
+        let rewrapped: WrappedContentKey = vault_crypto::wrap_content_key(new_dek, &content_key)?;
+        tx.execute(
+            "UPDATE sync_artifacts
+                SET staged_storage_id = ?1, staged_wrapped_content_key = ?2,
+                    staged_content_key_nonce = ?3
+              WHERE key_epoch = ?4 AND sync_artifact_id = ?5",
+            params![
+                new_storage_id.as_str(),
+                rewrapped.ciphertext,
+                rewrapped.nonce.to_vec(),
+                epoch,
+                artifact_id
+            ],
+        )?;
+        renames.push(BlobRename {
+            old: old_storage_id,
+            new: new_storage_id.as_str().to_owned(),
+        });
+    }
     Ok(renames)
 }
 
@@ -239,15 +315,38 @@ pub fn verify_rekeyed_copy(
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
         rows.collect::<Result<_, _>>()?
     };
+    // Every blob a row names, an attachment's or a staged artifact's, must be present.
+    let blob_present = |storage_id: &str| -> Result<(), DbError> {
+        if blobs.join(storage_id).is_file() {
+            Ok(())
+        } else {
+            Err(DbError::InvalidCommand(
+                "rekeyed copy names a missing blob".to_owned(),
+            ))
+        }
+    };
     for (id, storage_id) in rows {
         let fields = attachments::crypto_fields(&conn, core_ledger::AttachmentId::from_uuid(id))?
             .ok_or(DbError::AttachmentNotFound)?;
         vault_crypto::unwrap_content_key(new_dek, &fields.wrapped)?;
-        if !blobs.join(&storage_id).is_file() {
-            return Err(DbError::InvalidCommand(
-                "rekeyed copy names a missing blob".to_owned(),
-            ));
-        }
+        blob_present(&storage_id)?;
+    }
+    // A received attachment's staged crypto fields are held to the same standard.
+    let staged: Vec<(String, Vec<u8>, Vec<u8>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT staged_storage_id, staged_wrapped_content_key, staged_content_key_nonce
+               FROM sync_artifacts WHERE staged_storage_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    for (storage_id, wrapped, key_nonce) in staged {
+        let wrapped = WrappedContentKey {
+            nonce: attachments::to_nonce(&key_nonce)?,
+            ciphertext: wrapped,
+        };
+        vault_crypto::unwrap_content_key(new_dek, &wrapped)?;
+        blob_present(&storage_id)?;
     }
     drop(conn);
     assert_no_side_files(copy)

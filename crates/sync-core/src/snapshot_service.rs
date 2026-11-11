@@ -112,6 +112,11 @@ pub enum ServiceError {
         /// The ids that lack one.
         missing: Vec<ArtifactId>,
     },
+    /// The header's binding commitment (field 18) is not the commitment of the stored ciphertexts'
+    /// SHA-256 values in the order of the closure sidecar (`ArtifactBindingMismatch`). Checked only
+    /// where every receipt is already required.
+    #[error("the artifact binding commitment does not match the stored ciphertexts")]
+    ArtifactBindingMismatch,
     /// A different byte string already exists for this snapshot id (`ObjectConflict`).
     #[error("a different object already exists at this address")]
     ObjectConflict,

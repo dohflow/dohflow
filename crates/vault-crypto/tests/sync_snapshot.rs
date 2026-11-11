@@ -76,6 +76,10 @@ fn empty_closure() -> ManifestCommitment {
     ArtifactManifest::new(Vec::new()).unwrap().commitment()
 }
 
+fn empty_binding() -> sync_core::header::BindingCommitment {
+    sync_core::envelope::binding_commitment(&[], 1 << 20).unwrap()
+}
+
 fn fields(object_id: u8, base_seq: u64) -> SnapshotFields {
     SnapshotFields {
         object_id: [object_id; 16],
@@ -146,7 +150,8 @@ fn a_snapshot_seals_and_opens_through_the_receiver_path() {
     assert_eq!(
         header.object,
         ObjectKind::Snapshot {
-            artifact_manifest_commitment: empty_closure()
+            artifact_manifest_commitment: empty_closure(),
+            artifact_binding_commitment: empty_binding(),
         }
     );
     assert_eq!(open(&key, &chain_state, &bytes).unwrap(), sample());
@@ -216,6 +221,7 @@ fn an_envelope_is_not_a_snapshot_and_a_snapshot_is_not_an_envelope() {
             idempotency_key_tag: IdempotencyKeyTag::from_derived([1; 32]),
             immutable_metadata_commitment: MetadataCommitment::from_derived([2; 32]),
             artifact_manifest_commitment: None,
+            artifact_binding_commitment: None,
         },
         object_id: [0x44; 16],
         device_id: a.device_id,
@@ -321,6 +327,20 @@ fn hand_sealed(
     commitment: ManifestCommitment,
     plaintext: &[u8],
 ) -> Vec<u8> {
+    // The binding is the plaintext's own, so a test about the manifest commitment has one defect.
+    let binding = vault_crypto::sync_snapshot::closure_commitments_of(plaintext)
+        .map_or_else(|_| empty_binding(), |c| c.binding);
+    hand_sealed_with(key, d, commitment, binding, plaintext)
+}
+
+/// As [`hand_sealed`], with both header commitments chosen by the caller.
+fn hand_sealed_with(
+    key: &EpochKey,
+    d: &common::Dev,
+    commitment: ManifestCommitment,
+    binding: sync_core::header::BindingCommitment,
+    plaintext: &[u8],
+) -> Vec<u8> {
     use aes_gcm::aead::{Aead, KeyInit, Payload};
     use aes_gcm::{Aes256Gcm, Key, Nonce};
     let id = identity(d);
@@ -330,6 +350,7 @@ fn hand_sealed(
         key_epoch: 1,
         object: ObjectKind::Snapshot {
             artifact_manifest_commitment: commitment,
+            artifact_binding_commitment: binding,
         },
         object_id: [0x55; 16],
         device_id: id.device_id,
@@ -377,7 +398,15 @@ fn header_field_17_is_the_commitment_of_the_closure_the_manifest_names() {
     assert_eq!(
         header.object,
         ObjectKind::Snapshot {
-            artifact_manifest_commitment: expected
+            artifact_manifest_commitment: expected,
+            artifact_binding_commitment: sync_core::envelope::binding_commitment(
+                &[
+                    common::bound(a).ciphertext_sha256,
+                    common::bound(b).ciphertext_sha256
+                ],
+                1 << 20
+            )
+            .unwrap(),
         }
     );
     assert_ne!(
@@ -395,8 +424,74 @@ fn header_field_17_is_the_commitment_of_the_closure_the_manifest_names() {
     assert_eq!(
         parse_container(&empty).unwrap().header.object,
         ObjectKind::Snapshot {
-            artifact_manifest_commitment: empty_closure()
+            artifact_manifest_commitment: empty_closure(),
+            artifact_binding_commitment: empty_binding(),
         }
+    );
+}
+
+#[test]
+fn the_receiver_refuses_a_header_whose_binding_commitment_is_not_the_manifests() {
+    use sync_core::envelope::binding_commitment;
+    use sync_core::header::BindingCommitment;
+    let c = chain();
+    let chain_state = state(&c);
+    let key = epoch_key(1);
+    let plaintext = common::snapshot_plaintext(&[[0x0a; 32], [0xb0; 32]], "two artifacts");
+    let right_manifest = ArtifactManifest::new(vec![[0x0a; 32], [0xb0; 32]])
+        .unwrap()
+        .commitment();
+    let hash_a = common::bound([0x0a; 32]).ciphertext_sha256;
+    let hash_b = common::bound([0xb0; 32]).ciphertext_sha256;
+    let right_binding = binding_commitment(&[hash_a, hash_b], 1 << 20).unwrap();
+
+    // Field 17 is right and field 18 is not: another hash, the hashes in the wrong order, one hash
+    // missing, the empty list's, and an arbitrary value. Each is deterministically invalid.
+    for wrong in [
+        binding_commitment(&[hash_a, [0x99; 32]], 1 << 20).unwrap(),
+        binding_commitment(&[hash_b, hash_a], 1 << 20).unwrap(),
+        binding_commitment(&[hash_a], 1 << 20).unwrap(),
+        empty_binding(),
+        BindingCommitment::from_derived([0; 32]),
+    ] {
+        assert_ne!(wrong, right_binding);
+        let forged = hand_sealed_with(&key, &c.a, right_manifest, wrong, &plaintext);
+        assert_eq!(
+            open(&key, &chain_state, &forged),
+            Err(SnapshotOpenFailure::BindingCommitmentMismatch)
+        );
+    }
+
+    // Both fields wrong: field 17 is judged first.
+    let forged = hand_sealed_with(
+        &key,
+        &c.a,
+        ManifestCommitment::from_derived([0; 32]),
+        BindingCommitment::from_derived([0; 32]),
+        &plaintext,
+    );
+    assert_eq!(
+        open(&key, &chain_state, &forged),
+        Err(SnapshotOpenFailure::ClosureCommitmentMismatch)
+    );
+
+    // Both right: the helper is a faithful sealer.
+    let honest = hand_sealed_with(&key, &c.a, right_manifest, right_binding, &plaintext);
+    assert_eq!(open(&key, &chain_state, &honest).unwrap(), plaintext);
+
+    // The empty closure binds to the empty list, and a binding for artifacts it does not name is
+    // refused.
+    let empty_plaintext = common::snapshot_plaintext(&[], "no artifacts");
+    let forged = hand_sealed_with(
+        &key,
+        &c.a,
+        empty_closure(),
+        binding_commitment(&[hash_a], 1 << 20).unwrap(),
+        &empty_plaintext,
+    );
+    assert_eq!(
+        open(&key, &chain_state, &forged),
+        Err(SnapshotOpenFailure::BindingCommitmentMismatch)
     );
 }
 
