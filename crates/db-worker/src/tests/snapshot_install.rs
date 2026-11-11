@@ -382,3 +382,28 @@ fn a_snapshot_that_needs_artifacts_installs_nothing() {
     ));
     assert_untouched(&conn);
 }
+
+#[test]
+fn an_installed_header_that_is_not_the_snapshots_installs_nothing() {
+    // A vault whose identity row is changed as it is written (a trigger stands in for any defect
+    // in the install's identity write) fails the proof on the header, not only on the tables.
+    for (column, value) in [
+        ("created_at", "'1999-01-01T00:00:00+00:00'"),
+        ("schema_version", "1"),
+    ] {
+        let (_dir, origin) = origin();
+        let verified = verify(&export(&origin)).unwrap();
+        let mut conn = replica();
+        conn.execute_batch(&format!(
+            "CREATE TEMP TRIGGER skew AFTER INSERT ON vault_metadata
+             BEGIN UPDATE vault_metadata SET {column} = {value}; END;"
+        ))
+        .unwrap();
+        let result = install_snapshot(&mut conn, vault_id(&origin), &verified);
+        assert!(
+            matches!(result, Err(InstallError::HeaderMismatch)),
+            "{column}: {result:?}"
+        );
+        assert_untouched(&conn);
+    }
+}

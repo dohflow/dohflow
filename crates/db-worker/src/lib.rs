@@ -96,6 +96,7 @@ mod schedule_sources;
 pub mod snapshot_install;
 mod spend_by_category;
 mod staged_import;
+pub mod sync_bootstrap;
 pub mod sync_enable;
 pub mod sync_genesis;
 pub mod sync_register;
@@ -1814,6 +1815,17 @@ enum KeyMaterial {
     Raw(std::sync::Arc<Dek>),
 }
 
+/// How [`DbWorker::bootstrap_with`] treats the vault it opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenMode {
+    /// An ordinary open or creation: a new vault is seeded, and the base image is reconciled.
+    Normal,
+    /// A rebase's scratch vault: a copy of the base image, which has no base image of its own.
+    Scratch,
+    /// A replica being born from a snapshot: its rows are installed, so nothing is seeded.
+    Replica,
+}
+
 /// The database worker. Cheap to share across threads behind an `Arc`.
 pub struct DbWorker {
     inner: Mutex<Inner>,
@@ -2015,7 +2027,7 @@ impl DbWorker {
         key: KeyMaterial,
         runner_lock: File,
     ) -> Result<Self, DbError> {
-        Self::bootstrap_with(path, conn, key, runner_lock, true)
+        Self::bootstrap_with(path, conn, key, runner_lock, OpenMode::Normal)
     }
 
     /// [`DbWorker::bootstrap`] for a rebase's scratch vault (personal-cfo-bxsbz.4): a copy of the
@@ -2026,7 +2038,19 @@ impl DbWorker {
         key: KeyMaterial,
         runner_lock: File,
     ) -> Result<Self, DbError> {
-        Self::bootstrap_with(path, conn, key, runner_lock, false)
+        Self::bootstrap_with(path, conn, key, runner_lock, OpenMode::Scratch)
+    }
+
+    /// [`DbWorker::bootstrap`] for the vault of a replica being born from a snapshot
+    /// (`personal-cfo-1cltt.5`): the snapshot's rows, identity included, are already installed, so
+    /// no seed is written, and a database with no identity is refused rather than given one.
+    pub(crate) fn bootstrap_replica_vault(
+        path: PathBuf,
+        conn: Connection,
+        key: KeyMaterial,
+        runner_lock: File,
+    ) -> Result<Self, DbError> {
+        Self::bootstrap_with(path, conn, key, runner_lock, OpenMode::Replica)
     }
 
     fn bootstrap_with(
@@ -2034,11 +2058,24 @@ impl DbWorker {
         mut conn: Connection,
         key: KeyMaterial,
         runner_lock: File,
-        reconcile_base: bool,
+        mode: OpenMode,
     ) -> Result<Self, DbError> {
+        let reconcile_base = mode != OpenMode::Scratch;
         migrations::run_migrations(&mut conn)?;
         let node_id = ensure_node_id(&conn)?;
-        create_vault_rows_if_new(&mut conn)?;
+        if mode == OpenMode::Replica {
+            let has_identity: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM vault_metadata WHERE singleton = 1)",
+                [],
+                |r| r.get(0),
+            )?;
+            if !has_identity {
+                return Err(DbError::UnsupportedSchema);
+            }
+            advance_schema_stamp(&conn, migrations::CURRENT_VERSION)?;
+        } else {
+            create_vault_rows_if_new(&mut conn)?;
+        }
         // The write-set capture (vault-format.md C.1.5): temp triggers on the writer
         // connection, installed after the migrations and the seed writes so neither is captured.
         write_set::install(&conn)?;
@@ -5671,6 +5708,18 @@ const DEFAULT_KDF_PARALLELISM: i64 = 1;
 /// every open even after migrating cleanly (personal-cfo-4d8.27.1.3).
 /// Idempotent across re-opens. Returns the new vault's id and creation time when THIS call
 /// created the row, and `None` for an existing vault: the caller seeds only on `Some`.
+/// Advance the write-once stamp to the version we just migrated to. Only move it FORWARD.
+/// Existing-vault open refuses a higher stamp before bootstrap; this predicate also prevents
+/// accidental down-stamping by any future internal caller.
+fn advance_schema_stamp(conn: &Connection, schema_version: i64) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE vault_metadata SET schema_version = ?1
+         WHERE singleton = 1 AND schema_version < ?1",
+        params![schema_version],
+    )?;
+    Ok(())
+}
+
 fn ensure_vault_metadata(
     conn: &Connection,
     schema_version: i64,
@@ -5681,15 +5730,7 @@ fn ensure_vault_metadata(
         |r| r.get(0),
     )?;
     if exists {
-        // Advance the write-once stamp to the version we just migrated to. Only
-        // move it FORWARD. Existing-vault open refuses a higher stamp before
-        // bootstrap; this predicate also prevents accidental down-stamping by
-        // any future internal caller.
-        conn.execute(
-            "UPDATE vault_metadata SET schema_version = ?1
-             WHERE singleton = 1 AND schema_version < ?1",
-            params![schema_version],
-        )?;
+        advance_schema_stamp(conn, schema_version)?;
         return Ok(None);
     }
     let (vault_id, created_at) = FIXED_VAULT_IDENTITY
