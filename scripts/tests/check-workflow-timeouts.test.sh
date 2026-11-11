@@ -141,6 +141,25 @@ YML
 )"
 check "NEGATIVE: the last job in a file is checked too" fails_with "$LAST_JOB" 'job "last" has no timeout-minutes'
 
+COMMENTED_JOBS="$(fixture commentedjobs <<'YML'
+name: ci
+jobs:  # the jobs
+  forgotten:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: sudo apt-get update
+YML
+)"
+check "NEGATIVE: a trailing comment after jobs: does not hide the file (no timeout, direct apt-get)" fails_with "$COMMENTED_JOBS" 'job "forgotten" has no timeout-minutes'
+check "NEGATIVE: ...and its direct apt-get is reported too" fails_with "$COMMENTED_JOBS" 'calls apt-get directly'
+
+NO_JOBS="$(fixture nojobs <<'YML'
+name: ci
+on: push
+YML
+)"
+check "NEGATIVE: a file with no jobs found fails (a file the guard did not understand is not clean)" fails_with "$NO_JOBS" 'no jobs found'
+
 mkdir -p "$TMP/empty"
 check "an empty directory is a usage error (exit 2), not a pass" bash -c "bash '$GUARD' '$TMP/empty' >/dev/null 2>&1; [ \$? -eq 2 ]"
 check "a missing directory is a usage error (exit 2)" bash -c "bash '$GUARD' '$TMP/nope' >/dev/null 2>&1; [ \$? -eq 2 ]"

@@ -51,7 +51,7 @@ for dir in "${dirs[@]}"; do
         }
         job = ""; has_timeout = 0; reusable = 0
       }
-      /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
+      /^jobs:[[:space:]]*(#.*)?$/ { in_jobs = 1; next }
       in_jobs && /^[^[:space:]#]/ { finish(); in_jobs = 0 }
       !in_jobs { next }
       /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ { finish(); job = $1; sub(/:$/, "", job); next }
@@ -61,7 +61,12 @@ for dir in "${dirs[@]}"; do
       /^        timeout-minutes:[[:space:]]*[^[:space:]#]/ { step_timeout = 1 }
       /ci-apt-install\.sh/ && $0 !~ /^[[:space:]]*#/ { step_apt = 1 }
       /apt-get/ && $0 !~ /^[[:space:]]*#/ { printf "%s:%d: calls apt-get directly (use scripts/ci-apt-install.sh)\n", file, NR }
-      END { finish(); printf "JOBS %d\n", jobs > "/dev/stderr" }
+      END {
+        finish()
+        # A file this reads as having no jobs is a file it did not understand, never a clean one.
+        if (jobs == 0) printf "%s: no jobs found (the guard reads `jobs:` at column 0 and jobs at two spaces of indent)\n", file
+        printf "JOBS %d\n", jobs > "/dev/stderr"
+      }
     ' "$file" 2>"${TMPDIR:-/tmp}/.cwt.$$")" || true
     n="$(sed -n 's/^JOBS //p' "${TMPDIR:-/tmp}/.cwt.$$")"
     rm -f "${TMPDIR:-/tmp}/.cwt.$$"

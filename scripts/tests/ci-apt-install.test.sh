@@ -37,8 +37,8 @@ cat >"$TMP/bin/apt-get" <<'STUB'
 #!/usr/bin/env bash
 echo "apt-get $*" >>"$APT_LOG"
 [ "$MODE" = "ok" ] && exit 0
-if [ "$MODE" = "slow" ] && grep -q 'azure.archive.ubuntu.com' "$SOURCES_FILE"; then sleep 0.7; exit 0; fi
-if grep -q 'azure.archive.ubuntu.com' "$SOURCES_FILE" || [ "$MODE" = "alldown" ]; then
+if [ "$MODE" = "slow" ] && grep -q -e 'azure.archive.ubuntu.com' -e 'mirror+file:' "$SOURCES_FILE"; then sleep 0.7; exit 0; fi
+if grep -q -e 'azure.archive.ubuntu.com' -e 'mirror+file:' "$SOURCES_FILE" || [ "$MODE" = "alldown" ]; then
   if [ "$MODE" = "hang" ]; then exec sleep 30 >/dev/null 2>&1; fi
   echo "E: Temporary failure resolving 'azure.archive.ubuntu.com'" >&2
   exit 100
@@ -58,10 +58,26 @@ run_case() {
   local name="$1" mode="$2"
   shift 2
   mkdir -p "$TMP/$name"
-  printf 'URIs: http://azure.archive.ubuntu.com/ubuntu/\nURIs: http://security.ubuntu.com/ubuntu/\n' >"$TMP/$name/ubuntu.sources"
+  # The hosted runner's real format (the green run 42428726200's log starts `Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist`, and the
+  # outage run 43060117420 fails on mirror+file URIs): a deb822 ubuntu.sources whose archive stanza names the mirror INDIRECTLY, a
+  # plain security stanza, and apt-mirrors.txt holding the real hosts.
+  cat >"$TMP/$name/ubuntu.sources" <<'SRC'
+Types: deb
+URIs: mirror+file:/etc/apt/apt-mirrors.txt
+Suites: noble noble-updates noble-backports
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: http://security.ubuntu.com/ubuntu/
+Suites: noble-security
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+SRC
+  printf 'http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\nhttp://archive.ubuntu.com/ubuntu/\tpriority:2\n' >"$TMP/$name/apt-mirrors.txt"
   : >"$TMP/$name/apt.log"
   OUT="$(PATH="$TMP/bin:$PATH" APT_LOG="$TMP/$name/apt.log" SOURCES_FILE="$TMP/$name/ubuntu.sources" MODE="$mode" \
-    CI_APT_SUDO="" CI_APT_SOURCES="$TMP/$name/ubuntu.sources" CI_APT_ATTEMPT_SECONDS="${ATTEMPT_SECONDS:-5}" \
+    CI_APT_SUDO="" CI_APT_SOURCES="$TMP/$name/ubuntu.sources $TMP/$name/apt-mirrors.txt" CI_APT_ATTEMPT_SECONDS="${ATTEMPT_SECONDS:-5}" \
     bash "$SCRIPT" "$@" 2>&1)"
   CODE=$?
 }
@@ -72,7 +88,7 @@ out_has() { grep -Fq -- "$1" <<<"$OUT"; }
 run_case ok ok libfoo xvfb
 check "default mirror up: exit 0" [ "$CODE" -eq 0 ]
 check "default mirror up: the log says the default mirror served it" out_has "default (the runner's own mirror) served"
-check "default mirror up: sources untouched" grep -q 'azure.archive.ubuntu.com' "$TMP/ok/ubuntu.sources"
+check "default mirror up: sources untouched (still the indirect mirror+file URI)" grep -q 'mirror+file:/etc/apt/apt-mirrors.txt' "$TMP/ok/ubuntu.sources"
 check "apt is asked for retries and a connection timeout" grep -q 'Acquire::Retries=3.*Acquire::http::Timeout=20' "$TMP/ok/apt.log"
 check "the packages reach apt-get install" grep -q 'install -y libfoo xvfb' "$TMP/ok/apt.log"
 
@@ -81,7 +97,10 @@ run_case fallback fail libfoo
 check "FALLBACK: default mirror down, canonical up: exit 0" [ "$CODE" -eq 0 ]
 check "FALLBACK: the log says the fallback served it" out_has "FALLBACK) served the install"
 check "FALLBACK: the warning names the switch" out_has "switching to archive.ubuntu.com and security.ubuntu.com"
-check "FALLBACK: the sources now name archive.ubuntu.com, not the azure mirror" bash -c "! grep -q azure '$TMP/fallback/ubuntu.sources' && grep -q 'http://archive.ubuntu.com/ubuntu/' '$TMP/fallback/ubuntu.sources'"
+check "FALLBACK: the runner's mirror+file URI is replaced by http://archive.ubuntu.com/ubuntu/" bash -c "! grep -q 'mirror+file' '$TMP/fallback/ubuntu.sources' && grep -q 'URIs: http://archive.ubuntu.com/ubuntu/' '$TMP/fallback/ubuntu.sources'"
+check "FALLBACK: the azure host in apt-mirrors.txt is rewritten too" bash -c "! grep -q azure '$TMP/fallback/apt-mirrors.txt'"
+check "FALLBACK: the log shows the URIs apt will use now" out_has "URIs: http://archive.ubuntu.com/ubuntu/"
+check "FALLBACK: the security stanza keeps its suites and stays on security.ubuntu.com" grep -q 'Suites: noble-security' "$TMP/fallback/ubuntu.sources"
 check "FALLBACK: the security mirror stays security.ubuntu.com" grep -q 'http://security.ubuntu.com/ubuntu/' "$TMP/fallback/ubuntu.sources"
 check "FALLBACK: apt ran update twice (the failed attempt, then the retry on the new mirror)" [ "$(logged fallback ' update')" -eq 2 ]
 
@@ -115,6 +134,13 @@ check "the default attempt cap is a number (found '${DEFAULT_CAP}')" [ -n "$DEFA
 STEP_MINUTES=10
 check "two default attempts plus 60 s fit the ${STEP_MINUTES}-minute step timeout" [ $((2 * ${DEFAULT_CAP:-9999} + 60)) -le $((STEP_MINUTES * 60)) ]
 # (That every apt step carries timeout-minutes is the guard's job: scripts/check-workflow-timeouts.sh.)
+
+# 4c. Without the test hook, the script rewrites the three files a hosted runner uses.
+# shellcheck disable=SC2016
+DEFAULT_SOURCES="$(grep '^sources="${CI_APT_SOURCES:-' "$SCRIPT")"
+for file in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt; do
+  check "the default rewrite list names $file" grep -Fq -- "$file" <<<"$DEFAULT_SOURCES"
+done
 
 # 5. No packages is a usage error.
 bash "$SCRIPT" >/dev/null 2>&1
