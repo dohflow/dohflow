@@ -61,3 +61,9 @@ export const COMPACT_FULLSCREEN = [
   "compact:border-0",
   "compact:pt-(--safe-area-top)",
 ].join(" ");
+
+/// On a phone every button inside a surface may wrap its label and grow taller (personal-cfo-i93n3.28 slice 8). The shared `Button` is nowrap
+/// and fixed-height, so a long label ("Run the setup guide again", "Split transaction") runs past the screen at the largest text size.
+/// One rule on the surface's root instead of a class at every call site; the 44 pt floor in `globals.css` (a `min-height`, unlayered) still holds.
+export const COMPACT_WRAP_BUTTONS =
+  "compact:[&_button]:h-auto compact:[&_button]:max-w-full compact:[&_button]:whitespace-normal";

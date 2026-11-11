@@ -210,6 +210,16 @@ describe("TransactionDetailDrawer", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /attach document/i })).toBeEnabled());
   });
 
+  // personal-cfo-i93n3.28 slice 8: every button in the drawer may wrap its label on a phone (one rule on the panel; the 44 pt floor holds).
+  it("lets every button in the drawer wrap on a phone (one panel rule), and nothing wraps unconditionally", async () => {
+    renderDrawer();
+    const panel = await screen.findByRole("dialog", { name: "Transaction detail" });
+    for (const rule of ["compact:[&_button]:h-auto", "compact:[&_button]:max-w-full", "compact:[&_button]:whitespace-normal"]) {
+      expect(panel.className).toContain(rule);
+    }
+    expect(panel.className).not.toMatch(/(^|\s)\[&_button\]/);
+  });
+
   it("lists attachments with their name and size", async () => {
     mocks.transactionAttachments.mockResolvedValue(ok([doc()]));
     renderDrawer();
