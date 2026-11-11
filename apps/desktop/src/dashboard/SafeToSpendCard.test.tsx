@@ -43,6 +43,16 @@ describe("SafeToSpendCard", () => {
     expect(screen.getByText(/\$1,800\.00 committed/)).toBeInTheDocument();
   });
 
+  // personal-cfo-i93n3.27 (found by measuring the populated Dashboard at the largest text size): the hero figure never outgrows the
+  // window on a phone; a desktop window keeps its size.
+  it("caps the hero figure to the window width on a phone and wraps its breakdown line (i93n3.27)", async () => {
+    mocks.cashAvailability.mockResolvedValue(ok(availability()));
+    renderWithClient(<SafeToSpendCard />);
+    const figure = await screen.findByText("$3,200.00");
+    expect(figure).toHaveClass("text-4xl", "compact:text-[min(2.25rem,9vw)]", "compact:[overflow-wrap:anywhere]");
+    expect(screen.getByText(/\$5,000\.00 available/)).toHaveClass("compact:[overflow-wrap:anywhere]");
+  });
+
   it("warns when net headroom is below the household floor", async () => {
     mocks.cashAvailability.mockResolvedValue(
       ok(availability({ net_headroom: usd(50_000), floor: usd(100_000), below_floor: true })),
@@ -51,6 +61,8 @@ describe("SafeToSpendCard", () => {
 
     const alert = await screen.findByText(/below your \$1,000\.00 floor/i);
     expect(alert).toBeInTheDocument();
+    // On a phone the message may shrink to the window and break long words (i93n3.27), above-floor pill included.
+    expect(alert.parentElement).toHaveClass("compact:max-w-full", "compact:[overflow-wrap:anywhere]");
   });
 
   it("reassures when headroom is above the floor", async () => {
@@ -59,9 +71,9 @@ describe("SafeToSpendCard", () => {
     );
     renderWithClient(<SafeToSpendCard />);
 
-    expect(
-      await screen.findByText(/above your \$1,000\.00 floor/i),
-    ).toBeInTheDocument();
+    const pill = await screen.findByText(/above your \$1,000\.00 floor/i);
+    expect(pill).toBeInTheDocument();
+    expect(pill.parentElement).toHaveClass("compact:max-w-full", "compact:[overflow-wrap:anywhere]");
   });
 
   it("hides the floor line when no floor is set", async () => {

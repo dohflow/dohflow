@@ -65,13 +65,13 @@ function SafeToSpend({ availability }: { availability: CashAvailabilityDto }) {
       <div className="flex flex-col gap-1">
         <span
           className={cn(
-            "text-4xl font-semibold tabular-nums tracking-tight",
+            "text-4xl font-semibold tabular-nums tracking-tight compact:text-[min(2.25rem,9vw)] compact:[overflow-wrap:anywhere]",
             headroomColor,
           )}
         >
           {formatMoney(net_headroom)}
         </span>
-        <span className="text-sm tabular-nums text-muted-foreground">
+        <span className="text-sm tabular-nums text-muted-foreground compact:[overflow-wrap:anywhere]">
           {formatMoney(net_available)} available − {formatMoney(net_committed)}{" "}
           committed
         </span>
@@ -79,12 +79,12 @@ function SafeToSpend({ availability }: { availability: CashAvailabilityDto }) {
 
       {hasFloor &&
         (below_floor ? (
-          <div className="flex items-center gap-2 self-start rounded-md border border-warning/30 bg-warning/10 px-3 py-1.5 text-sm text-warning">
+          <div className="flex items-center gap-2 self-start rounded-md border border-warning/30 bg-warning/10 px-3 py-1.5 text-sm text-warning compact:max-w-full compact:[overflow-wrap:anywhere]">
             <AlertTriangle className="size-4 shrink-0" aria-hidden />
             <span>Below your {formatMoney(floor)} floor.</span>
           </div>
         ) : (
-          <div className="flex items-center gap-2 self-start rounded-md border border-gain/25 bg-gain/10 px-3 py-1.5 text-sm text-gain">
+          <div className="flex items-center gap-2 self-start rounded-md border border-gain/25 bg-gain/10 px-3 py-1.5 text-sm text-gain compact:max-w-full compact:[overflow-wrap:anywhere]">
             <ShieldCheck className="size-4 shrink-0" aria-hidden />
             <span>Above your {formatMoney(floor)} floor.</span>
           </div>

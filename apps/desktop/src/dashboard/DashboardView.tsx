@@ -114,7 +114,7 @@ export function DashboardView({
 
       <ReadinessCard />
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-3 compact:grid-cols-1">
         <StatCard label="Liquid cash today" value={formatMoney(starting_balance)} />
         <StatCard
           label="Lowest projected"
@@ -192,14 +192,16 @@ function StatCard({
         </span>
         <span
           className={cn(
-            "text-2xl font-semibold tabular-nums tracking-tight",
+            // On a phone a figure never outgrows the window: the smaller of its size and a share of the window width, so at the
+            // largest text size it stays on one line instead of widening its card (and the page) past the screen.
+            "text-2xl font-semibold tabular-nums tracking-tight compact:text-[min(1.5rem,7.5vw)] compact:[overflow-wrap:anywhere]",
             negative && "text-loss",
           )}
         >
           {value}
         </span>
         {caption && (
-          <span className="text-xs text-muted-foreground">{caption}</span>
+          <span className="text-xs text-muted-foreground compact:[overflow-wrap:anywhere]">{caption}</span>
         )}
       </CardContent>
     </Card>
