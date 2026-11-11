@@ -251,50 +251,84 @@ fn object(members: Vec<(&str, Node)>) -> Node {
     )
 }
 
-fn batch_node(b: &BatchRow) -> Node {
+// Each encoder below destructures its row WITHOUT `..`, so a column added to the struct is a compile
+// error here until it is encoded (and classified in the column lists above), never a silent omission.
+fn batch_node(row: &BatchRow) -> Node {
+    let BatchRow {
+        id,
+        source_type,
+        source_name,
+        file_fingerprint,
+        parser_version,
+        summary_json,
+        imported_at,
+        created_at,
+        connector_connection_id,
+    } = row;
     object(vec![
-        ("id", uuid(&b.id)),
-        ("source_type", text(&b.source_type)),
-        ("source_name", opt_text(b.source_name.as_ref())),
-        ("file_fingerprint", opt_text(b.file_fingerprint.as_ref())),
-        ("parser_version", opt_text(b.parser_version.as_ref())),
-        ("summary_json", opt_text(b.summary_json.as_ref())),
-        ("imported_at", opt_text(b.imported_at.as_ref())),
-        ("created_at", text(&b.created_at)),
+        ("id", uuid(id)),
+        ("source_type", text(source_type)),
+        ("source_name", opt_text(source_name.as_ref())),
+        ("file_fingerprint", opt_text(file_fingerprint.as_ref())),
+        ("parser_version", opt_text(parser_version.as_ref())),
+        ("summary_json", opt_text(summary_json.as_ref())),
+        ("imported_at", opt_text(imported_at.as_ref())),
+        ("created_at", text(created_at)),
         (
             "connector_connection_id",
-            b.connector_connection_id.as_ref().map_or(Node::Null, uuid),
+            connector_connection_id.as_ref().map_or(Node::Null, uuid),
         ),
     ])
 }
 
-fn record_node(r: &RecordRow) -> Node {
+fn record_node(row: &RecordRow) -> Node {
+    let RecordRow {
+        id,
+        source_batch_id,
+        external_id,
+        source_hash,
+        normalized_json,
+        parse_confidence_bps,
+        created_at,
+    } = row;
     object(vec![
-        ("id", uuid(&r.id)),
-        ("source_batch_id", uuid(&r.source_batch_id)),
-        ("external_id", opt_text(r.external_id.as_ref())),
-        ("source_hash", text(&r.source_hash)),
-        ("normalized_json", text(&r.normalized_json)),
+        ("id", uuid(id)),
+        ("source_batch_id", uuid(source_batch_id)),
+        ("external_id", opt_text(external_id.as_ref())),
+        ("source_hash", text(source_hash)),
+        ("normalized_json", text(normalized_json)),
         (
             "parse_confidence_bps",
-            r.parse_confidence_bps.map_or(Node::Null, int),
+            parse_confidence_bps.map_or(Node::Null, int),
         ),
-        ("created_at", text(&r.created_at)),
+        ("created_at", text(created_at)),
     ])
 }
 
-fn run_node(r: &RunRow) -> Node {
+fn run_node(row: &RunRow) -> Node {
+    let RunRow {
+        id,
+        source_batch_id,
+        parser_name,
+        parser_version,
+        bytes_in,
+        records_out,
+        status,
+        limit_hit,
+        started_at,
+        finished_at,
+    } = row;
     object(vec![
-        ("id", uuid(&r.id)),
-        ("source_batch_id", uuid(&r.source_batch_id)),
-        ("parser_name", text(&r.parser_name)),
-        ("parser_version", text(&r.parser_version)),
-        ("bytes_in", int(r.bytes_in)),
-        ("records_out", int(r.records_out)),
-        ("status", text(&r.status)),
-        ("limit_hit", opt_text(r.limit_hit.as_ref())),
-        ("started_at", text(&r.started_at)),
-        ("finished_at", opt_text(r.finished_at.as_ref())),
+        ("id", uuid(id)),
+        ("source_batch_id", uuid(source_batch_id)),
+        ("parser_name", text(parser_name)),
+        ("parser_version", text(parser_version)),
+        ("bytes_in", int(*bytes_in)),
+        ("records_out", int(*records_out)),
+        ("status", text(status)),
+        ("limit_hit", opt_text(limit_hit.as_ref())),
+        ("started_at", text(started_at)),
+        ("finished_at", opt_text(finished_at.as_ref())),
     ])
 }
 

@@ -26,7 +26,7 @@ const VECTORS_PATH: &str = "../../docs/architecture/vectors/sync-service-snapsho
 const REGISTRY: &str = include_str!("../../../docs/architecture/sync-service-protocol.json");
 
 const MIB: u64 = 1024 * 1024;
-const MAX_SNAPSHOT: u64 = 1_073_742_104;
+const MAX_SNAPSHOT: u64 = 1_073_742_137;
 const MIN_PART: u64 = 5 * MIB;
 /// The operator limits the vectors use: a part and a single request both top out at 8 MiB.
 const PART_MAX: u64 = 8 * MIB;

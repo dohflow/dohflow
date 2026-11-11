@@ -7,11 +7,11 @@
 //! Scripted faults and hooks let a test lose a response (the request takes effect, the client sees
 //! `Unavailable`), advance the head under a publisher, halt a device and record every call.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Mutex;
 
 use sync_core::artifact::ArtifactId;
-use sync_core::envelope::ArtifactManifest;
+use sync_core::envelope::{binding_commitment, ArtifactManifest};
 use sync_core::header::{parse_container, ObjectKind, OBJECT_SNAPSHOT};
 use sync_core::membership::verify_chain;
 use sync_core::snapshot_service::{
@@ -53,7 +53,8 @@ struct State {
     vault: Option<Vault>,
     staged: HashMap<[u8; 16], Vec<u8>>,
     published: Vec<PublishedSnapshot>,
-    receipts: BTreeSet<ArtifactId>,
+    /// The durable receipts: each artifact id with the SHA-256 of the ciphertext the service holds.
+    receipts: BTreeMap<ArtifactId, [u8; 32]>,
     pins: BTreeSet<ArtifactId>,
     faults: VecDeque<Fault>,
     calls: Vec<&'static str>,
@@ -130,7 +131,17 @@ impl FakeSnapshotService {
 
     /// A client put this artifact (it has a durable receipt).
     pub fn receipt(&self, id: ArtifactId) {
-        self.state.lock().unwrap().receipts.insert(id);
+        // The hash a test binds by default is `common::bound`'s: derived from the id.
+        self.receipt_with_hash(id, [id.as_bytes()[0] ^ 0xff; 32]);
+    }
+
+    /// As [`Self::receipt`], with the ciphertext hash the service holds for the artifact.
+    pub fn receipt_with_hash(&self, id: ArtifactId, ciphertext_sha256: [u8; 32]) {
+        self.state
+            .lock()
+            .unwrap()
+            .receipts
+            .insert(id, ciphertext_sha256);
     }
 
     pub fn is_pinned(&self, id: &ArtifactId) -> bool {
@@ -271,6 +282,7 @@ impl SnapshotService for FakeSnapshotService {
             let parsed = parse_container(container).map_err(|_| ServiceError::MalformedObject)?;
             let ObjectKind::Snapshot {
                 artifact_manifest_commitment,
+                artifact_binding_commitment,
             } = &parsed.header.object
             else {
                 return Err(ServiceError::MalformedObject);
@@ -292,11 +304,22 @@ impl SnapshotService for FakeSnapshotService {
             }
             let missing: Vec<ArtifactId> = artifact_manifest
                 .iter()
-                .filter(|id| !state.receipts.contains(id))
+                .filter(|id| !state.receipts.contains_key(id))
                 .copied()
                 .collect();
             if !missing.is_empty() {
                 return Err(ServiceError::ArtifactMissing { missing });
+            }
+            // Every receipt is present, so the binding can be checked: field 18 commits to the
+            // stored ciphertext hashes in the sidecar's order.
+            let hashes: Vec<[u8; 32]> = artifact_manifest
+                .iter()
+                .map(|id| state.receipts[id])
+                .collect();
+            if binding_commitment(&hashes, 1 << 20).map_err(|_| ServiceError::MalformedObject)?
+                != *artifact_binding_commitment
+            {
+                return Err(ServiceError::ArtifactBindingMismatch);
             }
             // One transaction: the pins and the publication together, or nothing.
             let published = PublishedSnapshot {
@@ -344,6 +367,7 @@ impl SnapshotService for FakeSnapshotService {
             let parsed = parse_container(container).map_err(|_| ServiceError::MalformedObject)?;
             let ObjectKind::Snapshot {
                 artifact_manifest_commitment,
+                artifact_binding_commitment,
             } = &parsed.header.object
             else {
                 return Err(ServiceError::MalformedObject);
@@ -363,11 +387,21 @@ impl SnapshotService for FakeSnapshotService {
             let missing: Vec<ArtifactId> = install
                 .artifact_manifest
                 .iter()
-                .filter(|id| !state.receipts.contains(id))
+                .filter(|id| !state.receipts.contains_key(id))
                 .copied()
                 .collect();
             if !missing.is_empty() {
                 return Err(ServiceError::ArtifactMissing { missing });
+            }
+            let hashes: Vec<[u8; 32]> = install
+                .artifact_manifest
+                .iter()
+                .map(|id| state.receipts[id])
+                .collect();
+            if binding_commitment(&hashes, 1 << 20).map_err(|_| ServiceError::MalformedObject)?
+                != *artifact_binding_commitment
+            {
+                return Err(ServiceError::ArtifactBindingMismatch);
             }
             let installed = InstalledEpoch {
                 key_epoch: chain.key_epoch(),

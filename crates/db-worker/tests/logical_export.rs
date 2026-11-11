@@ -212,7 +212,10 @@ fn voids_and_the_closure_manifest_are_inputs() {
         first: 4,
         last: 7,
     }];
-    let artifacts = [[1u8; 32], [2; 32]];
+    let artifacts = [[1u8; 32], [2; 32]].map(|id| sync_core::envelope::BoundArtifact {
+        id,
+        ciphertext_sha256: [id[0] ^ 0xff; 32],
+    });
     let plaintext = export_genesis_plaintext(
         &raw(&worker),
         &ExportInput {

@@ -111,6 +111,94 @@ pub(crate) fn remove_blob(dir: &Path, storage_id: &str) -> Result<(), DbError> {
     }
 }
 
+/// The blob names a Sync image (the base image) holds in its `attachments` rows and staged mappings.
+/// The image is the rollback target of a rebase, so a blob only it names must survive a sweep.
+/// A table the image's schema predates is simply absent.
+pub(crate) fn names_in_image(
+    image: &Connection,
+) -> Result<std::collections::HashSet<String>, DbError> {
+    let has = |table: &str| -> Result<bool, DbError> {
+        Ok(image.query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![table],
+            |r| r.get(0),
+        )?)
+    };
+    let mut names = std::collections::HashSet::new();
+    let mut collect = |sql: &str| -> Result<(), DbError> {
+        let mut stmt = image.prepare(sql)?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for name in rows {
+            names.insert(name?);
+        }
+        Ok(())
+    };
+    if has("attachments")? {
+        collect("SELECT storage_id FROM attachments")?;
+    }
+    if has("sync_artifacts")? {
+        collect(
+            "SELECT staged_storage_id FROM sync_artifacts WHERE staged_storage_id IS NOT NULL",
+        )?;
+    }
+    Ok(names)
+}
+
+/// Remove every file in `dir` that no `attachments` row and no staged mapping names (D7,
+/// `personal-cfo-0g528.2`): the ciphertext of a blob whose key was never committed, or a stale
+/// `.tmp`. The caller holds the writer lock, so no import or materialization is between writing its
+/// blob and recording its row. Returns how many files were removed.
+pub(crate) fn sweep_orphans(
+    dir: &Path,
+    conn: &Connection,
+    also_named: &std::collections::HashSet<String>,
+) -> Result<usize, DbError> {
+    let mut referenced: std::collections::HashSet<String> = also_named.clone();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT storage_id FROM attachments
+             UNION SELECT staged_storage_id FROM sync_artifacts WHERE staged_storage_id IS NOT NULL",
+        )?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for name in names {
+            referenced.insert(name?);
+        }
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(DbError::Io(e)),
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if referenced.contains(&name) {
+            continue;
+        }
+        remove_blob(dir, &name)?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+/// Whether an `attachments` row with `id` exists.
+pub(crate) fn row_exists(conn: &Connection, id: AttachmentId) -> Result<bool, DbError> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM attachments WHERE id = ?1",
+            params![id.as_uuid()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
 /// The attachment id already storing `storage_id`, if any (dedup lookup).
 pub(crate) fn find_id_by_storage_id(
     conn: &Connection,
@@ -126,7 +214,50 @@ pub(crate) fn find_id_by_storage_id(
     Ok(id.map(AttachmentId::from_uuid))
 }
 
-/// Insert a new attachment metadata row (ref_count starts at 0; links bump it).
+/// The columns of an `attachments` row that its writers supply (`ref_count` starts at 0; links
+/// bump it).
+pub(crate) struct AttachmentFields<'a> {
+    pub storage_id: &'a str,
+    pub wrapped_content_key: &'a [u8],
+    pub content_key_nonce: &'a [u8],
+    pub content_nonce: &'a [u8],
+    pub content_alg: &'a str,
+    pub plaintext_size: u64,
+    pub mime_type: Option<&'a str>,
+    pub original_filename: Option<&'a str>,
+    pub created_at: &'a str,
+}
+
+/// Insert a new attachment metadata row (ref_count starts at 0; links bump it). The one statement
+/// that creates an `attachments` row: the import path and the receiver's staged path share it.
+pub(crate) fn insert_attachment_fields(
+    conn: &Connection,
+    id: AttachmentId,
+    fields: &AttachmentFields<'_>,
+) -> Result<(), DbError> {
+    conn.execute(
+        "INSERT INTO attachments (
+            id, storage_id, wrapped_content_key, content_key_nonce, content_nonce,
+            content_alg, plaintext_size, mime_type, original_filename, ref_count,
+            created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)",
+        params![
+            id.as_uuid(),
+            fields.storage_id,
+            fields.wrapped_content_key,
+            fields.content_key_nonce,
+            fields.content_nonce,
+            fields.content_alg,
+            i64::try_from(fields.plaintext_size).unwrap_or(i64::MAX),
+            fields.mime_type,
+            fields.original_filename,
+            fields.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Insert a new attachment metadata row for freshly imported bytes (ref_count starts at 0).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn insert_attachment(
     conn: &Connection,
@@ -138,26 +269,21 @@ pub(crate) fn insert_attachment(
     mime_type: Option<&str>,
     original_filename: Option<&str>,
 ) -> Result<(), DbError> {
-    conn.execute(
-        "INSERT INTO attachments (
-            id, storage_id, wrapped_content_key, content_key_nonce, content_nonce,
-            content_alg, plaintext_size, mime_type, original_filename, ref_count,
-            created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)",
-        params![
-            id.as_uuid(),
-            storage_id.as_str(),
-            wrapped.ciphertext,
-            wrapped.nonce.as_slice(),
-            content_nonce.as_slice(),
-            CONTENT_ALG,
-            i64::try_from(plaintext_size).unwrap_or(i64::MAX),
+    insert_attachment_fields(
+        conn,
+        id,
+        &AttachmentFields {
+            storage_id: storage_id.as_str(),
+            wrapped_content_key: &wrapped.ciphertext,
+            content_key_nonce: wrapped.nonce.as_slice(),
+            content_nonce: content_nonce.as_slice(),
+            content_alg: CONTENT_ALG,
+            plaintext_size,
             mime_type,
             original_filename,
-            Utc::now().to_rfc3339(),
-        ],
-    )?;
-    Ok(())
+            created_at: &Utc::now().to_rfc3339(),
+        },
+    )
 }
 
 /// Insert a link from a domain entity to an attachment.
@@ -304,7 +430,7 @@ pub(crate) fn list_for(
 
 /// Convert a stored nonce BLOB to a fixed-size array, rejecting a wrong length
 /// (corruption) rather than panicking.
-fn to_nonce(bytes: &[u8]) -> Result<[u8; NONCE_LEN], DbError> {
+pub(crate) fn to_nonce(bytes: &[u8]) -> Result<[u8; NONCE_LEN], DbError> {
     bytes
         .try_into()
         .map_err(|_| DbError::SelfTestFailed("attachment nonce has wrong length".into()))

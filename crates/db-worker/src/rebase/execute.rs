@@ -283,8 +283,7 @@ fn preserved_envelope(command: &LocalCommand, node: Uuid) -> Result<Vec<u8>, Reb
             device_id: *node.as_bytes(),
         },
         write_set_hash: command.write_set_hash,
-        delta_manifest: sync_core::envelope::ArtifactManifest::new(Vec::new())
-            .map_err(|_| unsealable())?,
+        delta_manifest: sync_core::envelope::BoundManifest::empty(),
         payload: command.payload.clone(),
     };
     plaintext.encode().map_err(|_| unsealable())

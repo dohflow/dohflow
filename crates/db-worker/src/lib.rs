@@ -96,9 +96,13 @@ mod schedule_sources;
 pub mod snapshot_install;
 mod spend_by_category;
 mod staged_import;
+pub mod sync_artifacts;
 pub mod sync_bootstrap;
 pub mod sync_enable;
 pub mod sync_genesis;
+pub mod sync_materialize;
+pub mod sync_receive;
+pub mod sync_references;
 pub mod sync_register;
 pub mod sync_state;
 
@@ -124,7 +128,7 @@ pub const CURRENT_SCHEMA_VERSION: i64 = migrations::CURRENT_VERSION;
 /// same write-set hash from the same command, which is what lets a replica verify a write set.
 /// It is bumped by hand, in the same change, whenever a change makes `apply` write something
 /// different for an unchanged payload; a mismatch tells a client to update before it continues.
-pub const ENGINE_VERSION: &str = "dohflow-engine-2";
+pub const ENGINE_VERSION: &str = "dohflow-engine-3";
 pub use forecast::{
     AccountAvailability, AccountHistoryView, AccountSeriesView, CapabilityUnlock, CardCycleView,
     CardStatementForecastView, CardStatementHistoryView, CashAvailability, CashFlowHistory,
@@ -3327,6 +3331,43 @@ impl DbWorker {
             original_filename,
         )?;
         Ok(id)
+    }
+
+    /// Remove the blob files that nothing names (D7): no `attachments` row and no staged mapping.
+    /// They are the ciphertext of a blob whose key was never committed, left by a crash between
+    /// writing the file and recording the row. Called once when a vault unlocks, after rotation
+    /// recovery. It takes the writer lock, so an import or materialization cannot be between its
+    /// file and its row. It does **nothing** while a swap or a rebase is in progress
+    /// ([`base_image::swap_or_rebase_in_progress`], the one shared predicate): the new-name blobs
+    /// of an interrupted rotation, and any blob that only a rebase's scratch vault, the base image
+    /// or the pre-rebase copy names, are not named by the database. It also keeps every blob that the
+    /// base image (`sync/base.db`, the rebase rollback target) names, read read-only, and removes
+    /// nothing if that image exists and cannot be read. Returns how many files it removed.
+    ///
+    /// # Errors
+    /// [`DbError`] if the worker is unavailable or a file cannot be read or removed.
+    pub fn sweep_orphan_blobs(&self) -> Result<usize, DbError> {
+        let dir = attachments::blobs_dir(&self.path);
+        let guard = self.lock();
+        if guard.state != WorkerState::Healthy {
+            return Err(DbError::WorkerUnavailable(guard.state));
+        }
+        if base_image::swap_or_rebase_in_progress(&self.path) {
+            return Ok(0);
+        }
+        // The base image is the rollback target of a rebase (`bxsbz.7`): a blob that only it names
+        // (an attachment deleted here after the base was taken) must survive. If the image exists
+        // and cannot be read, nothing is removed: the sweep fails closed.
+        let base = base_image::base_image_path(&self.path);
+        let also_named = if base.exists() {
+            let image = self
+                .key
+                .open_image(&base, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            attachments::names_in_image(&image)?
+        } else {
+            std::collections::HashSet::new()
+        };
+        attachments::sweep_orphans(&dir, &guard.conn, &also_named)
     }
 
     /// Link an imported attachment to a domain entity (many-to-many), bumping its

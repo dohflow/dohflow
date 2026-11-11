@@ -381,6 +381,15 @@ rebase_preservation = "preserve every row byte for byte across the swap; a rebas
 reference_validation = "next_counter is at least 1; the row is checked against the witness before the context encrypts, and a row with no witness entry (or the reverse) is NonceStateLost"
 
 [[table]]
+table = "sync_notices"
+class = "3"
+owner_bead = "personal-cfo-0g528"
+note = "Device-local notices that Sync discarded something the user was in the middle of: today only import_discarded, where a received batch replaced the rows of an import still being reviewed on this device and its staged rows for that batch were removed in the same transaction. source_name is the file name the user chose, shown to the user and never logged. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "preserve every row byte for byte across the swap; a notice is shown until the user dismisses it"
+reference_validation = "none: batch_id names a batch that may no longer exist on this device"
+
+[[table]]
 table = "sync_saved_snapshot"
 class = "3"
 owner_bead = "personal-cfo-1cltt"
@@ -415,6 +424,15 @@ note = "Device-local singleton: the applied cursor of a replica that has bootstr
 rebase_phase = "stable"
 rebase_preservation = "the swap writes the swapped-in vault's applied cursor as a forward-only update, never an overlay of an older live value: the rebase applies pulled envelopes in its scratch vault, so the swapped-in cursor may be ahead of the live one"
 reference_validation = "next_to_apply exceeds snapshot_root, and no honored void's range reaches next_to_apply"
+
+[[table]]
+table = "sync_artifacts"
+class = "3"
+owner_bead = "personal-cfo-0g528"
+note = "Device-local mapping from a class-1b artifact's service address in an epoch (sync_artifact_id_e) to the local identity that carries it, with the ciphertext hash this device verified when it published the artifact or fetched it and, for a producer, whether a durable receipt matched. For an attachment received from a peer the staged_* columns hold the receiver-local crypto fields from materialization until the attach command's apply creates the attachments row from them, and are NULL afterwards. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "preserve every row byte for byte across the swap, staged crypto fields included, re-wrapped by a rotation like attachments rows; a rebase never re-materializes an artifact"
+reference_validation = "an id with a recorded hash that differs from the bound one and that the live closure does not hold is a cache miss, never a verdict; a staged row names a blob that exists, and its key unwraps under the DEK"
 
 [[table]]
 table = "vault_meta"

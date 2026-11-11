@@ -232,3 +232,39 @@ statements = 1
 status = "pending"
 bead = "personal-cfo-5ymg8.6"
 note = "Re-wraps attachment key material during a vault key rotation; decide with .6 whether rotation is a vault-level operation outside the log or a command."
+
+[[site]]
+module = "sync_materialize.rs"
+table = "parser_runs"
+class = "1b"
+statements = 3
+status = "allowed"
+bead = "personal-cfo-0g528"
+note = "receiver materialization (C.9): the rows of a source batch fetched from the service, written outside any command and before the envelope that references them applies; the batch is immutable by its artifact ids, so every column is a pure function of the artifact and a replay is idempotent (an equal row is left, a differing row is refused). Reached only from the receiver path after stage 9(b) has accepted the batch. The DELETE statements remove the rows of a batch that is not in the live closure at the preceding position, which are a cache that materialization replaces (C.9), and are refused when a replicated provenance link names one of the records."
+
+[[site]]
+module = "sync_materialize.rs"
+table = "source_batches"
+class = "1b"
+statements = 2
+status = "allowed"
+bead = "personal-cfo-0g528"
+note = "receiver materialization (C.9): the rows of a source batch fetched from the service, written outside any command and before the envelope that references them applies; the batch is immutable by its artifact ids, so every column is a pure function of the artifact and a replay is idempotent (an equal row is left, a differing row is refused). Reached only from the receiver path after stage 9(b) has accepted the batch. The DELETE statements remove the rows of a batch that is not in the live closure at the preceding position, which are a cache that materialization replaces (C.9), and are refused when a replicated provenance link names one of the records."
+
+[[site]]
+module = "sync_materialize.rs"
+table = "source_records"
+class = "1b"
+statements = 3
+status = "allowed"
+bead = "personal-cfo-0g528"
+note = "receiver materialization (C.9): the rows of a source batch fetched from the service, written outside any command and before the envelope that references them applies; the batch is immutable by its artifact ids, so every column is a pure function of the artifact and a replay is idempotent (an equal row is left, a differing row is refused). Reached only from the receiver path after stage 9(b) has accepted the batch. The DELETE statements remove the rows of a batch that is not in the live closure at the preceding position, which are a cache that materialization replaces (C.9), and are refused when a replicated provenance link names one of the records."
+
+[[site]]
+module = "sync_materialize.rs"
+table = "dedupe_decisions"
+class = "4"
+statements = 1
+status = "allowed"
+bead = "personal-cfo-0g528"
+note = "receiver materialization (C.9): when a received batch changes, adds or drops any row of a batch for which this device holds an import still being reviewed, that batch's staging is removed in the same transaction (children first: dedupe_decisions, then staged_transactions, staged_balances and staged_accounts, which are class 3), because a half-import must not be committed; a durable notice tells the user. An identical batch discards nothing, and the staging of any other batch is untouched."
