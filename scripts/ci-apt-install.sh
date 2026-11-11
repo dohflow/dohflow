@@ -3,14 +3,17 @@
 # personal-cfo-56w.6: install apt packages on a hosted Ubuntu runner so that a hung or unreachable
 # mirror ends as a red step inside a known time, never as a stalled job.
 #
-#   1. `apt-get update` and `install` with network retries and a per-connection timeout, each
-#      attempt capped by `timeout`, against the runner's default mirror (azure.archive.ubuntu.com).
+#   1. `apt-get update` then `install` with network retries and a per-connection timeout, the WHOLE
+#      attempt (update plus install) capped by ONE `timeout`, against the runner's default mirror
+#      (azure.archive.ubuntu.com).
 #   2. If that fails, say so, rewrite the apt sources to the canonical archive.ubuntu.com and
 #      security.ubuntu.com, and try ONCE more. (2026-11-11: the default mirror did not resolve for
 #      14 minutes, and retries against a mirror that is down cannot help.)
 #   3. Log which mirror served the install (and a ::notice:: annotation when it was the fallback).
 #
-# The caller's step carries its own `timeout-minutes` (10): the two attempts below add up to less.
+# The caller's step carries its own `timeout-minutes` (10). Worst case here: two attempts of 240 s
+# (8 minutes) plus a source rewrite that takes a moment, so a hang on the first mirror still reaches
+# the fallback inside the step, with about two minutes of margin.
 #
 # Usage: scripts/ci-apt-install.sh <package> [<package> ...]
 # Test hooks (never set in CI): CI_APT_SOURCES (space-separated apt source files to rewrite),
@@ -24,18 +27,20 @@ if [ "$#" -eq 0 ]; then
   exit 2
 fi
 
-attempt_seconds="${CI_APT_ATTEMPT_SECONDS:-270}"
+attempt_seconds="${CI_APT_ATTEMPT_SECONDS:-240}"
 sudo_cmd="${CI_APT_SUDO-sudo}"
 sources="${CI_APT_SOURCES:-/etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources}"
-apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=60)
 
-run_apt() {
-  # shellcheck disable=SC2086
-  $sudo_cmd timeout "$attempt_seconds" apt-get "${apt_opts[@]}" "$@"
-}
-
+# One attempt: update, then install, under a single cap. The cap is on the whole attempt, not on each apt-get call, so
+# two attempts always fit the step's timeout however the first one fails. The inline script gets the packages as arguments.
 attempt() {
-  run_apt update && run_apt install -y "$@"
+  # shellcheck disable=SC2016
+  $sudo_cmd timeout "$attempt_seconds" bash -c '
+    set -e
+    opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=60)
+    apt-get "${opts[@]}" update
+    apt-get "${opts[@]}" install -y "$@"
+  ' _ "$@"
 }
 
 if attempt "$@"; then

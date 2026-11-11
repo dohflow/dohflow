@@ -80,8 +80,9 @@ jobs:
   rust:
     name: Rust (workspace)
     runs-on: ubuntu-24.04
-    # personal-cfo-56w.6: job timeout. Measured over 40 successful CI runs: Rust (workspace): p95 31.6 min, max 32.6 over 40 successful runs.
-    timeout-minutes: 50
+    # personal-cfo-56w.6: job timeout. Measured over 40 successful CI runs: Rust (workspace): p95 31.6 min, max 32.6 over 40 successful runs
+    # (one run since took 32m14s). 65 is about 2x p95: a false red on a required check stalls the merge queue like a hang does.
+    timeout-minutes: 65
     if: github.event_name == 'workflow_dispatch' || (github.event.repository.private == false && github.event_name != 'schedule')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

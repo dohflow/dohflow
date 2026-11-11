@@ -30,14 +30,16 @@ trap 'rm -rf "$TMP"' EXIT
 
 # A stub apt-get. MODE decides how it behaves while the sources name azure.archive.ubuntu.com:
 #   fail  -> exit 100 (the 2026-11-11 outage)    hang -> sleep    (a hung mirror)
+#   slow  -> 0.7 s per apt-get call, then success (so update plus install exceed a 1 s attempt cap, though neither call does alone)
 # With the canonical mirror in the sources it succeeds, unless MODE is "alldown" (both are down).
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/apt-get" <<'STUB'
 #!/usr/bin/env bash
 echo "apt-get $*" >>"$APT_LOG"
 [ "$MODE" = "ok" ] && exit 0
+if [ "$MODE" = "slow" ] && grep -q 'azure.archive.ubuntu.com' "$SOURCES_FILE"; then sleep 0.7; exit 0; fi
 if grep -q 'azure.archive.ubuntu.com' "$SOURCES_FILE" || [ "$MODE" = "alldown" ]; then
-  if [ "$MODE" = "hang" ]; then exec sleep 30; fi
+  if [ "$MODE" = "hang" ]; then exec sleep 30 >/dev/null 2>&1; fi
   echo "E: Temporary failure resolving 'azure.archive.ubuntu.com'" >&2
   exit 100
 fi
@@ -88,12 +90,31 @@ ATTEMPT_SECONDS=1 run_case hang hang libfoo
 check "HANG: a hung first attempt is killed and the fallback succeeds" [ "$CODE" -eq 0 ]
 check "HANG: the log says the fallback served it" out_has "FALLBACK) served the install"
 
+# 3b. The cap is on the WHOLE attempt: update plus install take 1.4 s here, each under the 1 s cap, and the attempt is still cut off.
+ATTEMPT_SECONDS=1 run_case slow slow libfoo
+check "ONE CAP: an attempt whose update and install each fit the cap but not together is cut off, and the fallback serves it" out_has "FALLBACK) served the install"
+
+# 3c. A hanging first attempt still reaches the fallback inside the cap, and the whole run stays within two caps.
+START=$SECONDS
+ATTEMPT_SECONDS=2 run_case bound hang libfoo
+ELAPSED=$((SECONDS - START))
+check "BOUND: a hanging first attempt reaches the fallback (exit 0)" [ "$CODE" -eq 0 ]
+check "BOUND: the run took under two caps plus margin (took ${ELAPSED}s, cap 2s)" [ "$ELAPSED" -le 6 ]
+
 # 4. Both mirrors down: a red result after exactly two attempts, never a stall.
 run_case down alldown libfoo
 check "BOTH DOWN: exit 1" [ "$CODE" -eq 1 ]
 check "BOTH DOWN: the error says both were tried" out_has "failed against the default mirror and against archive.ubuntu.com"
 check "BOTH DOWN: two attempts, no more" [ "$(logged down ' update')" -eq 2 ]
 check "BOTH DOWN: no install was run" [ "$(logged down ' install')" -eq 0 ]
+
+# 4b. The default cap fits twice into the workflow steps' timeout with a minute to spare (the script's own comment promises it).
+# shellcheck disable=SC2016
+DEFAULT_CAP="$(sed -n 's/^attempt_seconds="\${CI_APT_ATTEMPT_SECONDS:-\([0-9]*\)}"$/\1/p' "$SCRIPT")"
+check "the default attempt cap is a number (found '${DEFAULT_CAP}')" [ -n "$DEFAULT_CAP" ]
+STEP_MINUTES=10
+check "two default attempts plus 60 s fit the ${STEP_MINUTES}-minute step timeout" [ $((2 * ${DEFAULT_CAP:-9999} + 60)) -le $((STEP_MINUTES * 60)) ]
+# (That every apt step carries timeout-minutes is the guard's job: scripts/check-workflow-timeouts.sh.)
 
 # 5. No packages is a usage error.
 bash "$SCRIPT" >/dev/null 2>&1
