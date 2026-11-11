@@ -300,7 +300,7 @@ synthetic no-app recovery test before any such public claim.
   progress on this device was discarded because a received batch replaced its rows (C.9), so the user
   is told and the import is run again. The C.4 header vectors change and binding vectors are added **with the code that implements this**; the
   engine moves to `dohflow-engine-3` (C.13). The service's check is `personal-cfo-v98vd` AC31. `envelope-version` stays `1`: this is a pre-release amendment of the header and the
-  plaintext, and no object of the old shape exists in any release. The spec landed first; the code that implements it follows in the same PR stack (the header field and the closure and receive stages, the device-local mapping at schema version 69, and the engine pin).
+  plaintext, and no object of the old shape exists in any release. The spec landed first; the code that implements it follows in the same PR stack (the header field and the closure and receive stages, the device-local mapping at schema version 70, and the engine pin).
 - `spec-version = 39` (personal-cfo-1cltt.5, schema version 69) adds the SQLite home of the void
   ledger and of a replica's applied cursor: the class-3 tables `sync_voids` and `sync_position`
   (inventory rows, both excluded from both formats), and states how a replica is born from a
