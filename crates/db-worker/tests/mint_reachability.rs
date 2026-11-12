@@ -12,7 +12,7 @@
 //!
 //! The workspace crates `apply` links are scanned too, by token (their functions are not walked): a
 //! mint in `core-money`, `core-ledger`, `categorization`, `pay-schedule`, `forecast-engine`,
-//! `importer-core` or `sync-core` production source fails; `job-runtime` is a named exception, `core-ids`
+//! `importer-core` or `sync-core` production source fails; `job-runtime` is a named exception (`personal-cfo-32fmp.4`), `core-ids`
 //! is scanned file by file with ONE allowed file (`lib.rs`, which DEFINES `monotonic_v7` and the id
 //! macro, and only for those tokens; `personal-cfo-0g528.3`), so `derived.rs` and any new derivation
 //! are scanned like every other crate, and `vault-crypto` is out of scope because no reachable
@@ -410,9 +410,26 @@ fn the_crates_apply_links_hold_no_mint() {
         ("core-ids", ""),
         (
             "job-runtime",
-            "durable jobs run outside apply; apply reaches none of it",
+            "personal-cfo-32fmp.4: durable jobs run outside apply; apply reaches none of it",
         ),
     ];
+    // The real scan must route every crate with a per-file exception through `linked_crate_findings`
+    // with no wholesale excuse, or a restored excuse (or a dropped entry) would pass unnoticed.
+    for (crate_name, _, _, _) in FILE_EXCEPTIONS {
+        assert!(
+            scanned
+                .iter()
+                .any(|(name, excuse)| name == crate_name && excuse.is_empty()),
+            "{crate_name} has a file exception, so it must be scanned with no wholesale excuse"
+        );
+    }
+    // Every wholesale exemption that remains names its bead.
+    for (name, excuse) in scanned {
+        assert!(
+            excuse.is_empty() || excuse.starts_with("personal-cfo-"),
+            "the exemption for {name} must name its bead: {excuse:?}"
+        );
+    }
     let mut failures = Vec::new();
     let mut scanned_any = 0;
     for (name, excuse) in scanned {

@@ -51,7 +51,8 @@ fails on any random or time-based mint, or SQLite random or clock function, in a
 reachable mint that cannot be derived is a row here: the function, the token, the call edge the row
 excuses (`root -> ... -> function`) and the bead that removes it. A row whose finding is gone fails as
 stale. There are none today. The linked workspace crates are scanned by token in the same test.
-`job-runtime` is a named exception. `core-ids` has no wholesale exemption: only its `lib.rs` may name
+`job-runtime` is a named exception (`personal-cfo-32fmp.4`: durable jobs run outside apply). `core-ids`
+has no wholesale exemption: only its `lib.rs` may name
 the tokens that define `monotonic_v7` (`new_v7`, `ContextV7`, `monotonic_v7`; `personal-cfo-0g528.3`),
 and a token beyond those, or an exception row whose token is gone, fails, so `derived.rs` and every
 derivation added there are scanned like any other crate.
