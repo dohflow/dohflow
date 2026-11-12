@@ -124,4 +124,20 @@ require_text "likely matches are never automatic" "**never automatic**"
 require_text "matched accounts keep the household identity" "the household account stays the"
 require_text "the honest costs are stated" "**6. The honest costs.** History arrives as **new commands with new ids"
 
+# Addendum J (personal-cfo-0g528.3): import identities, dispositions and the restore question.
+require_text 'Addendum J is dated and named' '## Addendum J — Import identities, dispositions and the restore question (2026-11-12, `personal-cfo-0g528.3`)'
+require_text 'one identity table with a kind column' '`import_identities` has one row per committed row that has a cross-device identity.'
+require_text 'provider uniqueness' '`UNIQUE(connection_id, provider_account_key, provider_txn_id)`'
+require_text 'file uniqueness' '`UNIQUE(file_fingerprint, row_ordinal)`'
+require_text 'dispositions table' '`import_dispositions` has one row per decision about an identity or a file.'
+require_text 'no class-3 reference' 'Neither table references a class-3 row, and no staged id appears in either.'
+require_text 'LunchFlow has no provider identity' '**LunchFlow rows have no provider identity** until'
+require_text 'apply binds the identity to its own source' 'so a payload cannot claim another row'"'"'s identity'
+require_text 'a file row is compared, never trusted' '4. **A file-row identity is compared, never trusted.**'
+require_text 'restore commits fresh copies' '**A restore commits fresh copies and leaves the voided originals voided.**'
+require_text 'attachments and obligations do not come back' '**Attachment links and obligation'
+require_text 'the migration refuses on an armed vault' '**The migration refuses on a vault where Sync is armed.**'
+require_text 'a backfill after launch is a command' '**a migration writes no class-1 rows on an armed'
+require_text 'the owner question is recorded as open' '"import this upload instead"'
+
 echo "PASS — $CASES ADR 0074 contract assertions, 0 failures"
