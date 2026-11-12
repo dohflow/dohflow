@@ -61,7 +61,9 @@ export function CreateVaultScreen() {
   return (
     <Screen>
       <Card>
-        <CardHeader className="items-center text-center">
+        {/* The card's own gutters give the column its room back on a narrow card at the largest text
+            size (Studio F3): `main` in `Screen` is the container these measure. */}
+        <CardHeader className="items-center text-center compact:@max-[15rem]:px-2">
           <div className="mb-2 flex size-12 items-center justify-center rounded-full bg-primary">
             <ShieldCheck className="size-6 text-primary-foreground" aria-hidden />
           </div>
@@ -72,7 +74,7 @@ export function CreateVaultScreen() {
             Set a master password to encrypt your vault.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="compact:@max-[15rem]:px-2">
           <form onSubmit={onSubmit} className="@container flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="password">Master password</Label>

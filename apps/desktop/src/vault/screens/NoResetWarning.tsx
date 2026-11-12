@@ -24,7 +24,7 @@ export function NoResetWarning({
   });
 
   return (
-    <div className="@container flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/10 p-3">
+    <div className="@container flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 compact:@max-[15rem]:px-2">
       <div className="flex gap-2 compact:@max-[15rem]:flex-col">
         <TriangleAlert className="size-4 shrink-0 text-warning" aria-hidden />
         {warning && (
