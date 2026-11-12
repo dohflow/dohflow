@@ -220,15 +220,14 @@ impl BootstrapError {
             Self::Invalid(_) | Self::Snapshot(_) | Self::NotAValidRoot | Self::Ledger(_) => {
                 FailureKind::Deterministic
             }
-            Self::Install(error) => match error {
+            Self::Install(
                 InstallError::Snapshot(_)
                 | InstallError::ColumnsMismatch { .. }
                 | InstallError::UnknownTable { .. }
                 | InstallError::MissingTable { .. }
                 | InstallError::DigestMismatch { .. }
-                | InstallError::HeaderMismatch => FailureKind::Deterministic,
-                _ => FailureKind::Local,
-            },
+                | InstallError::HeaderMismatch,
+            ) => FailureKind::Deterministic,
             Self::Transient(_) => FailureKind::Transient,
             _ => FailureKind::Local,
         }
