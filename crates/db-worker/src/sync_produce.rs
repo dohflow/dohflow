@@ -20,8 +20,16 @@
 //! after a crash, or after a lost response, puts the same bytes and gets the same receipt, never an
 //! `ObjectConflict`. Part ids are never stored as an address input: only the ids are kept (C.3).
 //!
+//! An attachment is one artifact: its plaintext, addressed by its raw storage id
+//! ([`vault_crypto::StorageId::raw`]), with the attachment's id and media type as its logical
+//! metadata. [`DbWorker::produce_closure`] produces every artifact a genesis snapshot's closure
+//! names: all attachments, and every batch that holds a record a provenance link names (a batch is
+//! published at the first commit that references one of its records, C.9, so a batch still being
+//! parsed or never committed is not in a closure).
+//!
 //! Genesis (`personal-cfo-1cltt.7`) and the push path (`personal-cfo-elciw`) both call this.
 
+use core_ledger::AttachmentId;
 use sync_core::artifact::{ArtifactId, ArtifactKind, TransportPlaintext};
 use sync_core::artifact_transport::ArtifactTransport;
 use sync_core::source_batch::{SourceBatch, SourceBatchError};
@@ -31,6 +39,7 @@ use vault_crypto::sync_artifact::{first_artifact_id, Fixity};
 use vault_crypto::sync_artifact_flow::{publish, PublishError};
 use vault_crypto::sync_envelope::EpochKey;
 
+use crate::attachments::crypto_fields;
 use crate::sync_artifacts::{self, ArtifactKind as MappedKind, Mapping, MappingError};
 use crate::sync_materialize::{load_batch, load_records, load_runs, MaterializeError};
 use crate::{DbError, DbWorker};
@@ -73,6 +82,32 @@ pub enum ProduceError {
     /// The mapping could not be recorded.
     #[error("the mapping could not be recorded: {0}")]
     Mapping(#[from] MappingError),
+    /// The vault could not be read, or an attachment's bytes could not be read and decrypted.
+    #[error("the vault could not be read: {0}")]
+    Db(#[from] DbError),
+    /// This vault holds no attachment with that id.
+    #[error("the vault holds no such attachment")]
+    AttachmentNotFound,
+    /// An attachment's stored address is not 64 lowercase hex digits.
+    #[error("an attachment's storage id is not a 32-byte address")]
+    BadStorageId,
+    /// An artifact the device is asked to put again has no mapping: nothing says what it is.
+    #[error("no mapping is recorded for an artifact to put again")]
+    NotMapped(ArtifactId),
+    /// An artifact put again does not have the hash recorded when it was first put: the rows it is
+    /// made from changed, which an immutable artifact never does.
+    #[error("an artifact put again is not the bytes first put")]
+    Changed(ArtifactId),
+}
+
+/// The logical rows a genesis snapshot's closure is made of.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ClosureSources {
+    /// Every attachment, ascending by id: each is one artifact.
+    pub attachments: Vec<[u8; 16]>,
+    /// Every batch a provenance link reaches through one of its records, ascending by id: each is
+    /// one artifact per part.
+    pub batches: Vec<[u8; 16]>,
 }
 
 impl DbWorker {
@@ -121,26 +156,16 @@ impl DbWorker {
                 Fixity::First,
             )?;
             let ciphertext_sha256 = published.receipt.ciphertext_sha256;
-            {
-                let guard = self.lock();
-                sync_artifacts::record(
-                    &guard.conn,
-                    &Mapping {
-                        key_epoch: key.key_epoch(),
-                        artifact_id: *id.as_bytes(),
-                        ciphertext_sha256,
-                        kind,
-                        logical_id: *batch_id,
-                    },
-                    None,
-                )?;
-                sync_artifacts::record_receipt(
-                    &guard.conn,
-                    key.key_epoch(),
-                    id.as_bytes(),
-                    &chrono::Utc::now().to_rfc3339(),
-                )?;
-            }
+            self.record_produced(
+                key,
+                &Mapping {
+                    key_epoch: key.key_epoch(),
+                    artifact_id: *id.as_bytes(),
+                    ciphertext_sha256,
+                    kind,
+                    logical_id: *batch_id,
+                },
+            )?;
             produced.push(ProducedArtifact {
                 id,
                 ciphertext_sha256,
@@ -149,5 +174,187 @@ impl DbWorker {
             });
         }
         Ok(produced)
+    }
+
+    /// The attachments and batches a genesis closure is made of, read now.
+    ///
+    /// # Errors
+    /// A [`ProduceError`] if the vault cannot be read.
+    pub fn closure_sources(&self) -> Result<ClosureSources, ProduceError> {
+        let conn = self.read_connection()?;
+        let ids = |sql: &str| -> Result<Vec<[u8; 16]>, ProduceError> {
+            let mut stmt = conn.prepare(sql).map_err(DbError::from)?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, Vec<u8>>(0))
+                .map_err(DbError::from)?;
+            let mut out = Vec::new();
+            for row in rows {
+                let bytes = row.map_err(DbError::from)?;
+                out.push(<[u8; 16]>::try_from(bytes).map_err(|_| ProduceError::BadStorageId)?);
+            }
+            Ok(out)
+        };
+        Ok(ClosureSources {
+            attachments: ids("SELECT id FROM attachments ORDER BY id")?,
+            batches: ids("SELECT DISTINCT r.source_batch_id
+                   FROM source_provenance_links l
+                   JOIN source_records r ON r.id = l.source_record_id
+                  ORDER BY r.source_batch_id")?,
+        })
+    }
+
+    /// Publish the attachment `attachment_id` as one class-1b artifact under `key`'s epoch, and
+    /// record its mapping and receipt. The address is the attachment's raw storage id (never the
+    /// hex text); the bytes are its decrypted plaintext; the seal is deterministic, so a retry is an
+    /// exact retry.
+    ///
+    /// # Errors
+    /// A [`ProduceError`].
+    pub fn produce_attachment_artifact<T: ArtifactTransport>(
+        &self,
+        transport: &T,
+        key: &EpochKey,
+        attachment_id: &[u8; 16],
+    ) -> Result<ProducedArtifact, ProduceError> {
+        let id = AttachmentId::from_uuid(uuid::Uuid::from_bytes(*attachment_id));
+        let (storage_id, mime_type) = {
+            let conn = self.read_connection()?;
+            let fields = crypto_fields(&conn, id)?.ok_or(ProduceError::AttachmentNotFound)?;
+            let mime: Option<String> = conn
+                .query_row(
+                    "SELECT mime_type FROM attachments WHERE id = ?1",
+                    [attachment_id.as_slice()],
+                    |r| r.get(0),
+                )
+                .map_err(DbError::from)?;
+            (fields.storage_id, mime)
+        };
+        let raw = vault_crypto::raw_of_hex(&storage_id).ok_or(ProduceError::BadStorageId)?;
+        let bytes = self.read_attachment_bytes(id)?;
+        let artifact_id = first_artifact_id(key, &raw);
+        // Canonical JSON, keys ascending (C.9): the attachment's id, and its media type if it has one.
+        let metadata = match &mime_type {
+            Some(mime) => format!(
+                r#"{{"attachment_id":"{}","mime_type":{}}}"#,
+                uuid::Uuid::from_bytes(*attachment_id).hyphenated(),
+                serde_json::to_string(mime).map_err(|_| ProduceError::BadStorageId)?
+            ),
+            None => format!(
+                r#"{{"attachment_id":"{}"}}"#,
+                uuid::Uuid::from_bytes(*attachment_id).hyphenated()
+            ),
+        };
+        let published = publish(
+            transport,
+            key,
+            &TransportPlaintext {
+                artifact_id,
+                kind: ArtifactKind::Attachment,
+                logical_metadata: metadata.as_bytes(),
+                blob: &bytes,
+            },
+            Fixity::First,
+        )?;
+        let ciphertext_sha256 = published.receipt.ciphertext_sha256;
+        self.record_produced(
+            key,
+            &Mapping {
+                key_epoch: key.key_epoch(),
+                artifact_id: *artifact_id.as_bytes(),
+                ciphertext_sha256,
+                kind: MappedKind::Attachment,
+                logical_id: *attachment_id,
+            },
+        )?;
+        Ok(ProducedArtifact {
+            id: artifact_id,
+            ciphertext_sha256,
+            kind: MappedKind::Attachment,
+            logical_id: *attachment_id,
+        })
+    }
+
+    /// Produce every artifact a genesis closure names (see [`Self::closure_sources`]) and return
+    /// them with the sources they were produced for, ascending by artifact id: the closure's order.
+    /// The caller compares the sources with [`Self::closure_sources`] again after it exports, to
+    /// know no attachment or batch arrived in between.
+    ///
+    /// # Errors
+    /// A [`ProduceError`]; what was put before it stays put and a call again re-puts it identically.
+    pub fn produce_closure<T: ArtifactTransport>(
+        &self,
+        transport: &T,
+        key: &EpochKey,
+    ) -> Result<(ClosureSources, Vec<ProducedArtifact>), ProduceError> {
+        let sources = self.closure_sources()?;
+        let mut produced = Vec::new();
+        for attachment in &sources.attachments {
+            produced.push(self.produce_attachment_artifact(transport, key, attachment)?);
+        }
+        for batch in &sources.batches {
+            produced.extend(self.produce_batch_artifacts(transport, key, batch)?);
+        }
+        produced.sort_by_key(|p| *p.id.as_bytes());
+        Ok((sources, produced))
+    }
+
+    /// Put again the artifacts named by `ids`, which an earlier production put: each id is looked up
+    /// in the mappings that production recorded, its attachment or batch is produced again from the
+    /// rows (the seal is deterministic, so this is an exact retry), and the hash must be the one
+    /// recorded. This is what a resume does before it sends a saved snapshot, so the service holds
+    /// every receipt the saved closure names.
+    ///
+    /// # Errors
+    /// [`ProduceError::NotMapped`] for an id with no mapping, [`ProduceError::Changed`] for an
+    /// artifact whose bytes are not the ones first put, otherwise as the production.
+    pub fn reput_closure<T: ArtifactTransport>(
+        &self,
+        transport: &T,
+        key: &EpochKey,
+        ids: &[ArtifactId],
+    ) -> Result<(), ProduceError> {
+        let mut logical: std::collections::BTreeMap<[u8; 16], bool> =
+            std::collections::BTreeMap::new();
+        let mut expected: Vec<(ArtifactId, [u8; 32])> = Vec::new();
+        {
+            let conn = self.read_connection()?;
+            for id in ids {
+                let stored = sync_artifacts::lookup(&conn, key.key_epoch(), id.as_bytes())?
+                    .ok_or(ProduceError::NotMapped(*id))?;
+                logical.insert(
+                    stored.mapping.logical_id,
+                    matches!(stored.mapping.kind, MappedKind::Attachment),
+                );
+                expected.push((*id, stored.mapping.ciphertext_sha256));
+            }
+        }
+        let mut again = Vec::new();
+        for (logical_id, is_attachment) in logical {
+            if is_attachment {
+                again.push(self.produce_attachment_artifact(transport, key, &logical_id)?);
+            } else {
+                again.extend(self.produce_batch_artifacts(transport, key, &logical_id)?);
+            }
+        }
+        for (id, hash) in expected {
+            let now = again.iter().find(|p| p.id == id);
+            if now.map(|p| p.ciphertext_sha256) != Some(hash) {
+                return Err(ProduceError::Changed(id));
+            }
+        }
+        Ok(())
+    }
+
+    /// Record a produced artifact's mapping and the service's receipt for it.
+    fn record_produced(&self, key: &EpochKey, mapping: &Mapping) -> Result<(), ProduceError> {
+        let guard = self.lock();
+        sync_artifacts::record(&guard.conn, mapping, None)?;
+        sync_artifacts::record_receipt(
+            &guard.conn,
+            key.key_epoch(),
+            &mapping.artifact_id,
+            &chrono::Utc::now().to_rfc3339(),
+        )?;
+        Ok(())
     }
 }

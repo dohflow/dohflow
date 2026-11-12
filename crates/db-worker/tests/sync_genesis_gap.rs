@@ -5,6 +5,8 @@
 
 #![allow(dead_code)]
 
+#[path = "support/artifacts.rs"]
+mod artifacts;
 mod common;
 #[path = "../../vault-crypto/tests/common/snapshot_service.rs"]
 mod snapshot_service;
@@ -37,6 +39,7 @@ struct Device {
     secrets: MockSecretStore,
     witness: MockWitness,
     service: FakeSnapshotService,
+    artifacts: artifacts::FakeService,
 }
 
 impl Device {
@@ -55,6 +58,7 @@ impl Device {
             secrets: MockSecretStore::new(),
             witness: MockWitness::new(),
             service: FakeSnapshotService::new(Credential::Account),
+            artifacts: artifacts::FakeService::default(),
         }
     }
 
@@ -68,6 +72,7 @@ impl Device {
             &self.secrets,
             &self.witness,
             &self.service,
+            &self.artifacts,
             &SyncStatus::Healthy,
             &DEVICE,
         )
