@@ -357,10 +357,7 @@ pub(crate) fn command_envelope(
 /// Rebuild class 2 once, after the replay, through the existing full-rebuild entry points. No
 /// rebuild inside an apply moved (bxsbz.4 AC6).
 fn rebuild_class_2(trial: &DbWorker) -> Result<(), DbError> {
-    trial.rebuild_commitments()?;
-    trial.rebuild_money_inbox()?;
-    trial.rebuild_recurring_instances()?;
-    trial.rebuild_transaction_display()?;
+    trial.rebuild_class_2()?;
     Ok(())
 }
 
