@@ -109,6 +109,7 @@ fn source<'a>(
         engine_version: version,
         own_engine_version: own,
         held_voids: held,
+        closure: None,
     }
 }
 

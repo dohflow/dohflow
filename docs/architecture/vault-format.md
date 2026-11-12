@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=46 -->
+<!-- vault-format: spec-version=47 -->
 <!-- vault-format: schema-version=74 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -272,6 +272,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 47` (personal-cfo-1cltt.7, slice D2; provisional: it settles at merge) changes the C.8 "Replica bootstrap" install normatively for a snapshot that carries a class-1b closure: the installer's single transaction becomes a build in which the closure is fetched, verified and materialized before the vault exists (a verified part waiting for its siblings is spooled as ciphertext), the `attachments` rows are created from the snapshot's row and the staged crypto, foreign keys are checked over the whole database at the end, and the re-export proof moves after the materialization; a failure is deterministic, transient or local. No wire layout, write-set rule, vector, `engine_version` or schema change.
 - `spec-version = 46` (personal-cfo-1cltt.7, slice D1, schema version 74; provisional: it settles at merge) adds the SQLite home of the live closure (B.2 `sync_live_closure`, C.9): derived, class 3, excluded from both formats, written only where the vault's class-1 state equals its accepted state (an accepted envelope's apply; the push path, which brings the table to the accepted head in the transaction that empties the outbox, because an own envelope is not applied when its push is accepted; the seed at bootstrap; the rebuild at a key epoch), never by a local command or a local-command replay. No wire layout, write-set rule, vector or `engine_version` change.
 - `spec-version = 45` (personal-cfo-1cltt.7, slice B; provisional: it settles at merge) replaces the sentence of C.9 "Bounds by object type" that said a client refuses a closure above the service's advertised maximum until the service accepts a closure sidecar of that size: a closure of more than 4096 ids is staged with `stageSnapshotClosure` and the request carries an empty list (sync-service-protocol 4.14), and a bootstrap reads a closure back with `getSnapshotClosure` and checks its commitment itself. No wire layout, write-set rule, vector, engine_version or schema change.
 - `spec-version = 43` (personal-cfo-1cltt.5, slice C, schema version 73; provisional: it settles at merge) records, in the device-local `sync_genesis` row, **which snapshot the genesis was and the SHA-256 of the container this device sent for it** (`genesis_snapshot_id` and `genesis_container_sha256`), and adds the device-local `operation_log.issued_at` (the instant a command was issued, Unix microseconds, written by `apply` on every row, Sync on or off; NULL before the column), which the genesis-gap replay reads because a command taken before Sync was armed has no outbox row to hold it. The identity columns are written in the transaction that records the genesis as `Published` and before the saved container is dropped (C.8 "The genesis snapshot's id and a resume"): the saved container is the only other place either lives. A bootstrap that reconciles the genesis gap fetches the genesis snapshot and checks it against these, so it never trusts the service's copy of what this device published. A row recorded by an earlier build has neither (NULL). No wire layout, write-set rule, vector or `engine_version` change.
@@ -2202,7 +2203,9 @@ A device with no vault becomes a replica by installing a snapshot, never by seed
 **Install.** The installer is the exact inverse of the export. Into a new vault at the snapshot's
 schema version that holds no identity and no row of any replicated table, one transaction writes the
 origin's `vault_id` and `vault_created_at` (from the manifest) first, then every row of every table
-the manifest lists, in the manifest's order, with foreign keys deferred to the commit. A new vault is
+the manifest lists, in the manifest's order, with foreign keys deferred to the commit (a snapshot that
+carries a closure is installed with foreign keys off and without its `attachments` rows: see **The
+closure** below). A new vault is
 seeded only when it is created (`vault_metadata` and the seed rows are one transaction), and a replica
 is never created that way: its seed rows are the origin's, so a legacy origin whose seeded rows hold
 random ids keeps them. Every data-file line must be the one canonical encoding of its row (B.3: a
@@ -2210,10 +2213,41 @@ decimal integer with no sign, leading zero or `-0`; a lowercase hyphenated uuid;
 zero trailing bits; exactly the table's columns). Before it commits, the installed state is exported
 again inside the same transaction and must equal the snapshot table by table (the same file hash, row
 count and state digest); any difference installs nothing. A snapshot that lists a table or column this
-build does not replicate, omits one it does, or needs artifacts (a non-empty closure, an attachment
-row) is refused whole. A snapshot of a **newer** schema is update-required and never installed; one of
+build does not replicate, or omits one it does, is refused whole. A snapshot that needs artifacts (a
+non-empty closure, an attachment row) is refused by the installer on its own and built whole by the
+bootstrap: its proof moves to the end of the build, after the closure is materialized. A snapshot of a **newer** schema is update-required and never installed; one of
 an equal or older schema installs by migrating the new vault to the snapshot's version first and to the
 build's afterwards, so no migration ever runs over rows it was not written for.
+
+**The closure.** A snapshot's closure is every class-1b artifact its rows depend on, and a replica
+fetches **all** of it before it exists, because a manifest binds no id to a logical row: only opening
+an artifact says what it is. In the build at `<vault>.bootstrapping`, after the rows are installed
+(foreign keys off, no `attachments` rows) and the vault is at the build's schema, one pass over the
+manifest's ids in order fetches each artifact, checks the bytes hash to the value the manifest binds,
+opens it (the outer AEAD, then the descriptor) and keeps only its id, binding, record ids and hash. An
+attachment is materialized at once (its bytes re-encrypted under this device's own key). A batch is
+materialized when its last part arrives; because ids are keyed hashes, the parts of different batches
+interleave, so a verified part that waits for its siblings is **spooled to disk as ciphertext**, never
+as plaintext, in a directory removed whatever the outcome. Then the stage-9(b) checks of C.9 run over
+what the pass collected (every batch complete and its split canonical, one binding per logical
+object, one batch per record). The `attachments` rows are then created: the columns that travel
+(`plaintext_size`, `mime_type`, `original_filename`, `created_at`) come from the **snapshot's row**,
+and only the crypto fields come from the artifact's staging (a media type that differs from the
+artifact's is a later edit of the row, not an error), and the staging is cleared in the same
+transaction; the row's plaintext size must equal the artifact's; `ref_count` is rebuilt from the
+links; a row with no artifact, or an artifact with no row, is a defect of the snapshot. The live
+closure (B.2 `sync_live_closure`) is seeded from what was fetched. Foreign keys are then turned on,
+`foreign_key_check` over the whole database must return nothing (a row naming a row that is not there
+is a defect of the snapshot), and the installed state is exported again and must equal the snapshot
+table by table, as the installer's proof does. **A failure is one of three kinds**: deterministic (the
+snapshot is bad at every replica: an object that hashes to the bound value but does not authenticate
+or validate, a wrong closure, a row and an artifact that disagree, a dangling row; its root is never
+picked again, and a materialize error caused by an artifact's content is deterministic exactly as the
+closure check would rule, so the verdict does not depend on arrival order), transient (the service's:
+`ArtifactMissing`, an unreachable service, bytes that are not the bound ones; the same root is
+retried) or local (this device's disk, key or write, `ArtifactMaterializationFailed`; it never marks
+the root invalid). The commit point is the rename of the build; any failure before it discards the
+build.
 
 **Valid roots.** A snapshot may be the root a replica builds on only if its `engine_version` equals
 this build's (any other is update-required itself), the root is not inside the range of any void the
@@ -2235,7 +2269,8 @@ entry.
 
 **Becoming the vault.** The replica is built at `<vault>.bootstrapping` beside the vault path, under
 the vault's lease: the install, the ledger and the first base image (`sync_base` `Ready` at `root`,
-credentials stripped) all land there. Class-2 tables are never shipped, so a new replica starts with
+credentials stripped) all land there, and so does the snapshot's closure when it has one (**The closure**
+above). Class-2 tables are never shipped, so a new replica starts with
 them empty. Only then is the file
 synced and renamed to the vault path and the directory synced. A vault that exists therefore always has
 its base, so no command can be taken, unrecorded, between the install and the base. A start that finds
