@@ -2743,6 +2743,75 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Version 75 (personal-cfo-0g528.2, AC9; provisional: it moves if another migration lands first).
+    // Two attachments may share one blob (ADR 0023 addendum, vault-format C.9): the same bytes
+    // attached on two devices are two attachment ids and one blob, because the blob's name (the
+    // StorageId) is a keyed hash of the bytes. `attachments.storage_id` stops being UNIQUE, which
+    // SQLite can only do by rebuilding the table (the constraint was written inline in version 5),
+    // and the staging index on `sync_artifacts.staged_storage_id` becomes non-unique for the same
+    // reason. The lookup by storage id keeps an index. Nothing references `attachments`, and the
+    // columns do not change. Down recreates the unique constraint and the unique index: while two rows
+    // share a blob the copy fails on the constraint and the step rolls back, so it never drops a row.
+    Migration {
+        version: 75,
+        name: "attachments_share_a_blob",
+        up: "CREATE TABLE attachments_v75 (
+                 id                  BLOB    PRIMARY KEY,
+                 storage_id          TEXT    NOT NULL,
+                 wrapped_content_key BLOB    NOT NULL,
+                 content_key_nonce   BLOB    NOT NULL,
+                 content_nonce       BLOB    NOT NULL,
+                 content_alg         TEXT    NOT NULL,
+                 plaintext_size      INTEGER NOT NULL,
+                 mime_type           TEXT,
+                 original_filename   TEXT,
+                 ref_count           INTEGER NOT NULL DEFAULT 0,
+                 created_at          TEXT    NOT NULL
+             );
+             INSERT INTO attachments_v75 (id, storage_id, wrapped_content_key, content_key_nonce,
+                     content_nonce, content_alg, plaintext_size, mime_type, original_filename,
+                     ref_count, created_at)
+                 SELECT id, storage_id, wrapped_content_key, content_key_nonce, content_nonce,
+                        content_alg, plaintext_size, mime_type, original_filename, ref_count,
+                        created_at
+                   FROM attachments ORDER BY rowid;
+             DROP TABLE attachments;
+             ALTER TABLE attachments_v75 RENAME TO attachments;
+             CREATE INDEX idx_attachments_storage_id ON attachments (storage_id);
+             DROP INDEX idx_sync_artifacts_staged_storage;
+             CREATE INDEX idx_sync_artifacts_staged_storage
+                 ON sync_artifacts (staged_storage_id) WHERE staged_storage_id IS NOT NULL;",
+        down: Some(
+            "DROP INDEX idx_sync_artifacts_staged_storage;
+             CREATE UNIQUE INDEX idx_sync_artifacts_staged_storage
+                 ON sync_artifacts (staged_storage_id) WHERE staged_storage_id IS NOT NULL;
+             CREATE TABLE attachments_v5 (
+                 id                  BLOB    PRIMARY KEY,
+                 storage_id          TEXT    NOT NULL UNIQUE,
+                 wrapped_content_key BLOB    NOT NULL,
+                 content_key_nonce   BLOB    NOT NULL,
+                 content_nonce       BLOB    NOT NULL,
+                 content_alg         TEXT    NOT NULL,
+                 plaintext_size      INTEGER NOT NULL,
+                 mime_type           TEXT,
+                 original_filename   TEXT,
+                 ref_count           INTEGER NOT NULL DEFAULT 0,
+                 created_at          TEXT    NOT NULL
+             );
+             INSERT INTO attachments_v5 (id, storage_id, wrapped_content_key, content_key_nonce,
+                     content_nonce, content_alg, plaintext_size, mime_type, original_filename,
+                     ref_count, created_at)
+                 SELECT id, storage_id, wrapped_content_key, content_key_nonce, content_nonce,
+                        content_alg, plaintext_size, mime_type, original_filename, ref_count,
+                        created_at
+                   FROM attachments ORDER BY rowid;
+             DROP INDEX idx_attachments_storage_id;
+             DROP TABLE attachments;
+             ALTER TABLE attachments_v5 RENAME TO attachments;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: true,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
@@ -4285,9 +4354,8 @@ mod tests {
         );
         assert!(origin.is_ok(), "an unchanged cursor is not a move back");
 
-        // 70, 71, 72 and 73 (`sync_artifacts`, `sync_notices`, the outbox rebuild, the genesis
-        // identity) sit above 69: stepping to 68 reverts all five.
-        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 6);
+        // 70 to 75 sit above 69: stepping to 68 reverts all seven.
+        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 7);
         assert!(
             objects(&conn).is_empty(),
             "down drops both tables and every trigger"
@@ -4326,9 +4394,8 @@ mod tests {
                 "sync_artifacts"
             ]
         );
-        // 71, 72 and 73 (`sync_notices`, the outbox rebuild, the genesis identity) sit above 70:
-        // stepping to 69 reverts all four.
-        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 5);
+        // 71 to 75 sit above 70: stepping to 69 reverts all six.
+        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 6);
         assert!(objects(&conn).is_empty());
         apply(&mut conn, MIGRATIONS).unwrap();
         let rows: i64 = conn
@@ -4412,8 +4479,8 @@ mod tests {
             "key material on a batch part"
         );
         assert!(
-            insert(24, 32, 1, ("NULL", "NULL"), STAGED).is_err(),
-            "two rows staged for one blob"
+            insert(24, 32, 1, ("NULL", "NULL"), STAGED).is_ok(),
+            "two rows may stage one blob (version 75)"
         );
         assert!(
             insert(25, 32, 1, ("NULL", "NULL"), &STAGED.replace("'sb'", "'sd'")).is_ok(),
@@ -4431,7 +4498,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        assert_eq!(cleared, 1);
+        assert_eq!(cleared, 2, "both rows that staged the blob (version 75)");
     }
 
     /// 71 adds the device-local notice table; down drops it with its index, and up creates it
@@ -4454,9 +4521,8 @@ mod tests {
         assert!(insert("something_else", 16, 3).is_err());
         assert!(insert("import_discarded", 15, 3).is_err());
         assert!(insert("import_discarded", 16, -1).is_err());
-        // 72 and 73 (the outbox rebuild, the genesis identity) sit above 71: stepping to 70
-        // reverts all three.
-        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 4);
+        // 72, 73, 74 and 75 sit above 71: stepping to 70 reverts all five.
+        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 5);
         let left: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%sync_notices%'",
@@ -4534,8 +4600,9 @@ mod tests {
         outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "zeroblob(2)").unwrap();
         outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
 
-        // 73 (the genesis identity) and 74 (the live closure) sit above 72: step past them first.
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 2);
+        // 73 (the genesis identity), 74 (the live closure) and 75 (shared blobs) sit above 72: step
+        // past them first.
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 3);
         assert_eq!(migrate_down(&mut conn, 71).unwrap(), 1);
 
         let rows: i64 = conn
@@ -4584,7 +4651,7 @@ mod tests {
         outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "NULL").unwrap();
         outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
 
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 2);
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 3);
         assert!(migrate_down(&mut conn, 71).is_err());
 
         let applied: i64 = conn
@@ -4683,7 +4750,7 @@ mod tests {
         );
         assert_eq!(identity(&conn).0.map(|id| id.len()), Some(16));
 
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 2);
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 3);
         let columns: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('sync_genesis')
@@ -4699,6 +4766,117 @@ mod tests {
         assert_eq!(rows, 1, "and keeps the row");
         apply(&mut conn, MIGRATIONS).unwrap();
         assert_eq!(identity(&conn), (None, None));
+    }
+
+    /// Version 75 lets two attachments share one blob (the same storage id) and two staged artifacts
+    /// name one blob, keeps every row of the rebuilt table in its order, and keeps a lookup index.
+    #[test]
+    fn v75_lets_rows_share_a_blob_and_carries_every_row_over() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        // Up to 74: the unique constraint is still there.
+        apply(&mut conn, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        let attach = |conn: &Connection, id: u8, sid: &str| {
+            conn.execute(
+                "INSERT INTO attachments (id, storage_id, wrapped_content_key, content_key_nonce,
+                     content_nonce, content_alg, plaintext_size, mime_type, original_filename,
+                     ref_count, created_at)
+                 VALUES (?1, ?2, x'aa', x'01', x'02', 'AES-256-GCM', 5,
+                         'text/plain', 'f.txt', 3, 't')",
+                rusqlite::params![vec![id; 16], sid],
+            )
+        };
+        assert!(attach(&conn, 1, "sb").is_ok());
+        assert!(
+            attach(&conn, 2, "sb").is_err(),
+            "version 74 keeps it unique"
+        );
+        assert!(attach(&conn, 2, "sc").is_ok());
+
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let rows: Vec<(String, i64)> = conn
+            .prepare("SELECT storage_id, ref_count FROM attachments ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(rows, [("sb".to_owned(), 3), ("sc".to_owned(), 3)]);
+        assert!(attach(&conn, 3, "sb").is_ok(), "two rows share a blob");
+        assert!(attach(&conn, 3, "sd").is_err(), "an id is still one row");
+        let index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE name = 'idx_attachments_storage_id' AND sql NOT LIKE '%UNIQUE%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
+
+        // Two staged artifacts may name one blob too.
+        let stage = |n: u8| {
+            conn.execute(
+                &format!(
+                    "INSERT INTO sync_artifacts
+                         (key_epoch, sync_artifact_id, ciphertext_sha256, kind, logical_id,
+                          staged_storage_id, staged_wrapped_content_key, staged_content_key_nonce,
+                          staged_content_nonce, staged_content_alg, staged_plaintext_size)
+                     VALUES (1, x'{}', zeroblob(32), 1, zeroblob(16), 'sb', x'aa', x'00', x'01',
+                             'AES-256-GCM', 5)",
+                    format!("{n:02x}").repeat(32)
+                ),
+                [],
+            )
+        };
+        assert!(stage(1).is_ok());
+        assert!(stage(2).is_ok(), "two staged artifacts name one blob");
+    }
+
+    /// Down with no shared blob restores the unique constraint and keeps the rows; while two rows
+    /// share a blob it refuses, rolls back, and drops nothing.
+    #[test]
+    fn v75_down_restores_uniqueness_and_refuses_while_a_blob_is_shared() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let attach = |conn: &Connection, id: u8, sid: &str| {
+            conn.execute(
+                "INSERT INTO attachments (id, storage_id, wrapped_content_key, content_key_nonce,
+                     content_nonce, content_alg, plaintext_size, ref_count, created_at)
+                 VALUES (?1, ?2, x'aa', x'01', x'02', 'AES-256-GCM', 5, 1, 't')",
+                rusqlite::params![vec![id; 16], sid],
+            )
+            .unwrap();
+        };
+        let count = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get(0))
+                .unwrap()
+        };
+        attach(&conn, 1, "sb");
+        attach(&conn, 2, "sb");
+        assert!(
+            migrate_down(&mut conn, 74).is_err(),
+            "a shared blob refuses"
+        );
+        assert_eq!(count(&conn), 2, "a refused down drops no row");
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, CURRENT_VERSION, "and the step is not recorded");
+        conn.execute("DELETE FROM attachments WHERE id = ?1", [vec![2_u8; 16]])
+            .unwrap();
+        assert_eq!(migrate_down(&mut conn, 74).unwrap(), 1);
+        assert_eq!(count(&conn), 1);
+        let duplicate = conn.execute(
+            "INSERT INTO attachments (id, storage_id, wrapped_content_key, content_key_nonce,
+                 content_nonce, content_alg, plaintext_size, ref_count, created_at)
+             VALUES (zeroblob(16), 'sb', x'aa', x'01', x'02', 'AES-256-GCM', 5, 1, 't')",
+            [],
+        );
+        assert!(duplicate.is_err(), "unique again");
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(count(&conn), 1, "up again carries the row over");
     }
 
     /// Version 74 creates the live closure's table empty, with its keys and its checks (an id and a
@@ -4798,7 +4976,7 @@ mod tests {
             .unwrap();
         assert_eq!(index, 1);
 
-        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 1);
+        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 2);
         let tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'sync_live_closure%'",
