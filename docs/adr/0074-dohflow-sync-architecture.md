@@ -1456,7 +1456,7 @@ records the migration's safety rule. It changes no decision above. Nothing here 
      each carries the generation it answers: apply does nothing for a stale generation or a question
      that is no longer pending, so a confirm and a dismiss from two devices settle as whichever applies
      first. A later re-upload of a file whose question was dismissed is a fresh, explicit action: the
-     question opens again at the next generation.
+     question opens again at the next generation. A device that holds a staged batch of the file has a third answer (item 9).
    - **A restore commits fresh copies and leaves the voided originals voided.** The ledger stays
      append-only, and the result is what today's silent restore produces (new ledger rows; the old ones
      stay voided). Confirm's own apply reads only class-1 rows, so it is deterministic on every device,
@@ -1510,13 +1510,37 @@ records the migration's safety rule. It changes no decision above. Nothing here 
    mixed engine versions rests on the engine-version rule. The tables and the new spec version are
    recorded in vault-format B.2 and the spec markers; the numbers settle in merge order.
 
-Open (an owner question routed through `05-decisions`, not decided here): `content_fingerprint` hashes the
-file's bytes only, so the same file has the same row identities whichever account it is imported into.
-The commonest reason to void a whole import is a wrong account or mapping, and under D-I1 = C its
-re-upload now asks instead of re-importing, and a confirmed restore returns the old rows to the old
-account. The recommended answer is a third answer, offered only on the uploading device (the only one
-with the staging): "import this upload instead", which commits the re-upload's own rows and re-points
-the identities. It affects only the restore flow of item 5, not the tables or the derivations.
+9. **A third answer for a file voided for the wrong account or mapping (owner decision, 2026-11-12).**
+   `content_fingerprint` hashes the file's bytes only, so the same file has the same row identities
+   whichever account it is imported into. The commonest reason to void a whole import is a wrong account
+   or mapping, and under item 5 its re-upload asks instead of re-importing, and a confirmed restore
+   returns the old rows to the old account. The owner chose a third answer, "Import this upload
+   instead" (decision H1, option 1).
+   - (a) **Where it is offered.** Only on a device that holds a staged batch with the file's fingerprint
+     while the question is pending (the device the file was uploaded on, or any device that uploads it
+     again). Other devices offer confirm and dismiss only. A re-upload while the question is pending
+     does not raise the generation.
+   - (b) **A claim, then the rows.** The answer is first a **claim** command that resolves the question
+     as `import_anyway` and carries `(question id, generation, source_batch_id)`, with a materialized
+     payload. Each row commit of the re-upload then carries `(question id, generation)` and does
+     nothing unless the question was resolved `import_anyway` for that row's own batch. The generation
+     rule of item 5 settles every race: a restore or dismiss applied between the claim and the rows
+     makes the rows no-ops; two devices that both claim commit only the first claimant's batch; a
+     restore that wins makes the claim and every row no-ops.
+   - (c) **The claimed batch supersedes the identities.** For a row of the claimed batch, apply commits
+     the row (an ordinary commit, with the ledger id of `personal-cfo-0g528.1` for the new batch) and
+     **replaces** the existing identity's `transaction_id` and snapshot, instead of returning the voided
+     transaction (item 3) or recording a `file_row_conflict` (item 4). The same supersede rule applies to
+     a restore's copies (item 5), and the committed dedupe decision keyed by the identity is superseded,
+     not duplicated, by both. For each ordinal in the claimed batch the identity is replaced, or inserted
+     when none exists. An identity whose ordinal the batch lacks (a map that routes fewer records)
+     stays on its voided row.
+   - (d) **The originals stay voided, and the question closes everywhere.** A later re-upload of the file
+     finds active identities, so it is "already imported", with no question. A batch that loses the race
+     (a restore or dismiss won, or another device's claim) ends discarded with nothing committed, and its
+     device shows that the question was answered elsewhere.
+   - (e) **The audit line and the disposition's `detail` name the winning batch.**
+   The wording of the third answer belongs to the design route, like item 5's.
 
 ## Linked beads
 

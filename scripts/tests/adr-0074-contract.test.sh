@@ -138,6 +138,10 @@ require_text 'restore commits fresh copies' '**A restore commits fresh copies an
 require_text 'attachments and obligations do not come back' '**Attachment links and obligation'
 require_text 'the migration refuses on an armed vault' '**The migration refuses on a vault where Sync is armed.**'
 require_text 'a backfill after launch is a command' '**a migration writes no class-1 rows on an armed'
-require_text 'the owner question is recorded as open' '"import this upload instead"'
+require_text 'the third answer is a decided item' '9. **A third answer for a file voided for the wrong account or mapping (owner decision, 2026-11-12).**'
+require_text 'the third answer is first a claim' 'The answer is first a **claim** command that resolves the question'
+require_text 'the claimed batch supersedes the identities' '**The claimed batch supersedes the identities.**'
+require_text 'only the uploading side is offered it' 'Other devices offer confirm and dismiss only.'
+require_text 'originals stay voided and the question closes' '**The originals stay voided, and the question closes everywhere.**'
 
 echo "PASS — $CASES ADR 0074 contract assertions, 0 failures"
