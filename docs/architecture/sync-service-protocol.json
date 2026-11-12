@@ -53,6 +53,7 @@
         "HeadMismatch",
         "SnapshotNotFound",
         "ArtifactMissing",
+        "ArtifactBindingMismatch",
         "QuotaExceeded",
         "MalformedObject",
         "UnsupportedSuite"
@@ -84,6 +85,7 @@
         "ProtocolFork",
         "EpochRejected",
         "ArtifactMissing",
+        "ArtifactBindingMismatch",
         "NonceTupleReused",
         "HeadMismatch",
         "QuotaExceeded",
@@ -147,6 +149,7 @@
         "EpochRejected",
         "HeadMismatch",
         "ArtifactMissing",
+        "ArtifactBindingMismatch",
         "QuotaExceeded"
       ]
     },
@@ -462,6 +465,10 @@
     },
     {
       "code": "ArtifactMissing",
+      "status": 409
+    },
+    {
+      "code": "ArtifactBindingMismatch",
       "status": 409
     },
     {
