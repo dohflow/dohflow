@@ -672,6 +672,52 @@ fn a_snapshot_that_needs_its_closure_is_refused_without_a_service() {
     assert!(!with_suffix(&dir.path().join("replica.vault"), ".bootstrapping").exists());
 }
 
+/// A snapshot with no artifact is built the same whether or not the caller passes a service (the
+/// engine passes one whenever Sync is on): the service is never asked, the install's own proof is
+/// the only proof, and the live closure stays empty.
+#[test]
+fn a_snapshot_with_no_artifact_ignores_a_service_the_caller_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let worker =
+        DbWorker::open_with_raw_key(dir.path().join("origin.db"), generate_dek().unwrap()).unwrap();
+    let (plaintext, _) =
+        export_genesis_with_mark(&worker.read_connection().unwrap(), &ExportInput::default())
+            .unwrap();
+    let verified = verify(&plaintext).unwrap();
+    assert!(verified.manifest.artifacts.is_empty());
+    let (version, own) = (engine(), engine());
+    let dek = Arc::new(generate_dek().unwrap());
+    let key = key_of(1, 0);
+    let service = FakeService::default();
+    let path = dir.path().join("replica.vault");
+    let born = bootstrap_replica(
+        &path,
+        &dek,
+        &ReplicaSource {
+            vault_id: *worker.vault_id().unwrap().as_bytes(),
+            root: 0,
+            snapshot: &verified,
+            engine_version: &version,
+            own_engine_version: &own,
+            held_voids: &[],
+            closure: Some(ClosureSource {
+                transport: &service,
+                key: &key,
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        count(&born.worker, "SELECT COUNT(*) FROM sync_live_closure"),
+        0
+    );
+    assert_eq!(
+        count(&born.worker, "PRAGMA foreign_keys"),
+        1,
+        "foreign keys are on"
+    );
+}
+
 /// A materialize error caused by an artifact's CONTENT is deterministic exactly as the closure check
 /// would have ruled, whatever order the artifacts arrive in: two attachment artifacts carrying the
 /// same bytes cannot both be materialized (the second finds the blob held).

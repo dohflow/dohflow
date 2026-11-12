@@ -496,7 +496,13 @@ pub fn bootstrap_replica(
     #[cfg(test)]
     reached(Step::Opened)?;
     let spool = Spool::new(with_suffix(path, SPOOL_SUFFIX));
-    let closure_result = complete_the_build(&worker, source, &snapshot_attachments, &spool);
+    let closure_result = complete_the_build(
+        &worker,
+        source,
+        needs_artifacts,
+        &snapshot_attachments,
+        &spool,
+    );
     // The spool is verified ciphertext waiting for siblings: gone whatever the outcome.
     spool.remove();
     closure_result?;
@@ -560,10 +566,13 @@ pub fn bootstrap_replica(
 fn complete_the_build(
     worker: &DbWorker,
     source: &ReplicaSource<'_>,
+    needs_artifacts: bool,
     attachments: &[crate::snapshot_install::SnapshotAttachment],
     spool: &Spool,
 ) -> Result<(), BootstrapError> {
-    if let Some(closure) = source.closure {
+    // Gated on what the snapshot needs, not on whether the caller passed a service: the engine may
+    // pass one whenever Sync is on, and a snapshot with no artifact was proved whole in its install.
+    if let (true, Some(closure)) = (needs_artifacts, source.closure) {
         let materialized = materialize_closure(
             worker,
             closure.transport,
@@ -586,7 +595,7 @@ fn complete_the_build(
     if dangling {
         return Err(InvalidSnapshot::DanglingReference.into());
     }
-    if source.closure.is_some() {
+    if needs_artifacts {
         // A snapshot with no closure was proved whole inside its install.
         prove_installed(&guard.conn, source.snapshot)?;
     }
