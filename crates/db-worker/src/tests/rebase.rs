@@ -975,6 +975,130 @@ mod executor {
     }
 
     #[test]
+    fn a_sibling_ordered_before_a_refused_command_is_replayed_once_on_a_fresh_trial() {
+        // 04b's #291 F1: the refused command's group queues and the replay restarts from a fresh
+        // copy of the new base. A sibling that was applied to the first trial BEFORE the refusal
+        // must be applied again to the fresh one, once: a replay that reused the first trial would
+        // find its memo (an abort) or leave it applied twice.
+        let (dir, live, _account, scratch_path) = live_with_base();
+        let (parent, child) = (CategoryId::new(), CategoryId::new());
+        for (id, name) in [(parent, "Parent"), (child, "Child")] {
+            live.dispatch(
+                meta(),
+                WriteCommand::CreateCategory {
+                    id,
+                    parent_id: None,
+                    name: name.to_owned(),
+                    category_type: "expense".to_owned(),
+                    color: None,
+                    icon: None,
+                },
+            )
+            .unwrap();
+        }
+        live.lock()
+            .conn
+            .execute("DELETE FROM sync_outbox", [])
+            .unwrap();
+        live.advance_base_image(6).unwrap();
+        // The independent sibling comes FIRST in local order; the command the new base refuses
+        // (the move that would make a cycle) comes after it.
+        let before = issue(
+            &live,
+            meta(),
+            liquid_account_cmd(AccountId::new(), Currency::Usd, 1_000),
+        );
+        let refused = issue(
+            &live,
+            meta(),
+            WriteCommand::MoveCategory {
+                id: child,
+                new_parent_id: Some(parent),
+            },
+        );
+        let device_b = live
+            .rollback_to(6, &dir.path().join("rebase").join("b.db"))
+            .unwrap();
+        let remote = seal(
+            device_b.worker(),
+            &meta(),
+            &WriteCommand::MoveCategory {
+                id: parent,
+                new_parent_id: Some(child),
+            },
+        );
+        let mut scratch = live.rollback_to(6, &scratch_path).unwrap();
+        scratch.apply_pulled(&[remote.pulled(7)]).unwrap();
+
+        let executed = scratch
+            .rebase_local(&[before.clone(), refused.clone()])
+            .unwrap();
+
+        assert_eq!(executed.replayed.len(), 1);
+        assert_eq!(executed.replayed[0].command_id, before.meta.command_id);
+        let queued: Vec<_> = executed.plan.queued().collect();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].0.command_id, refused.meta.command_id);
+        assert_eq!(
+            count(scratch.worker(), "SELECT COUNT(*) FROM accounts"),
+            2,
+            "the base's account and the sibling, once"
+        );
+        let logged: i64 = scratch
+            .worker()
+            .lock()
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM operation_log WHERE command_id = ?1",
+                [before.meta.command_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(logged, 1);
+        assert!(op_log_row(scratch.worker(), refused.meta.command_id).is_none());
+    }
+
+    #[test]
+    fn a_scratch_beside_the_live_vault_shares_its_sync_directory_and_never_reconciles_it() {
+        // 04b's #291 F2: a scratch placed in the live vault's own directory has the live vault's
+        // `sync/` as its Sync directory. Opening it must not reconcile that directory: a copy of
+        // the base image records no `sync_base` row of its own, and a reconcile of that would
+        // delete the live vault's `sync/base.db`.
+        let (dir, live, _account, _scratch) = live_with_base();
+        let sync = crate::base_image::sync_dir(&live.path);
+        let beside = live.path.with_file_name("scratch-beside.db");
+        assert_eq!(crate::base_image::sync_dir(&beside), sync);
+        let base_before =
+            crate::base_image::sha256_file(&crate::base_image::base_image_path(&live.path))
+                .unwrap();
+        let names = |dir: &std::path::Path| -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| !name.ends_with(".runner.lock"))
+                .collect();
+            names.sort();
+            names
+        };
+        let sync_names = names(&sync);
+
+        let scratch = live.rollback_to(5, &beside).unwrap();
+
+        assert_eq!(names(&sync), sync_names, "nothing was added or removed");
+        assert_eq!(
+            crate::base_image::sha256_file(&crate::base_image::base_image_path(&live.path))
+                .unwrap(),
+            base_before
+        );
+        assert_eq!(
+            live.base_image_status().unwrap(),
+            BaseImageStatus::Ready { base_seq: 5 }
+        );
+        drop(scratch);
+        drop(dir);
+    }
+
+    #[test]
     fn replaying_the_same_outbox_twice_leaves_one_row_per_command() {
         let (dir, live, account, scratch_path) = live_with_base();
         let kept = issue(
@@ -4223,6 +4347,49 @@ mod overlay {
             )
             .unwrap();
         assert_eq!(pending, 1);
+    }
+
+    #[test]
+    fn a_void_honored_after_the_base_is_in_the_vault_the_swap_installs_with_the_cursor_forward() {
+        // The base was taken with a ledger of one seeded void and a cursor; a void was honored
+        // after it. The vault `into_swap` finishes (the file the kernel renames into place) holds
+        // both ledger rows in ordinal order, the honored one byte for byte, and a cursor that did
+        // not go back (bxsbz.7: a rebase never rolls an honored void back to the base's copy).
+        let w = world_with(seed_ledger);
+        drift(&w);
+        honor(&w.live, 2, 7, 8);
+        let (mut scratch, image) = ready(&w);
+        scratch.overlay_class3(&image).unwrap();
+        scratch.apply_pulled_class3_effects().unwrap();
+        let inputs = scratch.into_swap().unwrap();
+
+        let rebuilt = w
+            .live
+            .key
+            .open_image(
+                &inputs.scratch_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+        let rows: Vec<(i64, i64, i64, String)> = rebuilt
+            .prepare("SELECT ordinal, first, last, origin FROM sync_voids ORDER BY ordinal")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(rows, ledger(&w.live));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1], (2, 7, 8, "honored".to_owned()));
+        let (root, next): (Option<i64>, i64) = rebuilt
+            .query_row(
+                "SELECT snapshot_root, next_to_apply FROM sync_position",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(root, Some(4));
+        assert!(next >= 6, "the cursor never goes back: {next}");
     }
 
     #[test]

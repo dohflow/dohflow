@@ -371,26 +371,41 @@ impl DbWorker {
         target_seq: i64,
         scratch_path: &Path,
     ) -> Result<Scratch<'_>, RebaseError> {
-        let base_seq = match self.base_image_status()? {
-            BaseImageStatus::Ready { base_seq } => base_seq,
-            other => return Err(RebaseError::NoUsableBase(other)),
+        // The status check and the copy of `base.db` are one hold of the base gate, the gate every
+        // capture and every key rotation holds for its whole run: the Sync loop cannot advance the
+        // base between the two, so the copy is the base the check vouched for (bxsbz.4 review F3).
+        // Only these two steps hold it, so a rebase never blocks a capture for its replay.
+        let base_seq = {
+            let _one_at_a_time = self
+                .base_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let base_seq = match self.base_image_status()? {
+                BaseImageStatus::Ready { base_seq } => base_seq,
+                other => return Err(RebaseError::NoUsableBase(other)),
+            };
+            #[cfg(test)]
+            crate::base_image::observe::at("rollback-checked");
+            if target_seq != base_seq {
+                return Err(RebaseError::TargetNotTheBase {
+                    requested: target_seq,
+                    base_seq,
+                });
+            }
+            if scratch_path.exists() {
+                return Err(RebaseError::ScratchExists);
+            }
+            if let Some(dir) = scratch_path.parent() {
+                fs::create_dir_all(dir)?;
+            }
+            if let Err(error) = copy_file_synced(&base_image_path(&self.path), scratch_path) {
+                let _ = fs::remove_file(scratch_path);
+                return Err(error.into());
+            }
+            #[cfg(test)]
+            crate::base_image::observe::at("rollback-copied");
+            base_seq
         };
-        if target_seq != base_seq {
-            return Err(RebaseError::TargetNotTheBase {
-                requested: target_seq,
-                base_seq,
-            });
-        }
-        if scratch_path.exists() {
-            return Err(RebaseError::ScratchExists);
-        }
-        if let Some(dir) = scratch_path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        if let Err(error) = copy_file_synced(&base_image_path(&self.path), scratch_path) {
-            let _ = fs::remove_file(scratch_path);
-            return Err(error.into());
-        }
         let worker = match self.open_scratch(scratch_path) {
             Ok(worker) => worker,
             Err(error) => {

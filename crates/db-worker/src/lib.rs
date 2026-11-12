@@ -1971,6 +1971,43 @@ impl DbWorker {
         }
     }
 
+    /// A handle on this worker's vault key for a rebase swap, taken before
+    /// [`DbWorker::close_into_lease`] so the swapped-in vault can be reopened without the password
+    /// (personal-cfo-bxsbz.7). The key never leaves the process, shares the worker's zeroizing
+    /// storage, and is scrubbed when the last holder (this worker, a scratch vault, the returned
+    /// [`SwapKey`]) drops.
+    ///
+    /// # Errors
+    /// [`DbError::KeyUnavailable`] for a passphrase-keyed worker (the swap is for DEK vaults).
+    pub fn swap_key(&self) -> Result<SwapKey, DbError> {
+        match &self.key {
+            KeyMaterial::Raw(dek) => Ok(SwapKey(std::sync::Arc::clone(dek))),
+            KeyMaterial::Passphrase(_) => Err(DbError::KeyUnavailable),
+        }
+    }
+
+    /// Reopen the vault at `path` after a rebase swap, under the lease the swap held and with the
+    /// key [`DbWorker::swap_key`] took. As
+    /// [`DbWorker::open_existing_with_raw_key_leased`]: the lock is never released in between.
+    ///
+    /// # Errors
+    /// As [`DbWorker::open_existing_with_raw_key_leased`].
+    pub fn reopen_after_swap(
+        path: impl AsRef<Path>,
+        key: SwapKey,
+        lease: VaultLease,
+    ) -> Result<Self, DbError> {
+        let path = path.as_ref().to_path_buf();
+        if lease.path != path {
+            return Err(DbError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the lease is for a different vault",
+            )));
+        }
+        let conn = open_existing_keyed_raw(&path, &key.0)?;
+        Self::bootstrap(path, conn, KeyMaterial::Raw(key.0), lease.file)
+    }
+
     /// Probe the SQLCipher database at `path` with `dek` without opening a worker, migrating
     /// or writing anything (it holds the runner lock only for the probe). A handle is keyed and the
     /// vault's `vault_id` is read: `Ok(None)` means SQLCipher answered "file is not a
@@ -5087,6 +5124,17 @@ impl LedgerQuery for Connection {
     fn operation_count(&self) -> Result<u64, DbError> {
         let n: i64 = self.query_row("SELECT COUNT(*) FROM operation_log", [], |r| r.get(0))?;
         Ok(u64::try_from(n).unwrap_or(0))
+    }
+}
+
+/// The vault key, kept across a rebase swap so the swapped-in vault reopens without the password
+/// ([`DbWorker::swap_key`], [`DbWorker::reopen_after_swap`]). Opaque: it has no
+/// accessor, no `Clone` and no `Debug` that shows the key, and the key is scrubbed on drop.
+pub struct SwapKey(std::sync::Arc<Dek>);
+
+impl std::fmt::Debug for SwapKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SwapKey(..)")
     }
 }
 

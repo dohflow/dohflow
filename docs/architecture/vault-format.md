@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=41 -->
+<!-- vault-format: spec-version=42 -->
 <!-- vault-format: schema-version=72 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -85,6 +85,10 @@ or service-facing identifier.
 | `vault.db.runner.lock` | advisory exclusive lock (the vault lease) held while a vault is unlocked, and across every step that renames or removes the vault's files with no worker running: startup rotation recovery, the rotation swap, delete, restore. A second opener fails with a typed vault-in-use error and touches no file. The OS releases it on close, exit or crash; a leftover file never blocks the next open |
 | `vault.db-wal`, `vault.db-shm`, `vault.db-journal` | SQLite side files: the WAL files while the vault is open, and a rollback journal if the database briefly uses that mode |
 | `vault.db.rekey`, `vault.db.rekey.tmp`, `vault.db.rekey-new`, `vault.db.envelope.rekey-new`, `vault.db.rekey-old` | transient files of an in-progress or interrupted key rotation: the journal (`preparing`, `prepared`, `committed`), its temp file, the re-encrypted copy, the new envelope and the old database |
+| `vault.db.rebase`, `vault.db.rebase.tmp` | transient files of an in-progress or interrupted Sync rebase swap: the journal (`preparing`, `prepared`, `committed`) and its temp file |
+| `sync/base.db` | the Sync base image: the vault as of `sync_base.base_seq`, credentials stripped, under the vault's DEK; a rebase swap replaces it with the new base |
+| `sync/pre-rebase.db` | the vault a rebase swap replaced, kept until the next accepted push: a full copy under the current DEK, connector credentials included; re-encrypted by a rotation and scrubbed of a removed connection's credential. A backup carries the vault, its envelope and its blobs, not `sync/`, so no backup holds it |
+| `sync/rebase-*` | a rebase's working files: the rebuilt vault, the new base image, trial copies, their SQLite side files and runner-lock sidecars. Each is a full copy of the vault under the current DEK, so none outlives its rebase: the swap, an abandoned rebase, a rotation's prepare and every open remove them |
 
 While a rotation runs, SQLite can leave `-wal`, `-shm` and `-journal` side files
 beside `vault.db.rekey-new`, and the hard-link probe leaves a transient
@@ -98,6 +102,24 @@ A rotation journal present at startup is finished (`committed`) or undone
 are reported as needing recovery and nothing is deleted
 ([ADR 0083](../adr/0083-vault-key-rotation.md) §4). Vault deletion removes every
 name in this file family, including the rotation side-file names.
+
+A rebase-swap journal present at startup is finished (`committed`) or undone (`preparing`,
+`prepared`) before the vault is classified, under the vault lease, by the recovery that also runs
+the rotation's. Before the commit point the live vault's data is unchanged; only its `sync_base` row
+says `Rebasing`, which the next open turns back into `Ready` when `sync/base.db` still matches the
+recorded digest (and into `NoBase` when it does not). After the commit point recovery finishes the
+rename sequence: the live vault becomes `sync/pre-rebase.db`, the rebuilt vault becomes `vault.db`,
+the new base image becomes `sync/base.db`, the rebase's working files are removed, and the journal
+goes last. The rotation journal and the rebase journal are mutually exclusive: if both are present
+neither recovery runs, nothing is moved or deleted, and the open fails with a typed error
+(`ConflictingJournals`). `Kernel::unlock_vault`, called directly without the vault controller that
+runs recovery, refuses a rebase journal alone with `RebaseInProgress`. A rotation does not prepare
+while a rebase journal exists. The journal names two files under `sync/`, the rebuilt vault and the
+new base image, and each is a rename source: both must be plain `sync/rebase-*` files, or the
+journal is a contradiction and nothing is moved; the rename targets (`vault.db`, `sync/base.db`,
+`sync/pre-rebase.db`) are fixed. Any housekeeping of `sync/` temporary files leaves `sync/snapshots/`
+alone. Vault deletion removes every rebase name: the journal beside `vault.db`, and `sync/` with the
+rest.
 
 ### Envelope byte layout (v1)
 
@@ -272,6 +294,11 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 42` (personal-cfo-bxsbz.7; provisional, it settles at merge) specifies the rebase
+  swap's on-disk surface: the journal and its crash-safe rename sequence, the `sync/rebase-*` working
+  files, the `sync/pre-rebase.db` lifecycle, the `Rebasing` record's recovery, and the rule that a
+  rotation and a rebase swap never overlap. No wire layout, write-set rule, vector, `engine_version`
+  or schema change.
 - `spec-version = 41` (personal-cfo-bxsbz.5, schema version 72) lets a `Bound` `sync_outbox` row carry no
   result. The accepted-envelope record (C.10) already allows an accepted command with no `result_ref`
   and says a present one is 1 to 64 bytes, because an empty one would be a second encoding of an absent

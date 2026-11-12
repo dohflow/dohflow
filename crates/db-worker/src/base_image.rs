@@ -100,10 +100,69 @@ pub fn pre_rebase_path(vault_path: &Path) -> PathBuf {
 }
 
 /// Names under [`SYNC_DIR`] that mark a rebase in flight or just swapped, apart from the two files
-/// above: any entry whose name starts with one of these is a rebase journal or scratch vault. The
-/// rebase swap (`personal-cfo-bxsbz.7b`) adds the names it settles on here; the prefix `rebase`
-/// is reserved for it.
+/// above: any entry whose name starts with one of these is a rebase scratch vault (or one of its
+/// siblings: the new base image, the trial copies, their runner-lock sidecars). The rebase swap
+/// (`personal-cfo-bxsbz.7`) names its working files with this prefix.
 pub const REBASE_ARTIFACT_PREFIXES: &[&str] = &["rebase"];
+
+/// The rebuilt vault of a rebase while it is being made and swapped in, under [`SYNC_DIR`]. Its
+/// siblings take the same stem (`rebase-scratch.post-pull.db`, the new base image;
+/// `rebase-scratch.trial-N.db`; the `.runner.lock` sidecars), so one prefix names them all.
+pub const REBASE_SCRATCH_FILE: &str = "rebase-scratch.db";
+
+/// Suffix of the rebase journal beside the vault (`vault.db.rebase`), kept by the kernel.
+pub const REBASE_JOURNAL_SUFFIX: &str = ".rebase";
+
+/// Where the rebuilt vault of a rebase at `vault_path` is made: `sync/rebase-scratch.db`, on the
+/// same filesystem as the vault, so the swap is a rename.
+#[must_use]
+pub fn rebase_scratch_path(vault_path: &Path) -> PathBuf {
+    sync_dir(vault_path).join(REBASE_SCRATCH_FILE)
+}
+
+/// Where the rebase journal of the vault at `vault_path` lives (`vault.db.rebase`).
+#[must_use]
+pub fn rebase_journal_path(vault_path: &Path) -> PathBuf {
+    with_suffix(vault_path, REBASE_JOURNAL_SUFFIX)
+}
+
+/// Whether `name` (a file name under [`SYNC_DIR`]) is one of a rebase's working files.
+#[must_use]
+pub fn is_rebase_artifact(name: &str) -> bool {
+    REBASE_ARTIFACT_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+/// Remove every rebase working file under [`SYNC_DIR`] (the scratch vault, the new base image, the
+/// trial copies, their side files and runner-lock sidecars). Only files whose name starts with a
+/// [`REBASE_ARTIFACT_PREFIXES`] entry are touched: `base.db`, `pre-rebase.db` and the saved
+/// snapshots directory are never matched. Returns how many files it removed. Callers hold the vault
+/// lease, so no rebase is running; a rebase journal that still names these files must be settled
+/// first (the kernel's recovery does that before any open).
+///
+/// # Errors
+/// [`io::Error`] if the directory cannot be listed or a file cannot be removed.
+pub fn remove_rebase_artifacts(vault_path: &Path) -> io::Result<usize> {
+    let dir = sync_dir(vault_path);
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let is_artifact = entry.file_name().to_str().is_some_and(is_rebase_artifact);
+        if is_artifact && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            remove_if_present(&entry.path())?;
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        fsync_dir(&dir)?;
+    }
+    Ok(removed)
+}
 
 /// Whether a swap or a rebase is in progress beside the vault at `vault_path`, so that anything
 /// which removes files the database does not name (the orphan-blob sweep) must stand down: a
@@ -129,6 +188,18 @@ pub fn swap_or_rebase_in_progress(vault_path: &Path) -> bool {
             })
         });
         if rotation {
+            return true;
+        }
+        // A rebase swap's journal (and its temp file) beside the vault.
+        let rebase = std::fs::read_dir(dir).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|candidate| candidate.starts_with(&format!("{name}.rebase")))
+            })
+        });
+        if rebase {
             return true;
         }
     }
@@ -315,6 +386,12 @@ fn remove_if_present(path: &Path) -> io::Result<()> {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
     }
+}
+
+/// The base gate, held (see [`DbWorker::hold_base_gate`]). No accessor: holding it is the point.
+#[must_use = "the gate is released when the hold drops"]
+pub struct BaseGateHold<'a> {
+    _gate: std::sync::MutexGuard<'a, ()>,
 }
 
 /// The side files SQLite may leave beside an image.
@@ -580,6 +657,16 @@ impl DbWorker {
         // included. The vault lease means no capture is running now, so whatever is here is a
         // leftover, whatever the state of the record.
         remove_image_files(&base_image_temp_path(&self.path))?;
+        // A rebase journal beside the vault means the kernel's recovery has not settled the swap
+        // (it runs before any open, under the lease): the scratch vault, the new base image and the
+        // `Rebasing` record are the swap's, and nothing here may touch them.
+        let swap_unsettled = rebase_journal_path(&self.path).exists();
+        if !swap_unsettled {
+            // No journal: whatever rebase files are here belong to a rebase that never reached its
+            // commit (a crash, or an abort). The lease means none is running. A scratch vault is a
+            // full copy of the vault under the current key, so it never outlives its rebase.
+            remove_rebase_artifacts(&self.path)?;
+        }
         let guard = self.lock();
         let conn = &guard.conn;
         match read_base_row(conn)? {
@@ -592,6 +679,28 @@ impl DbWorker {
                 if verify_base(&self.path, SyncBaseState::Ready, digest.as_deref())
                     == SyncBaseState::NoBase
                 {
+                    conn.execute(
+                        "UPDATE sync_base
+                            SET state = 'NoBase', base_digest = NULL, updated_at = ?1
+                          WHERE singleton = 1",
+                        params![Utc::now().to_rfc3339()],
+                    )?;
+                }
+            }
+            // A `Rebasing` row with no journal is a swap that was undone (it never committed) or
+            // that crashed before its journal: this vault is the one the rebase started from and
+            // `base.db` is still its base, so the base goes back to `Ready` if the file still
+            // matches the recorded digest, and to `NoBase` (the vault rebootstraps pull-first) if
+            // it does not. A committed swap never lands here: the vault it installs is `Ready`.
+            Some((_, digest, SyncBaseState::Rebasing)) if !swap_unsettled => {
+                let restored = verify_base(&self.path, SyncBaseState::Ready, digest.as_deref());
+                if restored == SyncBaseState::Ready {
+                    conn.execute(
+                        "UPDATE sync_base SET state = 'Ready', updated_at = ?1
+                          WHERE singleton = 1",
+                        params![Utc::now().to_rfc3339()],
+                    )?;
+                } else {
                     conn.execute(
                         "UPDATE sync_base
                             SET state = 'NoBase', base_digest = NULL, updated_at = ?1
@@ -658,17 +767,45 @@ impl DbWorker {
         new_dek: &Dek,
         new_db: &Path,
     ) -> Result<Vec<RekeyedImage>, DbError> {
+        let hold = self.hold_base_gate();
+        self.prepare_rekeyed_images_held(new_dek, new_db, &hold)
+    }
+
+    /// Take the base gate: the lock every capture holds for its whole run (and every rollback holds
+    /// for its check and copy). A key rotation takes it before it copies the vault and holds it
+    /// until its images are re-encrypted and recorded, so a capture never lands between the copy of
+    /// the vault (which records the base) and the copy of the image (personal-cfo-bxsbz.7, rule 1;
+    /// ADR 0083 Addendum C). Held, a capture waits; it is released when the hold drops.
+    pub fn hold_base_gate(&self) -> BaseGateHold<'_> {
+        BaseGateHold {
+            _gate: self
+                .base_gate
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        }
+    }
+
+    /// [`DbWorker::prepare_rekeyed_images`] for a caller that already holds the base gate (it took
+    /// it before [`DbWorker::prepare_rekeyed_copy`], so the copy of the vault and of its images are
+    /// of one state). The hold proves it; this function never takes the gate itself.
+    ///
+    /// # Errors
+    /// As [`DbWorker::prepare_rekeyed_images`].
+    pub fn prepare_rekeyed_images_held(
+        &self,
+        new_dek: &Dek,
+        new_db: &Path,
+        _hold: &BaseGateHold<'_>,
+    ) -> Result<Vec<RekeyedImage>, DbError> {
         let old_dek = self.dek()?;
         // A leftover capture copy (see `reconcile_base_image`) is a copy of the vault under the key
         // being retired, secrets still in it: it goes before anything is re-encrypted. The gate
         // keeps a capture from recreating it meanwhile.
-        {
-            let _one_capture = self
-                .base_gate
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            remove_image_files(&base_image_temp_path(&self.path))?;
-        }
+        remove_image_files(&base_image_temp_path(&self.path))?;
+        // A rebase's scratch vault is a copy of the vault under the key being retired: no rebase
+        // can be running (the controller runs one thing at a time), so what is here is a leftover,
+        // and it goes before anything is re-encrypted. The rebase is redone.
+        remove_rebase_artifacts(&self.path)?;
         let recorded = {
             let guard = self.lock();
             read_base_row(&guard.conn)?
@@ -683,6 +820,8 @@ impl DbWorker {
             if dest.exists() {
                 return Err(image_error("an image rekey copy already exists".to_owned()));
             }
+            #[cfg(test)]
+            observe::at("rekey-images-exporting");
             // Only an image that cannot be READ under the current key is dropped (it is damaged,
             // or not this vault's); a failure while writing the copy is the rotation's to report,
             // never a reason to lose an image.
@@ -699,7 +838,10 @@ impl DbWorker {
         }
         if let Some(base) = images.iter().find(|i| i.file == BASE_IMAGE_FILE) {
             // Only a base the vault could vouch for before the rotation is vouched for after it.
-            let was_ready = matches!(&recorded, Some((_, digest, SyncBaseState::Ready))
+            // `Rebasing` counts: a vault left mid-swap by a crash (undone at the next open) had a
+            // base it vouched for, and re-encrypting must not lose it (bxsbz.7).
+            let was_ready = matches!(&recorded,
+                Some((_, digest, SyncBaseState::Ready | SyncBaseState::Rebasing))
                 if verify_base(&self.path, SyncBaseState::Ready, digest.as_deref())
                     == SyncBaseState::Ready);
             if was_ready {
