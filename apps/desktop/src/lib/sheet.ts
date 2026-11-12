@@ -107,3 +107,8 @@ export function bodyIsStarved(input: {
   const available = input.limit - input.chrome - input.others;
   return available < CRAMPED_BODY_LINES * input.lineHeight;
 }
+
+/// A shared-dialog consumer that sets `overflow-visible` on `DialogContent` (so a popover can open past its edge on a desktop
+/// window) must also take this on compact: there the sheet is the scroll container, and without it a sheet taller than the screen
+/// is clipped and its actions cannot be reached (personal-cfo-i93n3.25 slice B, the New category dialog at the largest text size).
+export const COMPACT_SHEET_SCROLLS = "compact:overflow-y-auto";

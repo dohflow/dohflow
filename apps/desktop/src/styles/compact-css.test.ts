@@ -20,6 +20,7 @@ import {
   COMPACT_FOOTER_WRAPS,
   COMPACT_SHEET,
   COMPACT_SHEET_CRAMPED,
+  COMPACT_SHEET_SCROLLS,
 } from "@/lib/sheet";
 
 async function compiled(candidates: string[]): Promise<string> {
@@ -253,6 +254,7 @@ describe("compact layout seams as compiled (personal-cfo-i93n3.25)", () => {
       ...COMPACT_DRAWER_PADDED_6.split(" "),
       ...COMPACT_DRAWER_CLEARS_CHROME.split(" "),
       ...COMPACT_SHEET_CRAMPED.split(" "),
+      ...COMPACT_SHEET_SCROLLS.split(" "),
       ...COMPACT_BODY_CRAMPED.split(" "),
       ...COMPACT_FOOTER_WRAPS.split(" "),
     ];
@@ -284,6 +286,16 @@ describe("compact layout seams as compiled (personal-cfo-i93n3.25)", () => {
       ]) {
         expect(inCompact).toMatch(declaration);
       }
+    });
+
+    it("a consumer's overflow-visible is overridden by overflow-y:auto only under the compact query", async () => {
+      expect(COMPACT_SHEET_SCROLLS.startsWith("compact:")).toBe(true);
+      const css = await compiled([COMPACT_SHEET_SCROLLS, "overflow-visible"]);
+      const { blocks, rest } = splitCompactBlocks(css);
+      expect(blocks.join("\n")).toMatch(/overflow-y:\s*auto/);
+      // Outside the compact query overflow-y:auto compiles nowhere: a desktop window keeps its overflow-visible.
+      expect(rest).not.toMatch(/overflow-y:\s*auto/);
+      expect(rest).toMatch(/overflow:\s*visible/);
     });
 
     it("the bottom edge takes the larger of the home indicator and the keyboard, never their sum", async () => {

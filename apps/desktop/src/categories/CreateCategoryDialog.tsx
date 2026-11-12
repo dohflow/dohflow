@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { COMPACT_SHEET_SCROLLS } from "@/lib/sheet";
 import { describeIpcError } from "@/vault/useVault";
 
 import { AddCategoryForm } from "./AddCategoryForm";
@@ -45,8 +46,10 @@ export function CreateCategoryDialog({
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         // The form is short and its emoji panel and parent list open downward past the dialog edge, so this
-        // dialog lets them overflow instead of clipping them inside a scrolling body.
-        className="max-w-md gap-0 overflow-visible"
+        // dialog lets them overflow instead of clipping them inside a scrolling body. On a phone the sheet is the scroll
+        // container (a taller-than-screen sheet would otherwise be clipped and its actions unreachable), so the panels
+        // open inside it.
+        className={`max-w-md gap-0 overflow-visible ${COMPACT_SHEET_SCROLLS}`}
         onEscapeKeyDown={(event) => event.stopPropagation()}
         // The name field starts focused through its own `autoFocus`; on close, whichever way, focus
         // goes back to the control that opened the dialog.
