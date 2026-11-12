@@ -219,6 +219,9 @@ pub enum WorkerState {
     Healthy,
     /// A backup restore is in progress; writes are refused.
     RestoringBackup,
+    /// A rebase swap has begun (personal-cfo-bxsbz.7): every operation is refused until the swap
+    /// finishes, rolls back, or the vault is closed and recovered.
+    Swapping,
     /// A writer panic left the worker in an unknown state; writes are refused
     /// until recovery.
     CorruptNeedsRecovery,
