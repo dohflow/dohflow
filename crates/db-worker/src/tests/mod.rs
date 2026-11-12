@@ -9,6 +9,8 @@ mod loan_bill_overlap;
 mod loan_link;
 mod rebase;
 mod settings_upgrade;
+mod snapshot_install;
+mod sync_bootstrap;
 mod sync_local_state;
 
 use super::*;

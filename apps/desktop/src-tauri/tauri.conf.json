@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "DohFlow",
-  "version": "0.3.0",
+  "version": "0.4.1",
   "identifier": "ai.personalcfo.desktop",
   "build": {
     "frontendDist": "../dist",

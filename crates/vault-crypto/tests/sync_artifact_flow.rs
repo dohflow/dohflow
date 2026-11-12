@@ -35,6 +35,15 @@ fn key_of(epoch: u64, first: u8) -> EpochKey {
     EpochKey::from_verified(VAULT, epoch, secret, &commitment).unwrap()
 }
 
+/// Fetch with the hash the producer bound: that of the container first put at the address.
+fn fetch_bound(
+    service: &FakeService,
+    key: &EpochKey,
+    id: &ArtifactId,
+) -> Result<vault_crypto::sync_artifact::OpenedArtifact, FetchError> {
+    fetch(service, key, id, &service.bound_hash(key.key_epoch(), id))
+}
+
 // ---- the fake service ---------------------------------------------------------------------------
 
 type ObjectKey = ([u8; 16], u64, [u8; 32]);
@@ -45,16 +54,35 @@ type ObjectKey = ([u8; 16], u64, [u8; 32]);
 #[derive(Default)]
 struct FakeService {
     objects: RefCell<BTreeMap<ObjectKey, Vec<u8>>>,
+    /// The ciphertext hash of the first container put at each address: the hash a producer that
+    /// published it would bind in an envelope.
+    bound: RefCell<BTreeMap<ObjectKey, [u8; 32]>>,
     puts: Cell<usize>,
     down: Cell<bool>,
 }
 
 impl FakeService {
+    /// The hash bound for `(epoch, id)`: that of the container first put there.
+    fn bound_hash(&self, epoch: u64, id: &ArtifactId) -> [u8; 32] {
+        self.bound
+            .borrow()
+            .get(&(VAULT, epoch, *id.as_bytes()))
+            .copied()
+            .unwrap_or([0; 32])
+    }
+
     fn lose(&self, epoch: u64, id: &ArtifactId) {
         self.objects
             .borrow_mut()
             .remove(&(VAULT, epoch, *id.as_bytes()));
     }
+    /// Serve `bytes` for `(epoch, id)` from now on, whatever was put there.
+    fn serve(&self, epoch: u64, id: &ArtifactId, bytes: Vec<u8>) {
+        self.objects
+            .borrow_mut()
+            .insert((VAULT, epoch, *id.as_bytes()), bytes);
+    }
+
     fn corrupt(&self, epoch: u64, id: &ArtifactId) {
         let mut objects = self.objects.borrow_mut();
         let bytes = objects.get_mut(&(VAULT, epoch, *id.as_bytes())).unwrap();
@@ -77,6 +105,13 @@ impl ArtifactTransport for FakeService {
         self.puts.set(self.puts.get() + 1);
         let ciphertext = parse_container(container, MAX_ARTIFACT_CONTAINER)
             .map_err(|_| TransportError::PayloadTooLarge)?;
+        self.bound
+            .borrow_mut()
+            .entry((*vault_id, key_epoch, *artifact_id.as_bytes()))
+            .or_insert_with(|| {
+                ArtifactReceipt::for_ciphertext(*vault_id, key_epoch, *artifact_id, ciphertext)
+                    .ciphertext_sha256
+            });
         let mut objects = self.objects.borrow_mut();
         let stored = objects
             .entry((*vault_id, key_epoch, *artifact_id.as_bytes()))
@@ -316,25 +351,26 @@ fn a_missing_a_corrupt_and_an_unreachable_object_are_service_faults_never_artifa
         blob: BYTES,
     };
     publish(&service, &k, &plaintext, Fixity::First).unwrap();
-    assert!(fetch(&service, &k, &id).is_ok());
+    assert!(fetch_bound(&service, &k, &id).is_ok());
     // The wrong epoch has no object.
     assert_eq!(
-        fetch(&service, &key_of(2, 0), &id).map(|_| ()),
+        fetch_bound(&service, &key_of(2, 0), &id).map(|_| ()),
         Err(FetchError::Missing)
     );
+    // Bytes that do not hash to the bound value are not the artifact: a service or transport fault.
     service.corrupt(1, &id);
     assert_eq!(
-        fetch(&service, &k, &id).map(|_| ()),
-        Err(FetchError::OuterAead)
+        fetch_bound(&service, &k, &id).map(|_| ()),
+        Err(FetchError::HashMismatch)
     );
     service.lose(1, &id);
     assert_eq!(
-        fetch(&service, &k, &id).map(|_| ()),
+        fetch_bound(&service, &k, &id).map(|_| ()),
         Err(FetchError::Missing)
     );
     service.down.set(true);
     assert_eq!(
-        fetch(&service, &k, &id).map(|_| ()),
+        fetch_bound(&service, &k, &id).map(|_| ()),
         Err(FetchError::Unavailable)
     );
 }
@@ -352,7 +388,7 @@ fn an_object_opened_under_the_wrong_key_is_an_outer_aead_fault() {
     };
     publish(&service, &key_of(1, 0), &plaintext, Fixity::First).unwrap();
     assert_eq!(
-        fetch(&service, &key_of(1, 0x80), &id).map(|_| ()),
+        fetch_bound(&service, &key_of(1, 0x80), &id).map(|_| ()),
         Err(FetchError::OuterAead)
     );
     let _ = OpenArtifactError::NotOpenable;
@@ -390,7 +426,7 @@ fn two_independently_keyed_replicas_round_trip_an_attachment_with_different_loca
     assert!(!encoded.windows(32).any(|w| w == raw.as_slice()));
 
     // Replica B fetches it by the canonical id, verifies, and re-encrypts under its own DEK.
-    let opened = fetch(&service, &k, &id).unwrap();
+    let opened = fetch_bound(&service, &k, &id).unwrap();
     assert_eq!(
         opened.plaintext().artifact_id,
         id,
@@ -439,7 +475,7 @@ fn a_corrupt_transport_fails_and_leaves_nothing_to_store() {
     publish(&service, &k, &plaintext, Fixity::First).unwrap();
     service.corrupt(1, &id);
     // The fetch fails before there is anything to materialize, so no blob, key or row is produced.
-    assert!(fetch(&service, &k, &id).is_err());
+    assert!(fetch_bound(&service, &k, &id).is_err());
     let _ = dek_b;
 }
 
@@ -458,7 +494,7 @@ fn an_artifact_that_is_not_an_attachment_is_not_materialized_as_one() {
         blob: b"{}",
     };
     publish(&service, &k, &plaintext, Fixity::First).unwrap();
-    let opened = fetch(&service, &k, &id).unwrap();
+    let opened = fetch_bound(&service, &k, &id).unwrap();
     assert_eq!(
         materialize_attachment(&dek_b, &opened).map(|_| ()),
         Err(MaterializeError::NotAnAttachment)
@@ -473,7 +509,7 @@ fn an_artifact_that_is_not_an_attachment_is_not_materialized_as_one() {
         blob: BYTES,
     };
     publish(&service, &k, &no_binding, Fixity::First).unwrap();
-    let opened = fetch(&service, &k, &id2).unwrap();
+    let opened = fetch_bound(&service, &k, &id2).unwrap();
     assert_eq!(
         materialize_attachment(&dek_b, &opened).map(|_| ()),
         Err(MaterializeError::NotAnAttachment)
@@ -525,8 +561,8 @@ fn a_device_that_did_not_originate_an_artifact_re_addresses_it_to_the_same_id_th
         Fixity::Expected(by_b.sealed.plaintext_digest),
     )
     .unwrap();
-    assert!(fetch(&service, &k2, &by_b.artifact_id).is_ok());
-    assert!(fetch(&service, &k1, &id1).is_ok());
+    assert!(fetch_bound(&service, &k2, &by_b.artifact_id).is_ok());
+    assert!(fetch_bound(&service, &k1, &id1).is_ok());
     assert_ne!(by_b.artifact_id, id1);
     let digest: [u8; 32] = Sha256::digest(&old).into();
     assert_ne!(digest, Sha256::digest(&by_b.sealed.container).as_slice());
@@ -587,9 +623,102 @@ fn only_a_fact_about_the_artifact_has_a_stage_9_verdict_and_service_faults_do_no
     let id = ArtifactId::from_derived([0x21; 32]);
     assert_eq!(FetchError::Missing.mismatch(id), None);
     assert_eq!(FetchError::Unavailable.mismatch(id), None);
-    assert_eq!(FetchError::OuterAead.mismatch(id), None);
+    assert_eq!(FetchError::HashMismatch.mismatch(id), None);
+    // Bytes that hash to the bound value are one fixed object every replica judges alike: failing to
+    // open or validate it is the producer's fault and voidable (stage 9(b)).
+    assert_eq!(
+        FetchError::OuterAead.mismatch(id),
+        Some(Mismatch::ArtifactInvalid(id))
+    );
     assert_eq!(
         FetchError::Invalid(OpenArtifactError::WrongAddress).mismatch(id),
         Some(Mismatch::ArtifactInvalid(id))
+    );
+}
+
+#[test]
+fn served_bytes_that_are_not_a_container_are_not_the_bound_artifact_and_have_no_verdict() {
+    let service = FakeService::default();
+    let k = key_of(1, 0);
+    let id = ArtifactId::from_derived([0x21; 32]);
+    let meta = metadata();
+    let plaintext = TransportPlaintext {
+        artifact_id: id,
+        kind: ArtifactKind::Attachment,
+        logical_metadata: &meta,
+        blob: BYTES,
+    };
+    publish(&service, &k, &plaintext, Fixity::First).unwrap();
+    let honest = service.bound_hash(1, &id);
+    let good = service.objects.borrow()[&(VAULT, 1, *id.as_bytes())].clone();
+    assert!(fetch(&service, &k, &id, &honest).is_ok());
+
+    let mut bad_magic = good.clone();
+    bad_magic[0] ^= 0xff;
+    // The container frame ends with a length that must equal the body that follows it; make the
+    // body one byte longer, then one byte shorter.
+    let mut too_long = good.clone();
+    too_long.push(0);
+    let too_short = good[..good.len() - 1].to_vec();
+    let nothing = Vec::new();
+    let three_bytes = vec![b'D', b'F', b'S'];
+    for (label, bytes) in [
+        ("bad magic", bad_magic),
+        ("a trailing byte after the declared length", too_long),
+        ("a body shorter than the declared length", too_short),
+        ("empty", nothing),
+        ("three bytes", three_bytes),
+    ] {
+        service.serve(1, &id, bytes);
+        let error = fetch(&service, &k, &id, &honest).err();
+        assert_eq!(error, Some(FetchError::HashMismatch), "{label}");
+        assert_eq!(
+            error.and_then(|e| e.mismatch(id)),
+            None,
+            "{label}: a service fault leaves the envelope not determinable, never voidable"
+        );
+    }
+}
+
+#[test]
+fn a_member_alone_cannot_hold_an_envelope_at_a_position_by_naming_an_id_it_never_stored_properly() {
+    use sync_core::artifact_closure::Mismatch;
+    let service = FakeService::default();
+    let k = key_of(1, 0);
+    let id = ArtifactId::from_derived([0x21; 32]);
+    let meta = metadata();
+    let plaintext = TransportPlaintext {
+        artifact_id: id,
+        kind: ArtifactKind::Attachment,
+        logical_metadata: &meta,
+        blob: BYTES,
+    };
+    publish(&service, &k, &plaintext, Fixity::First).unwrap();
+    let honest = service.bound_hash(1, &id);
+
+    // The service serves other bytes than the producer bound (a faulty or hostile service): the
+    // hash does not match, so the envelope is not determinable and no verdict is formed.
+    service.corrupt(1, &id);
+    let error = fetch(&service, &k, &id, &honest).err();
+    assert_eq!(error, Some(FetchError::HashMismatch));
+    assert_eq!(error.and_then(|e| e.mismatch(id)), None);
+
+    // A member that binds the hash of an object that does not open (here: sealed under another key)
+    // has fixed those bytes: every replica sees the same failure, which is the producer's fault.
+    let other = key_of(1, 0x80);
+    let other_id = ArtifactId::from_derived([0x22; 32]);
+    let other_plaintext = TransportPlaintext {
+        artifact_id: other_id,
+        kind: ArtifactKind::Attachment,
+        logical_metadata: &meta,
+        blob: BYTES,
+    };
+    publish(&service, &other, &other_plaintext, Fixity::First).unwrap();
+    let bound_by_the_member = service.bound_hash(1, &other_id);
+    let result = fetch(&service, &k, &other_id, &bound_by_the_member);
+    assert_eq!(
+        result.err().and_then(|e| e.mismatch(other_id)),
+        Some(Mismatch::ArtifactInvalid(other_id)),
+        "bytes that match the bound hash and fail the outer AEAD: the producer's fault"
     );
 }

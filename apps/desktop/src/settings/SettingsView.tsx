@@ -17,6 +17,8 @@ import { VaultHealthCard } from "./VaultHealthCard";
 import { DiagnosticsCard } from "./DiagnosticsCard";
 import { ChangePasswordCard } from "./ChangePasswordCard";
 import { RotateKeyCard } from "./RotateKeyCard";
+import { TOUCH_ID_ENABLED } from "@/vault/touchIdEnabled";
+
 import { TouchIdCard } from "./TouchIdCard";
 import { SoftwareUpdateCard } from "./SoftwareUpdateCard";
 import { AboutCard } from "./AboutCard";
@@ -118,9 +120,11 @@ export function SettingsView({
           ) : null}
 
           {/* Until the destructive group has its own guards, each is its own full row, in order. */}
-          <SettingsSection title="Touch ID" span="full">
-            <TouchIdCard />
-          </SettingsSection>
+          {TOUCH_ID_ENABLED && (
+            <SettingsSection title="Touch ID" span="full">
+              <TouchIdCard />
+            </SettingsSection>
+          )}
           <SettingsSection title="Change master password" span="full">
             <ChangePasswordCard />
           </SettingsSection>

@@ -15,8 +15,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::canonical_json::{from_canonical_slice, to_canonical_vec, CanonicalJsonError};
-use crate::canonical_json::{node_to_canonical_vec, Node};
+use crate::canonical_json::{node_to_canonical_vec, parse_canonical_node, Node};
 use crate::cbe::{Reader, WireError, Writer};
+use crate::envelope::BoundArtifact;
 use crate::row_digest::{Column, Kind, Value, MAX_NAME};
 
 /// The label a snapshot plaintext starts with.
@@ -82,6 +83,10 @@ pub enum SnapshotError {
         /// The column.
         column: String,
     },
+    /// A data-file line is not the canonical encoding of a row of its table: not canonical JSON,
+    /// not one object with exactly the table's columns, or missing its newline.
+    #[error("a data-file row is not the canonical encoding of its columns")]
+    MalformedRow,
     /// A file the manifest names is absent, or a file it does not name is present.
     #[error("the files and the manifest name different sets")]
     FileSetMismatch,
@@ -161,9 +166,19 @@ pub struct Manifest {
     /// The voided ranges and void ids this snapshot records, ranges strictly ascending and
     /// disjoint, as the C.10 ledger encodes them.
     pub voids: Vec<VoidEntry>,
-    /// The complete closure manifest of `sync_artifact_id_e` values (lowercase hex), strictly
-    /// ascending. Empty until personal-cfo-1cltt.7.
-    pub artifacts: Vec<String>,
+    /// The complete closure manifest: each `sync_artifact_id_e` (lowercase hex) with the SHA-256 of
+    /// its AEAD output, strictly ascending by id. Empty until personal-cfo-1cltt.7.
+    pub artifacts: Vec<ArtifactEntry>,
+}
+
+/// One artifact of the closure in `manifest.json` (C.8): its id and the hash bound to it. The
+/// header's field 17 commits to the ids and field 18 to the hashes, in the ids' order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactEntry {
+    /// `sync_artifact_id_e`, 32 bytes as lowercase hex.
+    pub id: String,
+    /// The SHA-256 of the artifact's AEAD output, 32 bytes as lowercase hex.
+    pub ciphertext_sha256: String,
 }
 
 /// The data file path of a table.
@@ -319,6 +334,50 @@ pub struct RecordedVoid {
     pub last: u64,
 }
 
+impl Manifest {
+    /// The voids the snapshot records, in the manifest's (ascending) order. [`verify`] has already
+    /// refused a manifest whose void entries are not canonical, so on a verified manifest this
+    /// cannot fail; a manifest that was not verified is refused here for the same reasons.
+    ///
+    /// # Errors
+    /// [`SnapshotError::ManifestInvalid`].
+    pub fn recorded_voids(&self) -> Result<Vec<RecordedVoid>, SnapshotError> {
+        self.voids
+            .iter()
+            .map(|entry| {
+                let (Some(first), Some(last), Some(void_id)) = (
+                    decimal_u64(&entry.first),
+                    decimal_u64(&entry.last),
+                    unhex32(&entry.void_id),
+                ) else {
+                    return Err(SnapshotError::ManifestInvalid("a void entry is not valid"));
+                };
+                Ok(RecordedVoid {
+                    void_id,
+                    first,
+                    last,
+                })
+            })
+            .collect()
+    }
+}
+
+/// 32 bytes from 64 lowercase hex digits.
+fn unhex32(text: &str) -> Option<[u8; 32]> {
+    if !is_hex_of(text, 32) {
+        return None;
+    }
+    let mut out = [0_u8; 32];
+    for (byte, pair) in out.iter_mut().zip(text.as_bytes().chunks(2)) {
+        let digit = |c: u8| match c {
+            b'0'..=b'9' => c - b'0',
+            _ => c - b'a' + 10,
+        };
+        *byte = (digit(pair[0]) << 4) | digit(pair[1]);
+    }
+    Some(out)
+}
+
 /// The header fields a producer supplies; the table entries are derived from the files.
 #[derive(Debug, Clone)]
 pub struct Header<'a> {
@@ -330,8 +389,9 @@ pub struct Header<'a> {
     pub inventory_version: &'a str,
     /// The voided ranges to record, ascending and disjoint.
     pub voids: &'a [RecordedVoid],
-    /// The closure manifest: `sync_artifact_id_e` values, strictly ascending.
-    pub artifacts: &'a [[u8; 32]],
+    /// The closure manifest: each `sync_artifact_id_e` with the hash bound to it, strictly
+    /// ascending by id.
+    pub artifacts: &'a [BoundArtifact],
 }
 
 /// Build a snapshot plaintext from `tables`.
@@ -380,7 +440,14 @@ pub fn build(header: &Header<'_>, mut tables: Vec<TableFile>) -> Result<Vec<u8>,
                 last: v.last.to_string(),
             })
             .collect(),
-        artifacts: header.artifacts.iter().map(|a| hex(a)).collect(),
+        artifacts: header
+            .artifacts
+            .iter()
+            .map(|a| ArtifactEntry {
+                id: hex(&a.id),
+                ciphertext_sha256: hex(&a.ciphertext_sha256),
+            })
+            .collect(),
     };
     let manifest_bytes =
         to_canonical_vec(&manifest).map_err(SnapshotError::ManifestNotCanonical)?;
@@ -552,13 +619,17 @@ fn check_manifest(manifest: &Manifest) -> Result<(), SnapshotError> {
     if manifest.artifacts.len() > MAX_ARTIFACTS {
         return invalid("too many artifacts");
     }
-    if manifest.artifacts.iter().any(|a| !is_hex_of(a, 32)) {
-        return invalid("an artifact id is not 32 bytes of lowercase hex");
+    if manifest
+        .artifacts
+        .iter()
+        .any(|a| !is_hex_of(&a.id, 32) || !is_hex_of(&a.ciphertext_sha256, 32))
+    {
+        return invalid("an artifact id or hash is not 32 bytes of lowercase hex");
     }
     if manifest
         .artifacts
         .windows(2)
-        .any(|pair| pair[0].as_bytes() >= pair[1].as_bytes())
+        .any(|pair| pair[0].id.as_bytes() >= pair[1].id.as_bytes())
     {
         return invalid("the artifacts are not strictly ascending");
     }
@@ -649,4 +720,127 @@ pub fn base64(bytes: &[u8]) -> String {
         });
     }
     out
+}
+
+// ----------------------------------------------------------------------------------------------
+// Reading rows back
+
+/// A value read back from a data-file line (B.3 "Row encoding"), owned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnedValue {
+    /// `null`, in any kind.
+    Null,
+    /// A `int` column.
+    Int(i64),
+    /// A `text` column.
+    Text(String),
+    /// A `uuid` (16 bytes) or `bytes` column.
+    Blob(Vec<u8>),
+}
+
+fn unbase64(text: &str) -> Option<Vec<u8>> {
+    let value = |c: u8| -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some(u32::from(c - b'A')),
+            b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    };
+    let bytes = text.as_bytes();
+    if !bytes.len().is_multiple_of(4) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for quad in bytes.chunks(4) {
+        let pad = quad.iter().rev().take_while(|c| **c == b'=').count();
+        if pad > 2 {
+            return None;
+        }
+        let mut n = 0_u32;
+        for c in &quad[..4 - pad] {
+            n = (n << 6) | value(*c)?;
+        }
+        n <<= 6 * pad as u32;
+        let triple = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        out.extend_from_slice(&triple[..3 - pad]);
+    }
+    // Padding only in the last quad, and the spelling must be the canonical one (zero trailing bits).
+    (base64(&out) == text).then_some(out)
+}
+
+fn untext_uuid(text: &str) -> Option<[u8; 16]> {
+    let hex: String = text.chars().filter(|c| *c != '-').collect();
+    if text.len() != 36 || hex.len() != 32 {
+        return None;
+    }
+    let mut out = [0_u8; 16];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()?;
+    }
+    // Lowercase hyphenated, nothing else.
+    (uuid_text(out) == text).then_some(out)
+}
+
+/// One data-file line back into its values, in `columns` order: the exact inverse of [`row_line`].
+/// The line must be one canonical JSON object ending in `\n` with **exactly** the table's columns;
+/// each value must be `null` or the string spelling of its kind in its one canonical form (an `int`
+/// as a decimal with no sign, leading zero or `-0` that fits an `i64`, a `uuid` as lowercase
+/// hyphenated, `bytes` as padded standard base64 with zero trailing bits). Nothing is coerced.
+///
+/// # Errors
+/// [`SnapshotError::MalformedRow`], or [`SnapshotError::KindMismatch`] naming the column whose
+/// value is not the canonical spelling of its kind.
+pub fn parse_row_line(
+    line: &[u8],
+    columns: &[ColumnEntry],
+) -> Result<Vec<OwnedValue>, SnapshotError> {
+    let body = line
+        .strip_suffix(b"\n")
+        .ok_or(SnapshotError::MalformedRow)?;
+    let Node::Object(mut object) =
+        parse_canonical_node(body).map_err(|_| SnapshotError::MalformedRow)?
+    else {
+        return Err(SnapshotError::MalformedRow);
+    };
+    if object.len() != columns.len() {
+        return Err(SnapshotError::MalformedRow);
+    }
+    let mut values = Vec::with_capacity(columns.len());
+    for column in columns {
+        let mismatch = || SnapshotError::KindMismatch {
+            column: column.name.clone(),
+        };
+        let node = object
+            .remove(&column.name)
+            .ok_or(SnapshotError::MalformedRow)?;
+        let value = match node {
+            Node::Null => OwnedValue::Null,
+            Node::String(text) => match column.kind.as_str() {
+                "int" => {
+                    let number: i64 = text.parse().map_err(|_| mismatch())?;
+                    if number.to_string() != text {
+                        return Err(mismatch());
+                    }
+                    OwnedValue::Int(number)
+                }
+                "text" => {
+                    if text.contains('\0') {
+                        return Err(SnapshotError::Unrepresentable {
+                            column: column.name.clone(),
+                        });
+                    }
+                    OwnedValue::Text(text)
+                }
+                "uuid" => OwnedValue::Blob(untext_uuid(&text).ok_or_else(mismatch)?.to_vec()),
+                "bytes" => OwnedValue::Blob(unbase64(&text).ok_or_else(mismatch)?),
+                _ => return Err(mismatch()),
+            },
+            _ => return Err(mismatch()),
+        };
+        values.push(value);
+    }
+    Ok(values)
 }

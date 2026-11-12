@@ -1678,7 +1678,16 @@ mod protocol_tests {
 
     #[test]
     fn a_restored_backup_has_no_base_and_clears_a_stale_sync_directory() {
-        let (dir, _path, controller, _) = seeded();
+        let (dir, path, controller, _) = seeded();
+        // A sealed snapshot saved for retransmission sits beside the vault (personal-cfo-1cltt.4).
+        // It is ciphertext under the epoch key and is not part of a backup.
+        let saved = db_worker::base_image::saved_snapshots_dir(&path);
+        fs::create_dir_all(&saved).unwrap();
+        fs::write(
+            saved.join("00112233445566778899aabbccddeeff.snapshot"),
+            b"sealed",
+        )
+        .unwrap();
         let backup = dir.path().join("with-base.pcfobk");
         controller
             .kernel()
@@ -1695,12 +1704,23 @@ mod protocol_tests {
         let stale = target.join("sync");
         fs::create_dir_all(&stale).unwrap();
         fs::write(stale.join("base.db"), b"another vault's base").unwrap();
+        let stale_saved = db_worker::base_image::saved_snapshots_dir(&target.join("vault.db"));
+        fs::create_dir_all(&stale_saved).unwrap();
+        fs::write(
+            stale_saved.join("ffeeddccbbaa99887766554433221100.snapshot"),
+            b"stale",
+        )
+        .unwrap();
 
         let restored = Kernel::restore_backup(&backup, PASSWORD, &target.join("vault.db")).unwrap();
 
         // A backup is vault.db: it carries the sync_base row and not the images, so the restored
         // vault has no base and never rebases on a stale one (AC4).
         assert!(!stale.exists());
+        assert!(
+            !stale_saved.exists(),
+            "neither the backup's source nor the slot's old saved snapshots survive a restore"
+        );
         assert_eq!(
             restored.worker.base_image_status().unwrap(),
             db_worker::base_image::BaseImageStatus::NoBase

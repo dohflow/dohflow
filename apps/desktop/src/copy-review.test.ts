@@ -165,8 +165,8 @@ describe("forecast/dashboard copy is descriptive, not prescriptive (ADR 0018)", 
 /// user-facing copy to the same advice boundary as the source above.
 
 /// Every user-facing string a registry entry supplies, labelled for errors.
-function registryCopy(): { where: string; text: string }[] {
-  return registry.flatMap((adapter) => {
+function registryCopy(entries: typeof registry = registry): { where: string; text: string }[] {
+  return entries.flatMap((adapter) => {
     const at = (field: string) => `${adapter.adapter_id}.${field}`;
     const guide = adapter.link_guide;
     return [
@@ -208,9 +208,12 @@ describe("connector registry copy is descriptive, not prescriptive (ADR 0018)", 
     ).toEqual([]);
   });
 
-  it("scans every provider's copy, disabled providers included", () => {
+  it("scans every provider's copy, whatever its enabled flag", () => {
     expect(registry.length).toBeGreaterThan(0);
-    expect(registry.some((adapter) => !adapter.enabled)).toBe(true);
+    // Both shipped providers are enabled since v0.4.0, so the disabled path is exercised by switching them off:
+    // the scan reads the same copy either way.
+    const switchedOff = registry.map((adapter) => ({ ...adapter, enabled: false }));
+    expect(registryCopy(switchedOff)).toEqual(registryCopy());
     const scannedProviders = new Set(
       registryCopy().map(({ where }) => where.split(".")[0]),
     );

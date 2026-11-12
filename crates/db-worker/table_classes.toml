@@ -372,6 +372,69 @@ rebase_preservation = "preserve every record byte for byte across the swap; a re
 reference_validation = "command_id, correlation_id and origin node id are well-formed; the envelope and audit evidence are present"
 
 [[table]]
+table = "sync_counter_register"
+class = "3"
+owner_bead = "personal-cfo-1cltt"
+note = "Device-local counter register: the durable next_counter of every (vault_id, key_epoch, fingerprint, object_type) context, advanced by compare-and-set before anything is encrypted. A row is never 0. Written under the writer lock so a backup restore rolls it back, which the independent anti-rollback witness detects (NonceStateLost). Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "preserve every row byte for byte across the swap; a rebase never lowers, resets or re-creates a counter, because a reused counter under one key is a reused nonce"
+reference_validation = "next_counter is at least 1; the row is checked against the witness before the context encrypts, and a row with no witness entry (or the reverse) is NonceStateLost"
+
+[[table]]
+table = "sync_notices"
+class = "3"
+owner_bead = "personal-cfo-0g528"
+note = "Device-local notices that Sync discarded something the user was in the middle of: today only import_discarded, where a received batch replaced the rows of an import still being reviewed on this device and its staged rows for that batch were removed in the same transaction. source_name is the file name the user chose, shown to the user and never logged. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "preserve every row byte for byte across the swap; a notice is shown until the user dismisses it"
+reference_validation = "none: batch_id names a batch that may no longer exist on this device"
+
+[[table]]
+table = "sync_saved_snapshot"
+class = "3"
+owner_bead = "personal-cfo-1cltt"
+note = "Device-local record of the sealed snapshot saved for an exact-byte retransmission, one per counter context, with the hashes of the plaintext and container it was sealed from. The container bytes are a file beside the vault, not a column. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "preserve every row byte for byte across the swap; a retry of a publish resends exactly these bytes or burns a counter"
+reference_validation = "container_sha256 and container_len must match the saved file before the bytes are resent; a mismatch discards the saved record and the next seal takes a new counter"
+
+[[table]]
+table = "sync_genesis"
+class = "3"
+owner_bead = "personal-cfo-1cltt"
+note = "Device-local singleton: the genesis membership and epoch records this device minted at sync-enable, persisted before any key is installed from them and before anything is published, with how far enabling got (Persisted, Installed, Published, VaultKnown when the service refused the genesis because the vault already exists, or GenesisResumeLost when the service holds this genesis's snapshot and the container that was sent is gone), and the operation-log high-water mark read in the transaction that exported the genesis snapshot. The records never change; the state only moves forward. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "preserve the row byte for byte across the swap; a rebase neither re-mints nor discards a genesis"
+reference_validation = "the records must verify as a chain for vault_id before any key is installed from them; a VaultKnown or GenesisResumeLost genesis is never published"
+
+[[table]]
+table = "sync_voids"
+class = "3"
+owner_bead = "personal-cfo-1cltt"
+note = "Device-local, append-only void ledger: the voids this replica skips (void id, the range of log positions it skips, a dense ordinal in write order) and their origin: seeded from the snapshot the replica bootstrapped from (recorded by the snapshot's producer, never judged here, so never a fork check's input) or honored here. An entry is never updated or deleted; a re-bootstrap builds a new vault. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "the swap appends the live rows the swapped-in vault is missing, in ordinal order: the base's copy is stale, and a rebase after an honored void that restored the ledger as it was at base capture could re-admit a voided position"
+reference_validation = "ordinals are dense from 1 and the ranges ascend without overlap; every seeded range lies below sync_position.snapshot_root"
+
+[[table]]
+table = "sync_position"
+class = "3"
+owner_bead = "personal-cfo-1cltt"
+note = "Device-local singleton: the applied cursor of a replica that has bootstrapped. snapshot_root is the last log position of the snapshot it bootstrapped from (NULL for an origin) and never changes; next_to_apply is the lowest position it has neither applied nor skipped, and only increases. Written with the void ledger in one transaction. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "the swap writes the swapped-in vault's applied cursor as a forward-only update, never an overlay of an older live value: the rebase applies pulled envelopes in its scratch vault, so the swapped-in cursor may be ahead of the live one"
+reference_validation = "next_to_apply exceeds snapshot_root, and no honored void's range reaches next_to_apply"
+
+[[table]]
+table = "sync_artifacts"
+class = "3"
+owner_bead = "personal-cfo-0g528"
+note = "Device-local mapping from a class-1b artifact's service address in an epoch (sync_artifact_id_e) to the local identity that carries it, with the ciphertext hash this device verified when it published the artifact or fetched it and, for a producer, whether a durable receipt matched. For an attachment received from a peer the staged_* columns hold the receiver-local crypto fields from materialization until the attach command's apply creates the attachments row from them, and are NULL afterwards. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "preserve every row byte for byte across the swap, staged crypto fields included, re-wrapped by a rotation like attachments rows; a rebase never re-materializes an artifact"
+reference_validation = "an id with a recorded hash that differs from the bound one and that the live closure does not hold is a cache miss, never a verdict; a staged row names a blob that exists, and its key unwraps under the DEK"
+
+[[table]]
 table = "vault_meta"
 class = "3"
 owner_bead = "personal-cfo-bxsbz"

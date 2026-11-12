@@ -13,7 +13,7 @@ A closed bead means the work merged. It does **not** by itself mean the feature
 is polished, discoverable, or worth putting on a marketing page. Use this list
 as a **ceiling on claims**, not a to-do list of things to advertise.
 
-Generated 2026-10-19 · 190 shipped features
+Generated 2026-11-07 · 193 shipped features
 
 | Bead | Feature |
 |---|---|
@@ -129,6 +129,7 @@ Generated 2026-10-19 · 190 shipped features
 | `6wk.17` | Per-debt burndown trajectory (per-debt series alongside the aggregate) |
 | `6wk.19` | Scenario overlay: recurring extra-debt-payment assumption kind (the primitive) |
 | `6wk.2` | Debt-account attribute entry UI (card+loan metadata + repayment philosophy + paying-account picker) |
+| `6wk.22` | Link a recurring bill to a loan so the forecast counts the obligation once (Cash Flow shows the observed debit, the loan amortizes by its own payment) — ADR 0035 addendum first, then a migration and a class-1 WriteCommand |
 | `6wk.4` | Forecast: debt-payment outflow from repayment philosophy + source mapping (all debt types, liability leg) |
 | `6wk.5` | Debt-payoff burndown + net-worth timeline visualizations (descriptive) |
 | `6wk.8` | Recurring bill payable from a credit card (charge-to-card forecast attribution) |
@@ -187,6 +188,8 @@ Generated 2026-10-19 · 190 shipped features
 | `nhmsg` | Onboarding: auto-identified recurring bills from synced data (approve/deny) |
 | `npoe` | Transfer transactions (one-off + recurring account-to-account) |
 | `pezm.1` | Ordinary vs extraordinary expense classifier (pezm sub-bead) |
+| `pxi.22` | Re-authentication notice: when a bank connection needs the user to sign in again at the provider (SimpleFIN con.auth/gen.auth/expired; the LunchFlow equivalent), show an unmissable in-app notice outside Settings that names the bank, says what to do, links to the provider, and clears on the next healthy refresh |
+| `r2pow` | CONN-5 LunchFlow bank connection (user-token tier): link by pasted API key; accounts with currency and stable ids, transactions with provider ids, balances, health and revoke; enabled in v0.4.0 |
 | `r7sb` | Mixed-role transfers + editable recurring transfers |
 | `s0iz` | Cash Flow: the uncertainty band stays legible in dark mode |
 | `sbm3` | App shell + main navigation |

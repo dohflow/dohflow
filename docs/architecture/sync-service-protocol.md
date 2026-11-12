@@ -815,7 +815,7 @@ implemented on any of them.)
 **`beginSnapshotUpload`:** `POST /vaults/{vault_id}/snapshots/{snapshot_id}/uploads`
 
 ```json
-{ "size": "1073742104", "sha256": "<64 hex>", "part_size": "67108864" }
+{ "size": "1073742137", "sha256": "<64 hex>", "part_size": "67108864" }
 ```
 
 `size` is the exact length of the whole container in bytes and `sha256` is the
@@ -1175,8 +1175,8 @@ They are derived from the field maxima of `vault-format.md` C.1.1 to C.9.
 
 | name | value | meaning |
 | --- | --- | --- |
-| `max_envelope_container_bytes` | 16909058 | largest well-formed `DFSY` envelope container |
-| `max_snapshot_container_bytes` | 1073742104 | largest well-formed `DFSY` snapshot container: plaintext at most 2^30, and a 246-byte header because header fields 7 and 8 are absent for a snapshot (2^30 + 280) |
+| `max_envelope_container_bytes` | 17040163 | largest well-formed `DFSY` envelope container: 2^24 payload, a delta manifest of 4096 items of 64 bytes (an id and its ciphertext hash), and a header that carries both manifest commitments (fields 17 and 18) |
+| `max_snapshot_container_bytes` | 1073742137 | largest well-formed `DFSY` snapshot container: plaintext at most 2^30, and a 279-byte header because header fields 7 and 8 are absent for a snapshot and fields 17 and 18 are both present (2^30 + 313) |
 | `max_membership_record_bytes` | 2300 | largest signed membership record |
 | `max_epoch_record_bytes` | 2421030 | largest signed epoch record (1024 recipients) |
 | `max_artifact_manifest_ids` | 4096 | ids in one JSON manifest sidecar (an envelope's delta, or a snapshot's closure sent in a request) or one status request |

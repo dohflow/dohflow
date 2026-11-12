@@ -7,6 +7,121 @@ record until the first tagged release.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-07
+
+Version 0.4.0 was tagged but never published; this release replaces it.
+
+### Added
+
+- **LunchFlow is now a second bank-connection provider** (`personal-cfo-r2pow`,
+  `personal-cfo-dto2j`, `personal-cfo-p3f7r`). **Settings → Connections** opens a
+  picker of the available providers, SimpleFIN and LunchFlow. For each one it shows
+  what it fetches, what it costs and who you pay, its terms and the date we last
+  checked them, the countries it covers, and a plain statement of what the provider
+  is and what you give it, before you paste a key or token. LunchFlow is a separate
+  company that charges its own fee, paid to them; DohFlow does not bill it. DohFlow
+  has a referral arrangement with LunchFlow and may earn a commission if you sign
+  up through the link in the app, which does not change what LunchFlow charges you;
+  the app says this where the link is. You create an API key in your own LunchFlow
+  dashboard and paste it into DohFlow; your bank sign-in stays with LunchFlow. The
+  key is stored encrypted in your vault like a SimpleFIN access URL, and the app
+  only contacts LunchFlow once you have linked it. Everything still works with
+  manual entry and file imports. The checks that come with a second provider
+  apply to it too: an account in a currency other than your base currency, or one
+  whose currency is not known, is refused with the reason (`personal-cfo-049p6`), and
+  mapping a connected account onto one that another connection already feeds asks
+  what to do (`personal-cfo-6evt`).
+- **Link a recurring bill to the loan it pays** (`personal-cfo-6wk.22`,
+  `personal-cfo-6wk.20`, `personal-cfo-6wk.23`). A bill that pays a loan can be
+  linked to it so the forecast counts the payment once instead of twice. A loan's
+  own payment is no longer offered as a new bill, adding a bill or a recurring
+  item checks for the overlap, and Cash Flow and Bills warn when a bill of any
+  type looks like a loan payment you already track.
+- **Undo after removing** (`personal-cfo-egn67`, `personal-cfo-4d8.32`). Removing
+  an income source, a bill or a recurring transfer shows a notice with Undo, and so
+  does marking a bill paid on Cash Flow. A removed item is hidden, not erased
+  (`personal-cfo-4d8.50`), and the Undo notice is the only way back, which the
+  confirmation now says.
+- **A bank connection that needs you to sign in again says so** (`personal-cfo-pxi.22`).
+  The notice stays until you deal with it and is kept on this Mac only.
+- **A shared dialog** (`personal-cfo-4d8.6.1`, `personal-cfo-4d8.6.2`): the scenario
+  Apply and Delete confirmations, New loan and Create category keep focus inside the
+  dialog, close with Escape, give focus back, and scroll within the window.
+
+### Changed
+
+- **Settings sections open and close the same way everywhere** and lay out in a grid
+  that follows the window width (`personal-cfo-4d8.39.1`). Errors in Household,
+  Comfort band, Backups, Vault health, Diagnostics, Software update, Vaults,
+  General and Connections now stay visible in their section instead of vanishing
+  (`personal-cfo-4d8.39.2`).
+- **Local reads and writes no longer wait on the network** (`personal-cfo-g3m.34`):
+  the state of your Mac's connectivity does not delay opening or saving.
+- **A bank refresh you cancel stops at the fetch and commits nothing**; a refresh that
+  already committed is never shown as cancelled (`personal-cfo-pxi.25`).
+- The Debt terms table shows each row's money in that debt's own currency
+  (`personal-cfo-6wk.25`).
+- There is still no Sync in this app: nothing syncs your data between devices.
+  Groundwork for a future feature continues behind the scenes and changes nothing you
+  can do.
+
+### Fixed
+
+- **Saves tell the truth when something goes wrong** instead of leaving you to
+  guess, and a retry does not create a second copy. The Add transaction and Add
+  transfer forms are locked while a save is in flight (`personal-cfo-g3m.38`,
+  `personal-cfo-g3m.39`); a multi-step save continues rather than duplicating
+  (`personal-cfo-g3m.35`); the batch balance save and the account editor's balance
+  save report each outcome (`personal-cfo-g3m.37`, `personal-cfo-g3m.40`); Pay card
+  recovers and cannot be closed mid-payment (`personal-cfo-6wk.24`); Cover it
+  cannot record a transfer twice (`personal-cfo-5ie.17`); an error is shown when a
+  step after adding a bill fails (`personal-cfo-6wk.22`).
+- **Reads say when they failed.** Cash Flow and the Dashboard no longer present a
+  failed or expired read as an answer (`personal-cfo-5ie.18`); Activity shows one
+  message with Retry (`personal-cfo-4d8.58`); attachments offer Retry and say when
+  the outcome of an Attach or Remove is unknown (`personal-cfo-4d8.59`); a failed
+  Debt terms read shows its message and leaves the totals blank instead of zero
+  (`personal-cfo-twpo.8.2`); "Explain with transactions" shows Reconciled only
+  once it is verified (`personal-cfo-4d8.64`).
+- **Money Inbox** labels a row the ledger could not accept apart from a possible
+  duplicate, with its reason, and offers Skip instead of Import anyway
+  (`personal-cfo-pxi.14`); its stale-balance actions are honest and share the
+  Accounts archive flow (`personal-cfo-4d8.57`).
+- **Scenarios:** applying one replaces a base event only where they collide, so
+  your manual future entries survive (`personal-cfo-5ie.13`); undoing an applied
+  scenario follows what you edited since, so an edited item is never counted twice
+  (`personal-cfo-5ie.12`); the conflict notice states the overlap
+  (`personal-cfo-5ie.15`); the intro and Delete dialog tell the truth once a
+  scenario is applied (`personal-cfo-5ie.19`); a refused row action shows its
+  reason (`personal-cfo-5ie.20`).
+- **Bulk tag** stops on a failed read, cannot run twice and refuses to overwrite a
+  concurrent edit (`personal-cfo-5n4.10`); accept-all of low-confidence matches
+  reports a truthful partial outcome (`personal-cfo-5n4.12`).
+- A CSV amount written with a Unicode minus sign reads as negative, wherever a
+  plain hyphen does (`personal-cfo-pxi.20`).
+- A scheduled backup you cancel stops at its checkpoints and leaves the destination
+  as it was (`personal-cfo-g3m.29`).
+- **Accessibility and legibility:** badge labels and form-control borders meet AA
+  contrast (`personal-cfo-4d8.35`); warning text in the light theme uses a darker ink
+  (`personal-cfo-4d8.43`); a disabled button keeps a readable label
+  (`personal-cfo-4d8.52`); the provenance badge holds contrast on hovered rows
+  (`personal-cfo-4d8.56`); the account select points at the line that explains its
+  state (`personal-cfo-pxi.28`); the Debt payoff result is announced to screen
+  readers (`personal-cfo-6wk.26`); labels meant only for screen readers can no
+  longer stretch the page (`personal-cfo-twpo.1`).
+
+### Security
+
+- Vault keys are handed to the encryption engine through its binary-key interface and
+  are built in place, so no copy of a key is left on the stack; the encryption
+  library's key schedule is scrubbed after use (`personal-cfo-7ie.17`,
+  `personal-cfo-xzpra`, `personal-cfo-7ie.19`).
+- Locking a vault checkpoints its write-ahead log and closes the connection
+  (`personal-cfo-7ie.14`).
+- Dependency security advisories in the TLS stack (`rustls-webpki`, RUSTSEC-2026-0381
+  to 0383) and in a validation library (GHSA-mrhx-c7xc-m3w5) are resolved
+  (`personal-cfo-md8h2.13`, `personal-cfo-md8h2.16`).
+
 ## [0.3.0] - 2026-10-19
 
 ### Added

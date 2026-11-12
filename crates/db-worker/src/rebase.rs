@@ -637,6 +637,7 @@ pub fn is_command_refusal(error: &DbError) -> bool {
         | E::ReplicatedKeyTooLong { .. }
         | E::SettingScope => true,
         E::CipherUnavailable
+        | E::WalHeaderMismatch { .. }
         | E::CheckpointBusy
         | E::VaultInUse
         | E::NewerSchema { .. }

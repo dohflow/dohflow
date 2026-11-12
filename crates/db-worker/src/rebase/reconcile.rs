@@ -285,6 +285,9 @@ pub struct Settled {
     pub sealed: Vec<u8>,
     /// The class-1 rows the command wrote locally, kept when the scratch vault has no better.
     pub write_set_keys: Vec<RowKey>,
+    /// The command's original issue time, kept on the bound entry so the next rebase can read the
+    /// entry back with its complete metadata.
+    pub issued_at: crate::IssuedAt,
     /// What settled it.
     pub by: SettledBy,
 }
@@ -517,6 +520,7 @@ pub fn reconcile(
                 result_ref,
                 sealed: seal.as_ref().map(|s| s.bytes.clone()).unwrap_or_default(),
                 write_set_keys: command.command.write_set_keys.clone(),
+                issued_at: command.meta.issued_at,
                 by,
             }
         };
@@ -647,8 +651,8 @@ impl Scratch<'_> {
             tx.execute(
                 "INSERT INTO sync_outbox
                    (command_id, op_seq, state, write_set_keys, sealed_container, bound_seq,
-                    result_ref, created_at)
-                 VALUES (?1, ?2, 'Bound', ?3, ?4, ?5, ?6, ?7)",
+                    result_ref, created_at, issued_at)
+                 VALUES (?1, ?2, 'Bound', ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     entry.command_id,
                     op_seq,
@@ -657,6 +661,7 @@ impl Scratch<'_> {
                     seq,
                     entry.result_ref,
                     now,
+                    entry.issued_at.as_unix_micros(),
                 ],
             )?;
         }

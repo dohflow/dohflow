@@ -127,10 +127,10 @@ else
 fi
 # These bounds are derived from the field maxima of vault-format.md C.1.1-C.9;
 # pin the two the rest of the protocol leans on.
-[ "$(jq -r '.limits.max_envelope_container_bytes' "$JSON")" = "16909058" ] \
-  && pass "envelope container bound is 16909058" || fail "envelope container bound changed"
-[ "$(jq -r '.limits.max_snapshot_container_bytes' "$JSON")" = "1073742104" ] \
-  && pass "snapshot container bound is 2^30 + 280 (246-byte snapshot header)" || fail "snapshot container bound changed"
+[ "$(jq -r '.limits.max_envelope_container_bytes' "$JSON")" = "17040163" ] \
+  && pass "envelope container bound is 17040163" || fail "envelope container bound changed"
+[ "$(jq -r '.limits.max_snapshot_container_bytes' "$JSON")" = "1073742137" ] \
+  && pass "snapshot container bound is 2^30 + 313 (279-byte snapshot header)" || fail "snapshot container bound changed"
 
 case_start "the comparison detects drift (negative checks)"
 cp "$JSON" "$TMP/drop-error.json"

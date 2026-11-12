@@ -73,6 +73,7 @@ mod forecast_persist;
 mod ingestion;
 mod jobs;
 pub mod logical_export;
+mod wal_guard;
 pub use jobs::{
     DurableJobView, JobStoreError, CONNECTOR_REFRESH_JOB_KIND, LOCK_RELEASING_JOB_KINDS,
 };
@@ -92,8 +93,17 @@ mod rekey;
 pub use rekey::{available_space, verify_rekeyed_copy, BlobRename};
 mod scenarios;
 mod schedule_sources;
+pub mod snapshot_install;
 mod spend_by_category;
 mod staged_import;
+pub mod sync_artifacts;
+pub mod sync_bootstrap;
+pub mod sync_enable;
+pub mod sync_genesis;
+pub mod sync_materialize;
+pub mod sync_receive;
+pub mod sync_references;
+pub mod sync_register;
 pub mod sync_state;
 
 pub use assumptions::{
@@ -118,7 +128,7 @@ pub const CURRENT_SCHEMA_VERSION: i64 = migrations::CURRENT_VERSION;
 /// same write-set hash from the same command, which is what lets a replica verify a write set.
 /// It is bumped by hand, in the same change, whenever a change makes `apply` write something
 /// different for an unchanged payload; a mismatch tells a client to update before it continues.
-pub const ENGINE_VERSION: &str = "dohflow-engine-2";
+pub const ENGINE_VERSION: &str = "dohflow-engine-3";
 pub use forecast::{
     AccountAvailability, AccountHistoryView, AccountSeriesView, CapabilityUnlock, CardCycleView,
     CardStatementForecastView, CardStatementHistoryView, CashAvailability, CashFlowHistory,
@@ -1592,6 +1602,20 @@ pub enum DbError {
     /// (personal-cfo-g3m.20), so no connection was keyed.
     #[error("the encryption library did not finish starting up")]
     CipherUnavailable,
+    /// A `-wal` file beside the database was written with a page size this app never uses
+    /// (personal-cfo-5vto5, RUSTSEC-2026-0459). Nothing was opened and the file was not touched: a real
+    /// log can hold committed work that has not been checkpointed yet. The sizes are all that is
+    /// reported (no path crosses the boundary).
+    #[error(
+        "a write-ahead log beside the vault was written with a page size of {found_page_size} bytes, \
+         not the {expected_page_size} this vault uses; it was left untouched and the vault was not opened"
+    )]
+    WalHeaderMismatch {
+        /// The page size the file's header names.
+        found_page_size: u32,
+        /// The page size every vault uses.
+        expected_page_size: u32,
+    },
     /// The write-ahead log could not be fully truncated because a reader still holds the
     /// database open (`wal_checkpoint(TRUNCATE)` reported busy).
     #[error("the write-ahead log could not be fully checkpointed: a reader is still open")]
@@ -1795,6 +1819,17 @@ enum KeyMaterial {
     Raw(std::sync::Arc<Dek>),
 }
 
+/// How [`DbWorker::bootstrap_with`] treats the vault it opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenMode {
+    /// An ordinary open or creation: a new vault is seeded, and the base image is reconciled.
+    Normal,
+    /// A rebase's scratch vault: a copy of the base image, which has no base image of its own.
+    Scratch,
+    /// A replica being born from a snapshot: its rows are installed, so nothing is seeded.
+    Replica,
+}
+
 /// The database worker. Cheap to share across threads behind an `Arc`.
 pub struct DbWorker {
     inner: Mutex<Inner>,
@@ -1996,7 +2031,7 @@ impl DbWorker {
         key: KeyMaterial,
         runner_lock: File,
     ) -> Result<Self, DbError> {
-        Self::bootstrap_with(path, conn, key, runner_lock, true)
+        Self::bootstrap_with(path, conn, key, runner_lock, OpenMode::Normal)
     }
 
     /// [`DbWorker::bootstrap`] for a rebase's scratch vault (personal-cfo-bxsbz.4): a copy of the
@@ -2007,7 +2042,19 @@ impl DbWorker {
         key: KeyMaterial,
         runner_lock: File,
     ) -> Result<Self, DbError> {
-        Self::bootstrap_with(path, conn, key, runner_lock, false)
+        Self::bootstrap_with(path, conn, key, runner_lock, OpenMode::Scratch)
+    }
+
+    /// [`DbWorker::bootstrap`] for the vault of a replica being born from a snapshot
+    /// (`personal-cfo-1cltt.5`): the snapshot's rows, identity included, are already installed, so
+    /// no seed is written, and a database with no identity is refused rather than given one.
+    pub(crate) fn bootstrap_replica_vault(
+        path: PathBuf,
+        conn: Connection,
+        key: KeyMaterial,
+        runner_lock: File,
+    ) -> Result<Self, DbError> {
+        Self::bootstrap_with(path, conn, key, runner_lock, OpenMode::Replica)
     }
 
     fn bootstrap_with(
@@ -2015,11 +2062,24 @@ impl DbWorker {
         mut conn: Connection,
         key: KeyMaterial,
         runner_lock: File,
-        reconcile_base: bool,
+        mode: OpenMode,
     ) -> Result<Self, DbError> {
+        let reconcile_base = mode != OpenMode::Scratch;
         migrations::run_migrations(&mut conn)?;
         let node_id = ensure_node_id(&conn)?;
-        create_vault_rows_if_new(&mut conn)?;
+        if mode == OpenMode::Replica {
+            let has_identity: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM vault_metadata WHERE singleton = 1)",
+                [],
+                |r| r.get(0),
+            )?;
+            if !has_identity {
+                return Err(DbError::UnsupportedSchema);
+            }
+            advance_schema_stamp(&conn, migrations::CURRENT_VERSION)?;
+        } else {
+            create_vault_rows_if_new(&mut conn)?;
+        }
         // The write-set capture (vault-format.md C.1.5): temp triggers on the writer
         // connection, installed after the migrations and the seed writes so neither is captured.
         write_set::install(&conn)?;
@@ -2126,6 +2186,37 @@ impl DbWorker {
         } else {
             Err(DbError::CheckpointBusy)
         }
+    }
+
+    /// Run `f` in one transaction on the writer connection, under the writer lock, and commit it if
+    /// `f` returns `Ok`. This is how the device-local Sync state (`sync_register`, `sync_genesis`)
+    /// is read and written: under the same lock as every other write, so a backup restore rolls it
+    /// back with the vault, which is what the independent witness detects. A closure that needs the
+    /// transaction of a command (the register advance beside the operation-log row) takes it from
+    /// that command's own transaction instead.
+    ///
+    /// `f` runs while the writer lock is held, so it must not call another method of this worker
+    /// that takes the lock (`vault_id`, a dispatch): read what it needs first.
+    ///
+    /// # Errors
+    /// `f`'s error (the transaction is rolled back), or [`DbError::WorkerUnavailable`] /
+    /// [`DbError::Sqlite`] as `E` when the worker is not healthy or the transaction cannot start or
+    /// commit.
+    pub fn write_sync_state<R, E: From<DbError>>(
+        &self,
+        f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<R, E>,
+    ) -> Result<R, E> {
+        let guard = self.lock();
+        if guard.state != WorkerState::Healthy {
+            return Err(DbError::WorkerUnavailable(guard.state).into());
+        }
+        let tx = guard
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| E::from(DbError::from(e)))?;
+        let out = f(&tx)?;
+        tx.commit().map_err(|e| E::from(DbError::from(e)))?;
+        Ok(out)
     }
 
     /// Run `PRAGMA integrity_check` on the vault at `path` with `dek`, **before** the worker is
@@ -3240,6 +3331,43 @@ impl DbWorker {
             original_filename,
         )?;
         Ok(id)
+    }
+
+    /// Remove the blob files that nothing names (D7): no `attachments` row and no staged mapping.
+    /// They are the ciphertext of a blob whose key was never committed, left by a crash between
+    /// writing the file and recording the row. Called once when a vault unlocks, after rotation
+    /// recovery. It takes the writer lock, so an import or materialization cannot be between its
+    /// file and its row. It does **nothing** while a swap or a rebase is in progress
+    /// ([`base_image::swap_or_rebase_in_progress`], the one shared predicate): the new-name blobs
+    /// of an interrupted rotation, and any blob that only a rebase's scratch vault, the base image
+    /// or the pre-rebase copy names, are not named by the database. It also keeps every blob that the
+    /// base image (`sync/base.db`, the rebase rollback target) names, read read-only, and removes
+    /// nothing if that image exists and cannot be read. Returns how many files it removed.
+    ///
+    /// # Errors
+    /// [`DbError`] if the worker is unavailable or a file cannot be read or removed.
+    pub fn sweep_orphan_blobs(&self) -> Result<usize, DbError> {
+        let dir = attachments::blobs_dir(&self.path);
+        let guard = self.lock();
+        if guard.state != WorkerState::Healthy {
+            return Err(DbError::WorkerUnavailable(guard.state));
+        }
+        if base_image::swap_or_rebase_in_progress(&self.path) {
+            return Ok(0);
+        }
+        // The base image is the rollback target of a rebase (`bxsbz.7`): a blob that only it names
+        // (an attachment deleted here after the base was taken) must survive. If the image exists
+        // and cannot be read, nothing is removed: the sweep fails closed.
+        let base = base_image::base_image_path(&self.path);
+        let also_named = if base.exists() {
+            let image = self
+                .key
+                .open_image(&base, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            attachments::names_in_image(&image)?
+        } else {
+            std::collections::HashSet::new()
+        };
+        attachments::sweep_orphans(&dir, &guard.conn, &also_named)
     }
 
     /// Link an imported attachment to a domain entity (many-to-many), bumping its
@@ -5123,6 +5251,8 @@ fn open_vault_connection(path: &Path, flags: OpenFlags) -> Result<Connection, Db
     if !ensure_cipher_ready() {
         return Err(DbError::CipherUnavailable);
     }
+    // Before SQLite sees the file: a sibling `-wal` with a different page size is refused untouched.
+    wal_guard::check_wal_header(path)?;
     Ok(Connection::open_with_flags(path, flags)?)
 }
 
@@ -5619,6 +5749,18 @@ const DEFAULT_KDF_PARALLELISM: i64 = 1;
 /// every open even after migrating cleanly (personal-cfo-4d8.27.1.3).
 /// Idempotent across re-opens. Returns the new vault's id and creation time when THIS call
 /// created the row, and `None` for an existing vault: the caller seeds only on `Some`.
+/// Advance the write-once stamp to the version we just migrated to. Only move it FORWARD.
+/// Existing-vault open refuses a higher stamp before bootstrap; this predicate also prevents
+/// accidental down-stamping by any future internal caller.
+fn advance_schema_stamp(conn: &Connection, schema_version: i64) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE vault_metadata SET schema_version = ?1
+         WHERE singleton = 1 AND schema_version < ?1",
+        params![schema_version],
+    )?;
+    Ok(())
+}
+
 fn ensure_vault_metadata(
     conn: &Connection,
     schema_version: i64,
@@ -5629,15 +5771,7 @@ fn ensure_vault_metadata(
         |r| r.get(0),
     )?;
     if exists {
-        // Advance the write-once stamp to the version we just migrated to. Only
-        // move it FORWARD. Existing-vault open refuses a higher stamp before
-        // bootstrap; this predicate also prevents accidental down-stamping by
-        // any future internal caller.
-        conn.execute(
-            "UPDATE vault_metadata SET schema_version = ?1
-             WHERE singleton = 1 AND schema_version < ?1",
-            params![schema_version],
-        )?;
+        advance_schema_stamp(conn, schema_version)?;
         return Ok(None);
     }
     let (vault_id, created_at) = FIXED_VAULT_IDENTITY
@@ -5653,23 +5787,7 @@ fn ensure_vault_metadata(
         |r| r.get(0),
     )?;
     if has_households {
-        conn.execute(
-            "INSERT INTO vault_metadata (
-                singleton, vault_id, schema_version, envelope_version,
-                kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism,
-                manifest_pointer, created_at
-            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
-            params![
-                vault_id,
-                schema_version,
-                VAULT_ENVELOPE_VERSION,
-                DEFAULT_KDF_ALGORITHM,
-                DEFAULT_KDF_MEMORY_KIB,
-                DEFAULT_KDF_TIME_COST,
-                DEFAULT_KDF_PARALLELISM,
-                created_at,
-            ],
-        )?;
+        insert_vault_metadata(conn, &vault_id, schema_version, &created_at)?;
         // The genesis seed of the household and its first member, from the vault's own id and
         // creation time (personal-cfo-339).
         households::seed(conn, &vault_id, DEFAULT_HOUSEHOLD_TIMEZONE, &created_at)?;
@@ -5694,6 +5812,35 @@ fn ensure_vault_metadata(
         )?;
     }
     Ok(Some((vault_id, created_at)))
+}
+
+/// Insert the `vault_metadata` row of a vault whose schema has `households` (version 61 on). The
+/// envelope and KDF fields describe THIS device's own envelope, never the origin's. Shared by the
+/// creation path above and the snapshot installer, so the two write the same row.
+pub(crate) fn insert_vault_metadata(
+    conn: &Connection,
+    vault_id: &Uuid,
+    schema_version: i64,
+    created_at: &str,
+) -> Result<(), DbError> {
+    conn.execute(
+        "INSERT INTO vault_metadata (
+            singleton, vault_id, schema_version, envelope_version,
+            kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism,
+            manifest_pointer, created_at
+        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
+        params![
+            vault_id,
+            schema_version,
+            VAULT_ENVELOPE_VERSION,
+            DEFAULT_KDF_ALGORITHM,
+            DEFAULT_KDF_MEMORY_KIB,
+            DEFAULT_KDF_TIME_COST,
+            DEFAULT_KDF_PARALLELISM,
+            created_at,
+        ],
+    )?;
+    Ok(())
 }
 
 thread_local! {

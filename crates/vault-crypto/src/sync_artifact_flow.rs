@@ -6,15 +6,18 @@
 //!   sealed. A matching receipt is what lets a producer reference the artifact (receipt before
 //!   reference, `sync_core::artifact_closure::build_delta`). Nothing here persists: the caller writes
 //!   the row first and records the receipt after, in one transaction of its own.
-//! * [`fetch`] gets an object and opens it from the **expected** address. A missing or unreachable
-//!   object is a service fault (retried, never a basis to honor a void); an object that fails the
-//!   outer AEAD is the same class (C.4 stage 9(a)); only a verified artifact reaches the closure
-//!   check.
+//! * [`fetch`] gets an object, checks its ciphertext against the **hash the envelope bound to the
+//!   id**, and only then opens it from the **expected** address. A missing or unreachable object, or
+//!   bytes that do not hash to the bound value, is a service or transport fault (retried, never a
+//!   basis to honor a void: C.4 stage 9(a)). Bytes that do hash to it and then fail the outer AEAD or
+//!   the descriptor are the producer's fault (stage 9(b), voidable). Only a verified artifact reaches
+//!   the closure check.
 //! * [`materialize_attachment`] is the receiver's step for an attachment: derive its own DEK-scoped
 //!   `StorageId_B`, generate a fresh content key, re-encrypt the bytes and wrap the key under the DEK.
 //!   No origin storage id, wrapped key or nonce is read from, or written to, anything that crosses
 //!   the wire.
 
+use sha2::Digest;
 use sync_core::artifact::{ArtifactId, ArtifactReceipt, LogicalBinding, MAX_ARTIFACT_CONTAINER};
 use sync_core::artifact_closure::Mismatch;
 use sync_core::artifact_transport::{ArtifactTransport, TransportError};
@@ -102,9 +105,14 @@ pub enum FetchError {
     /// The service could not be reached. Retried.
     #[error("the service is unavailable")]
     Unavailable,
-    /// The bytes fail the **outer** AEAD (or are not a container): a service or transport fault, the
-    /// same class as `Missing`.
-    #[error("the fetched object does not authenticate")]
+    /// The fetched bytes are not the artifact the envelope bound to this id: they are not a
+    /// well-formed container, or their ciphertext does not hash to the bound `ciphertext_sha256`.
+    /// A fault of the service or the transport, the same class as `Missing` (C.4 stage 9(a)).
+    #[error("the fetched bytes are not the artifact the envelope bound to this id")]
+    HashMismatch,
+    /// The bytes hash to the bound value but fail the **outer** AEAD: the producer bound a hash of an
+    /// object that does not open, which is its fault (C.4 stage 9(b)).
+    #[error("the bound object does not authenticate")]
     OuterAead,
     /// The object authenticates but its plaintext is invalid, or names another address: a fact about
     /// the artifact, not about the service. Carried to the closure check as a mismatch.
@@ -113,19 +121,22 @@ pub enum FetchError {
 }
 
 impl FetchError {
-    /// The stage-9(b) verdict this failure stands for, if it is a fact about the artifact: only
-    /// [`FetchError::Invalid`] is. Every other class is a service or transport fault and leaves the
-    /// envelope not determinable (stage 9(a)), so it has no verdict.
+    /// The stage-9(b) verdict this failure stands for, if it is a fact about the artifact. Bytes
+    /// that hash to the bound value are one fixed object that every replica judges alike, so a
+    /// failure to open it ([`FetchError::OuterAead`]) or to validate it ([`FetchError::Invalid`]) is
+    /// the producer's. Every other class is a service or transport fault and leaves the envelope not
+    /// determinable (stage 9(a)), so it has no verdict.
     #[must_use]
     pub fn mismatch(self, id: ArtifactId) -> Option<Mismatch> {
         match self {
-            Self::Invalid(_) => Some(Mismatch::ArtifactInvalid(id)),
-            Self::Missing | Self::Unavailable | Self::OuterAead => None,
+            Self::Invalid(_) | Self::OuterAead => Some(Mismatch::ArtifactInvalid(id)),
+            Self::Missing | Self::Unavailable | Self::HashMismatch => None,
         }
     }
 }
 
-/// Get the object at `(key_epoch, id)` and open it from the expected address.
+/// Get the object at `(key_epoch, id)`, check its ciphertext against `bound_sha256` (the hash the
+/// envelope bound to the id), and open it from the expected address.
 ///
 /// # Errors
 /// A [`FetchError`].
@@ -133,6 +144,7 @@ pub fn fetch(
     transport: &impl ArtifactTransport,
     key: &EpochKey,
     id: &ArtifactId,
+    bound_sha256: &[u8; 32],
 ) -> Result<OpenedArtifact, FetchError> {
     let container = transport
         .get(key.vault_id(), key.key_epoch(), id)
@@ -140,6 +152,13 @@ pub fn fetch(
             TransportError::NotFound => FetchError::Missing,
             _ => FetchError::Unavailable,
         })?;
+    // The bytes the envelope bound are the AEAD output a container carries. Bytes that are not a
+    // container, or whose ciphertext hashes to something else, are not them.
+    let ciphertext = sync_core::artifact::parse_container(&container, MAX_ARTIFACT_CONTAINER)
+        .map_err(|_| FetchError::HashMismatch)?;
+    if sha2::Sha256::digest(ciphertext).as_slice() != bound_sha256 {
+        return Err(FetchError::HashMismatch);
+    }
     open_artifact(key, id, &container, MAX_ARTIFACT_CONTAINER).map_err(|e| match e {
         OpenArtifactError::Container(_) | OpenArtifactError::NotOpenable => FetchError::OuterAead,
         other => FetchError::Invalid(other),

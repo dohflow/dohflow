@@ -28,9 +28,14 @@ job-runtime = { path = "../job-runtime" }
 # The ImporterPlugin output type (`ParsedBatch`) the ingestion pipeline bulk-stages
 # (personal-cfo-cmx). importer-core is a pure parsing-types crate (no DB), so no cycle.
 importer-core = { path = "../importers/importer-core" }
+# One redaction-safe line when Sync discards an import in progress (personal-cfo-0g528.2); counts only.
+tracing = { workspace = true }
 # Raw-key vault open: db-worker keys SQLCipher from the DEK that vault-crypto
 # unwraps (personal-cfo-vhv). vault-crypto is pure (no rusqlite), so no cycle.
 vault-crypto = { path = "../vault-crypto" }
+# The counter register's context and the verified-state mark (personal-cfo-1cltt.4). A path
+# crate with no database, no runtime and no external dependency.
+platform-traits = { path = "../platform-traits" }
 chrono = { workspace = true, features = ["serde"] }
 # Command payloads (personal-cfo-t2s4b part 3b): serde derives on WriteCommand. sync-core is the
 # canonical JSON codec, the canonical row encoding (5b) and the write-set hash that the capture
@@ -61,3 +66,9 @@ vault-crypto = { path = "../vault-crypto" }
 # row of a populated vault through it.
 sync-core = { path = "../sync-core" }
 uuid = { workspace = true }
+# The independent witness the register and verified-state tests run against (personal-cfo-1cltt.4).
+platform-mock = { path = "../platform-mock" }
+# Captures that line in the redaction test (personal-cfo-0g528.2).
+tracing-subscriber = { workspace = true }
+# The global test subscriber a log-capture test installs first (DoD §2.4 rule 1).
+observability = { path = "../observability", features = ["test-support"] }

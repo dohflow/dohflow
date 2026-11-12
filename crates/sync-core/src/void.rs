@@ -376,12 +376,50 @@ pub fn snapshot_passes_stop(stop_seq: u64, root: u64, recorded: &[HonoredVoid]) 
         .any(|v| v.first <= stop_seq && stop_seq <= v.last && root > v.last)
 }
 
-/// The honored voids so far. Coverage comes only from here: an inert void covers nothing.
+/// Why a ledger could not be built from the entries given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum LedgerError {
+    /// A range runs backwards, or does not start strictly after the previous range ends: honoring
+    /// only ever produces strictly ascending, disjoint ranges.
+    #[error("the void ranges are not strictly ascending and disjoint")]
+    NotAscending,
+    /// A void a snapshot records reaches the snapshot's root or beyond (C.8: every recorded void
+    /// lies below it).
+    #[error("a recorded void is not below the snapshot's root")]
+    NotBelowRoot,
+    /// More entries than a ledger holds.
+    #[error("too many void entries")]
+    TooMany,
+}
+
+/// The voids this replica knows, in two kinds that are never confused (ADR 0074 Addendum E):
 ///
-/// Persist it in the same transaction as the applied cursor, under the anti-rollback witness.
+/// * **honored** here: the replica was stopped at the position, judged it and found the void's
+///   digest and command id agree. Only these feed the fork check "the same void honored at two
+///   positions" and the `AlreadyCovered` outcome.
+/// * **seeded** from a snapshot it bootstrapped from: recorded by the snapshot's producer and
+///   never judged here. They are history: carried into any snapshot this replica later publishes
+///   ([`Self::recorded`]) and skipped when the engine applies ([`Self::skips`]), but they never
+///   feed a fork check, because one member alone could otherwise record the id of a void it will
+///   sign later and halt every replica bootstrapped from its snapshot. A position at or below the
+///   root is already [`Inert::PrecedesRoot`].
+///
+/// Coverage of a **new** position comes only from honored voids: an inert void covers nothing.
+///
+/// Persist it in the same transaction as the applied cursor (`sync_voids` and `sync_position`,
+/// vault-format B.2), under the anti-rollback witness.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VoidLedger {
+    seeded: Vec<HonoredVoid>,
     honored: Vec<HonoredVoid>,
+}
+
+fn ranges_ascend(ranges: &[HonoredVoid]) -> bool {
+    ranges
+        .iter()
+        .enumerate()
+        .all(|(i, h)| h.first <= h.last && (i == 0 || h.first > ranges[i - 1].last))
 }
 
 impl VoidLedger {
@@ -391,15 +429,79 @@ impl VoidLedger {
         Self::default()
     }
 
-    /// The honored voids, in the order they were honored.
+    /// The ledger of a replica bootstrapped from a snapshot rooted at `root` that records
+    /// `recorded`: every one of them seeded. The same check as
+    /// [`crate::status::snapshot_is_valid_root`]'s void rule, so a ledger is never built from a
+    /// record that rule would have refused.
+    ///
+    /// # Errors
+    /// [`LedgerError`].
+    pub fn from_snapshot(recorded: &[HonoredVoid], root: u64) -> Result<Self, LedgerError> {
+        if recorded.len() > MAX_LEDGER_ENTRIES {
+            return Err(LedgerError::TooMany);
+        }
+        if !ranges_ascend(recorded) {
+            return Err(LedgerError::NotAscending);
+        }
+        if recorded.iter().any(|h| h.last >= root) {
+            return Err(LedgerError::NotBelowRoot);
+        }
+        Ok(Self {
+            seeded: recorded.to_vec(),
+            honored: Vec::new(),
+        })
+    }
+
+    /// Rebuild a ledger from its two persisted lists (`sync_voids` read in ordinal order): the
+    /// seeded entries, then the honored ones, all strictly ascending and disjoint together.
+    ///
+    /// # Errors
+    /// [`LedgerError`].
+    pub fn from_parts(
+        seeded: Vec<HonoredVoid>,
+        honored: Vec<HonoredVoid>,
+    ) -> Result<Self, LedgerError> {
+        if seeded.len() + honored.len() > MAX_LEDGER_ENTRIES {
+            return Err(LedgerError::TooMany);
+        }
+        let all: Vec<HonoredVoid> = seeded.iter().chain(&honored).copied().collect();
+        if !ranges_ascend(&all) {
+            return Err(LedgerError::NotAscending);
+        }
+        Ok(Self { seeded, honored })
+    }
+
+    /// The voids honored here, in the order they were honored.
     #[must_use]
     pub fn honored(&self) -> &[HonoredVoid] {
         &self.honored
     }
 
-    /// Whether an honored void skips log position `seq`: the engine does not apply it.
+    /// The voids seeded from the snapshot this replica bootstrapped from.
+    #[must_use]
+    pub fn seeded(&self) -> &[HonoredVoid] {
+        &self.seeded
+    }
+
+    /// Every void this replica records, seeded then honored: what a snapshot it publishes records
+    /// (rule 8). Ascending, because every seeded range lies below the root and every honored one
+    /// above it.
+    #[must_use]
+    pub fn recorded(&self) -> Vec<HonoredVoid> {
+        self.seeded.iter().chain(&self.honored).copied().collect()
+    }
+
+    /// Whether a void, seeded or honored, skips log position `seq`: the engine does not apply it.
     #[must_use]
     pub fn skips(&self, seq: u64) -> bool {
+        self.seeded
+            .iter()
+            .chain(&self.honored)
+            .any(|v| v.first <= seq && seq <= v.last)
+    }
+
+    /// Whether a void honored **here** covers `seq`. A seeded void never does.
+    fn honored_covers(&self, seq: u64) -> bool {
         self.honored.iter().any(|v| v.first <= seq && seq <= v.last)
     }
 
@@ -449,7 +551,12 @@ impl VoidLedger {
         {
             return Err(OfferError::RootNotBelowFrontier);
         }
-        if self.honored.iter().any(|h| h.last >= ctx.next_to_apply) {
+        if self
+            .seeded
+            .iter()
+            .chain(&self.honored)
+            .any(|h| h.last >= ctx.next_to_apply)
+        {
             return Err(OfferError::FrontierInsideHonoredRange);
         }
         if voids.windows(2).any(|w| w[0].position() >= w[1].position()) {
@@ -484,7 +591,7 @@ impl VoidLedger {
         if position <= body.seq {
             return Honor::Inert(Inert::VoidNotAfterTarget);
         }
-        if self.skips(body.seq) {
+        if self.honored_covers(body.seq) {
             return Honor::Inert(Inert::AlreadyCovered);
         }
         if ctx.snapshot_root.is_some_and(|root| body.seq <= root) {
@@ -529,8 +636,9 @@ impl VoidLedger {
         Honor::Honored(honored)
     }
 
-    /// The ledger's canonical bytes, for persistence under the anti-rollback witness: a CBE1 list
-    /// of `(void id, first, last)`.
+    /// The canonical bytes of the voids honored HERE: a CBE1 list of `(void id, first, last)`. It
+    /// does not carry the seeded entries (use [`Self::recorded`] for what a snapshot records), so
+    /// a ledger is persisted as its two lists (`sync_voids`), never as these bytes alone.
     ///
     /// # Errors
     /// [`WireError::TooLong`] for an absurd number of entries.
@@ -568,7 +676,10 @@ impl VoidLedger {
                 return Err(WireError::ListNotAscending);
             }
         }
-        Ok(Self { honored })
+        Ok(Self {
+            seeded: Vec::new(),
+            honored,
+        })
     }
 }
 
