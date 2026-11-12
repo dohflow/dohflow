@@ -299,7 +299,7 @@ impl SnapshotService for FakeSnapshotService {
             if sidecar.len() > MAX_CLOSURE_SIDECAR_LEN {
                 return Err(ServiceError::SnapshotTooLarge);
             }
-            if sidecar.len() % 32 != 0 {
+            if !sidecar.len().is_multiple_of(32) {
                 return Err(ServiceError::MalformedObject);
             }
             if state.vault.is_some() && credential == Credential::Account {
@@ -618,8 +618,10 @@ fn closure_of_request(
         // A closure was staged with the snapshot: a list in the request beside it is refused.
         Some(_) if !requested.is_empty() && !published => Err(ServiceError::MalformedRequest),
         Some(staged) if requested.is_empty() => Ok(staged
-            .chunks_exact(32)
-            .map(|chunk| ArtifactId::from_derived(chunk.try_into().expect("32 bytes")))
+            .as_chunks::<32>()
+            .0
+            .iter()
+            .map(|chunk| ArtifactId::from_derived(*chunk))
             .collect()),
         _ => {
             if requested.len() > MAX_INLINE_CLOSURE {
