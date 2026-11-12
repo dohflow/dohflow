@@ -2,9 +2,14 @@
 //! personal-cfo-1cltt.4, part B).
 //!
 //! * A **genesis** (the first snapshot of a vault, sealed under epoch 1) is published by
-//!   `installEpoch` with `reason 1`, `base_seq` `0`, the persisted genesis records and an empty
-//!   closure (until `personal-cfo-1cltt.7`). It is read from the live vault, at sync-enable, before
-//!   any outbox row exists.
+//!   `installEpoch` with `reason 1`, `base_seq` `0`, the persisted genesis records and the
+//!   snapshot's closure (empty until the vault holds artifacts). It is read from the live vault, at
+//!   sync-enable, before any outbox row exists.
+//! * **The closure** goes in the request when it holds at most 4096 ids. A closure of more ids is
+//!   staged with `stageSnapshotClosure` (protocol 4.14) after the snapshot is staged and before it is
+//!   published or installed, and the request then carries an empty list; a retry stages the same
+//!   bytes again, which the service answers as it did. [`fetch_snapshot_closure`] reads one back and
+//!   checks its commitment.
 //! * A **re-snapshot** (the only way history is truncated) is published by `publishSnapshot` with
 //!   `base_seq` equal to the head and to the snapshot's own. It is never read from the live vault:
 //!   the live vault holds the effects of local commands no envelope has sequenced, so the source
@@ -20,10 +25,11 @@
 //! (the genesis state, the base).
 
 use sha2::{Digest, Sha256};
-use sync_core::artifact::ArtifactId;
-use sync_core::header::parse_container;
+use sync_core::artifact::{ArtifactId, ClosureManifest, ClosureSidecarError};
+use sync_core::header::{parse_container, ManifestCommitment};
 use sync_core::snapshot_service::{
     EpochInstall, InstalledEpoch, PublishedSnapshot, ServiceError, SnapshotService, SnapshotSource,
+    MAX_INLINE_CLOSURE,
 };
 use sync_core::status::SyncStatus;
 use thiserror::Error;
@@ -392,14 +398,18 @@ where
         fresh,
         drop_saved,
     } = *delivery;
+    // A closure of more than 4096 ids is staged, and the request then carries none (protocol 4.14).
+    let sidecar = (manifest.len() > MAX_INLINE_CLOSURE).then(|| sidecar_of(manifest));
+    let request_manifest: &[ArtifactId] = if sidecar.is_some() { &[] } else { manifest };
     let outcome = match *kind {
         PublishKind::ReSnapshot => {
             service.stage_snapshot(vault_id, snapshot_id, container)?;
+            stage_closure(service, vault_id, snapshot_id, sidecar.as_deref())?;
             PublishOutcome::Published(service.publish_snapshot(
                 vault_id,
                 snapshot_id,
                 base_seq,
-                manifest,
+                request_manifest,
             )?)
         }
         PublishKind::Genesis {
@@ -411,9 +421,18 @@ where
                 membership_record: Some(membership_record),
                 epoch_record,
                 snapshot_id: Some(*snapshot_id),
-                artifact_manifest: manifest,
+                artifact_manifest: request_manifest,
             };
-            match install_genesis(service, vault_id, snapshot_id, container, &install, fresh) {
+            let closure = sidecar.as_deref();
+            match install_genesis(
+                service,
+                vault_id,
+                snapshot_id,
+                container,
+                closure,
+                &install,
+                fresh,
+            ) {
                 Ok(GenesisReply::Installed(installed)) => {
                     PublishOutcome::GenesisInstalled(installed)
                 }
@@ -428,6 +447,64 @@ where
         sealer.discard(snapshot_id)?;
     }
     Ok(outcome)
+}
+
+/// The closure as a staged sidecar: the ids' raw bytes, in the order given (the plaintext's
+/// manifest lists them ascending, which the service checks).
+fn sidecar_of(ids: &[ArtifactId]) -> Vec<u8> {
+    ids.iter().flat_map(|id| *id.as_bytes()).collect()
+}
+
+/// Stage the closure `sidecar` with the staged snapshot, when there is one to stage. Staging again
+/// the same bytes is the service's idempotent answer.
+fn stage_closure<Service: SnapshotService>(
+    service: &Service,
+    vault_id: &[u8; 16],
+    snapshot_id: &[u8; 16],
+    sidecar: Option<&[u8]>,
+) -> Result<(), ServiceError> {
+    match sidecar {
+        Some(bytes) => service
+            .stage_snapshot_closure(vault_id, snapshot_id, bytes)
+            .map(|_| ()),
+        None => Ok(()),
+    }
+}
+
+/// Why a snapshot's closure was not accepted when it was read back.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum ClosureFetchError {
+    /// The service refused or could not be reached. [`ServiceError::Unavailable`] is transient.
+    #[error("the service did not return the closure: {0}")]
+    Service(#[from] ServiceError),
+    /// The bytes are not a well-formed sidecar (a length that is not whole ids, more than 2^20 ids,
+    /// or ids not in strictly ascending order). The service does not vouch for them.
+    #[error("the closure is not a well-formed sidecar: {0}")]
+    Sidecar(#[from] ClosureSidecarError),
+    /// The ids are well formed but their commitment is not the one the snapshot's header carries.
+    #[error("the closure's commitment is not the snapshot header's")]
+    CommitmentMismatch,
+}
+
+/// Read a retained snapshot's closure with `getSnapshotClosure` and check it against `expected`,
+/// the closure commitment (header field 17) of the snapshot's own header: the service does not
+/// vouch for the bytes, and a closure that is not the one the header commits to is never used.
+///
+/// # Errors
+/// A [`ClosureFetchError`].
+pub fn fetch_snapshot_closure<Service: SnapshotService>(
+    service: &Service,
+    vault_id: &[u8; 16],
+    snapshot_id: &[u8; 16],
+    expected: &ManifestCommitment,
+) -> Result<ClosureManifest, ClosureFetchError> {
+    let bytes = service.get_snapshot_closure(vault_id, snapshot_id)?;
+    let closure = ClosureManifest::from_sidecar(&bytes)?;
+    if &closure.commitment() != expected {
+        return Err(ClosureFetchError::CommitmentMismatch);
+    }
+    Ok(closure)
 }
 
 /// The id of a vault's genesis snapshot, derived from its genesis epoch record's id so that a
@@ -473,6 +550,7 @@ fn install_genesis<Service: SnapshotService>(
     vault_id: &[u8; 16],
     snapshot_id: &[u8; 16],
     container: &[u8],
+    sidecar: Option<&[u8]>,
     install: &EpochInstall<'_>,
     fresh: bool,
 ) -> Result<GenesisReply, ServiceError> {
@@ -482,6 +560,14 @@ fn install_genesis<Service: SnapshotService>(
         Err(ServiceError::ObjectConflict) => {}
         Err(other) => return Err(other),
     }
+    // The closure is staged the same way the snapshot was, and a refusal of it is read as the
+    // stage's is: the install decides (once a genesis is installed the account credential is
+    // refused here, and a snapshot that is not staged is `installEpoch`'s to say).
+    match stage_closure(service, vault_id, snapshot_id, sidecar) {
+        Ok(()) | Err(ServiceError::Forbidden | ServiceError::VaultExists) => {}
+        Err(ServiceError::SnapshotNotFound) => {}
+        Err(other) => return Err(other),
+    }
     let installed = match service.install_epoch(vault_id, install) {
         Err(ServiceError::SnapshotNotFound) => {
             match service.stage_snapshot(vault_id, snapshot_id, container) {
@@ -489,6 +575,7 @@ fn install_genesis<Service: SnapshotService>(
                 Err(ServiceError::ObjectConflict) if fresh => return Ok(GenesisReply::ResumeLost),
                 Err(other) => return Err(other),
             }
+            stage_closure(service, vault_id, snapshot_id, sidecar)?;
             service.install_epoch(vault_id, install)?
         }
         other => other?,

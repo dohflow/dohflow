@@ -788,3 +788,325 @@ fn find_published_answers_only_for_the_newest_snapshot_of_that_id() {
     );
     assert_eq!(find_published(&service, &VAULT, &[0x09; 16]), Ok(None));
 }
+
+// ---- the closure: in the request up to 4096 ids, staged above it (protocol 4.14) -----------------
+
+/// `count` strictly ascending ids, each with a receipt on `service` (the hash the fake binds by
+/// default).
+fn ascending_ids_with_receipts(service: &FakeSnapshotService, count: usize) -> Vec<[u8; 32]> {
+    let ids: Vec<[u8; 32]> = (0..count)
+        .map(|i| {
+            let mut id = [0_u8; 32];
+            id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            id
+        })
+        .collect();
+    for id in &ids {
+        service.receipt(ArtifactId::from_derived(*id));
+    }
+    ids
+}
+
+fn as_artifact_ids(ids: &[[u8; 32]]) -> Vec<ArtifactId> {
+    ids.iter().map(|id| ArtifactId::from_derived(*id)).collect()
+}
+
+fn raw(ids: &[[u8; 32]]) -> Vec<u8> {
+    ids.concat()
+}
+
+/// A genesis that carries a closure sends it to `installEpoch` as the request's list, in order, and
+/// the service pins it: a client that sent an empty list for a closure that fits (mutant B12) fails
+/// here, at the request and at the service's own commitment check.
+#[test]
+fn a_genesis_with_a_closure_of_4096_or_fewer_sends_it_in_the_install_request_in_order() {
+    for count in [3, 4096] {
+        let rig = Rig::genesis("closure-small");
+        let service = FakeSnapshotService::new(Credential::Account);
+        let ids = ascending_ids_with_receipts(&service, count);
+        let plaintext = common::snapshot_plaintext(&ids, "a genesis with artifacts");
+        let outcome = rig
+            .publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext))
+            .unwrap();
+        assert!(
+            matches!(outcome, PublishOutcome::GenesisInstalled(_)),
+            "{count}: {outcome:?}"
+        );
+        assert_eq!(
+            service.calls(),
+            ["stage_snapshot", "install_epoch"],
+            "{count}: no closure is staged"
+        );
+        assert_eq!(
+            service.manifest_sent("install_epoch"),
+            Some(as_artifact_ids(&ids)),
+            "{count}: the request carries the closure, in order"
+        );
+        assert!(ids
+            .iter()
+            .all(|id| service.is_pinned(&ArtifactId::from_derived(*id))));
+        assert_eq!(service.closure_of(&[0x01; 16]), Some(raw(&ids)));
+    }
+}
+
+/// Above 4096 the closure is staged after the snapshot and before the install, as its raw ids, and
+/// the install request then carries an empty list.
+#[test]
+fn a_genesis_with_a_closure_above_4096_stages_it_and_sends_an_empty_list() {
+    let rig = Rig::genesis("closure-large");
+    let service = FakeSnapshotService::new(Credential::Account);
+    let ids = ascending_ids_with_receipts(&service, 4097);
+    let plaintext = common::snapshot_plaintext(&ids, "a large genesis");
+    let outcome = rig
+        .publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext))
+        .unwrap();
+    assert!(
+        matches!(outcome, PublishOutcome::GenesisInstalled(_)),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        service.calls(),
+        ["stage_snapshot", "stage_snapshot_closure", "install_epoch"]
+    );
+    assert_eq!(service.manifest_sent("install_epoch"), Some(Vec::new()));
+    assert_eq!(service.closure_of(&[0x01; 16]), Some(raw(&ids)));
+    assert!(ids
+        .iter()
+        .all(|id| service.is_pinned(&ArtifactId::from_derived(*id))));
+}
+
+/// A re-snapshot does the same with `publishSnapshot`: at 4096 the list is in the request, above it
+/// the closure is staged.
+#[test]
+fn a_re_snapshot_stages_a_closure_above_4096_and_sends_it_in_the_request_at_or_below() {
+    for (count, staged) in [(4096, false), (4097, true)] {
+        let rig = Rig::genesis("closure-resnap");
+        let service = service_with_genesis(&rig);
+        service.advance_head_to(5);
+        let ids = ascending_ids_with_receipts(&service, count);
+        let plaintext = common::snapshot_plaintext(&ids, "a re-snapshot");
+        rig.publish(&service, &HEALTHY, &re_snapshot(0x02, 5, &plaintext))
+            .unwrap();
+        let calls = service.calls();
+        assert_eq!(
+            calls.contains(&"stage_snapshot_closure"),
+            staged,
+            "{count}: {calls:?}"
+        );
+        let sent = service.manifest_sent("publish_snapshot").unwrap();
+        if staged {
+            assert!(sent.is_empty(), "{count}: the request carries no list");
+        } else {
+            assert_eq!(sent, as_artifact_ids(&ids), "{count}");
+        }
+        assert_eq!(service.closure_of(&[0x02; 16]), Some(raw(&ids)));
+    }
+}
+
+/// A lost response to the install is retried with the saved container, which stages the same
+/// closure bytes again: the service answers as it did, the genesis is installed once.
+#[test]
+fn a_retry_after_a_lost_install_response_stages_the_same_closure_again() {
+    let rig = Rig::genesis("closure-retry");
+    let service = FakeSnapshotService::new(Credential::Account);
+    let ids = ascending_ids_with_receipts(&service, 4097);
+    let plaintext = common::snapshot_plaintext(&ids, "a large genesis, retried");
+    service.script(Fault::Pass); // the stage
+    service.script(Fault::Pass); // the closure
+    service.script(Fault::LoseResponse); // the install takes effect and the answer is lost
+    assert_eq!(
+        rig.publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext)),
+        Err(PublishError::Service(ServiceError::Unavailable))
+    );
+    let held = service.closure_of(&[0x01; 16]);
+    assert_eq!(held, Some(raw(&ids)));
+
+    // The resume sends the same container again; the service holds the genesis already.
+    let outcome = rig
+        .publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext))
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        PublishOutcome::GenesisInstalled(_) | PublishOutcome::GenesisResumeLost
+    ));
+    assert_eq!(service.closure_of(&[0x01; 16]), held, "the same bytes");
+    assert_eq!(service.published().len(), 1, "installed once");
+    assert!(
+        service
+            .calls()
+            .iter()
+            .filter(|c| **c == "stage_snapshot_closure")
+            .count()
+            >= 2,
+        "the retry staged the closure again"
+    );
+}
+
+/// A closure read back with `getSnapshotClosure` is checked against the header's commitment by the
+/// client: the service's bytes are not trusted.
+#[test]
+fn a_published_closure_is_read_back_and_checked_against_the_headers_commitment() {
+    use sync_core::artifact::ClosureManifest;
+    use vault_crypto::sync_snapshot::closure_commitment_of;
+    use vault_crypto::sync_snapshot_flow::{fetch_snapshot_closure, ClosureFetchError};
+
+    let rig = Rig::genesis("closure-fetch");
+    let service = FakeSnapshotService::new(Credential::Account);
+    let ids = ascending_ids_with_receipts(&service, 4097);
+    let plaintext = common::snapshot_plaintext(&ids, "a large genesis, fetched");
+    rig.publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext))
+        .unwrap();
+    service.set_credential(Credential::Device);
+    let expected = closure_commitment_of(&plaintext).unwrap();
+
+    let closure = fetch_snapshot_closure(&service, &VAULT, &[0x01; 16], &expected).unwrap();
+    assert_eq!(closure.ids(), ids.as_slice());
+
+    // Another commitment: the bytes are refused, whatever the service said.
+    let other = ClosureManifest::new(vec![[9; 32]]).unwrap().commitment();
+    assert_eq!(
+        fetch_snapshot_closure(&service, &VAULT, &[0x01; 16], &other),
+        Err(ClosureFetchError::CommitmentMismatch)
+    );
+    // A snapshot that was never published has no closure to return.
+    assert_eq!(
+        fetch_snapshot_closure(&service, &VAULT, &[0x77; 16], &expected),
+        Err(ClosureFetchError::Service(ServiceError::SnapshotNotFound))
+    );
+}
+
+/// A container whose header commits to `ids` as the closure, sealed with nothing real: the service
+/// parses only the clear header, which is all the closure operations read.
+fn container_committing_to(rig: &Rig, object_id: u8, ids: &[[u8; 32]]) -> Vec<u8> {
+    use sync_core::artifact::ClosureManifest;
+    use sync_core::envelope::binding_commitment;
+    use sync_core::header::{
+        encode_container, ClearHeader, NonceDomain, ObjectKind, OBJECT_SNAPSHOT,
+    };
+    let fingerprint = rig.chain.a.fingerprint();
+    let header = ClearHeader {
+        vault_id: VAULT,
+        key_epoch: 1,
+        object: ObjectKind::Snapshot {
+            artifact_manifest_commitment: ClosureManifest::new(ids.to_vec()).unwrap().commitment(),
+            artifact_binding_commitment: binding_commitment(&[], 1 << 20).unwrap(),
+        },
+        object_id: [object_id; 16],
+        device_id: rig.chain.a.id,
+        device_key_fingerprint: fingerprint,
+        nonce_domain: NonceDomain::derive(&VAULT, 1, &fingerprint, OBJECT_SNAPSHOT),
+        invocation_counter: 7,
+        base_seq: 0,
+        payload_schema_version: 1,
+        engine_version: "dohflow-test".to_owned(),
+        schema_version: 67,
+    };
+    encode_container(&header, &[0_u8; 32]).unwrap()
+}
+
+/// The service's side of 4.14, at the bound: 2^20 ids stage and read back, one more is
+/// `SnapshotTooLarge`, and a body out of order, of another length, or of another commitment is
+/// `MalformedObject`.
+#[test]
+fn the_closure_sidecar_stages_at_2_to_the_20_and_is_refused_above_it() {
+    use sync_core::artifact::MAX_SNAPSHOT_CLOSURE;
+    let rig = Rig::genesis("closure-bound");
+    let service = FakeSnapshotService::new(Credential::Account);
+    let ids: Vec<[u8; 32]> = (0..MAX_SNAPSHOT_CLOSURE)
+        .map(|i| {
+            let mut id = [0_u8; 32];
+            id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            id
+        })
+        .collect();
+    let container = container_committing_to(&rig, 0x31, &ids);
+    // Not staged: nothing to attach a closure to.
+    assert_eq!(
+        service.stage_snapshot_closure(&VAULT, &[0x31; 16], &raw(&ids)),
+        Err(ServiceError::SnapshotNotFound)
+    );
+    service
+        .stage_snapshot(&VAULT, &[0x31; 16], &container)
+        .unwrap();
+    let staged = service
+        .stage_snapshot_closure(&VAULT, &[0x31; 16], &raw(&ids))
+        .unwrap();
+    assert_eq!(staged.artifact_count, MAX_SNAPSHOT_CLOSURE as u64);
+    // The same bytes again are the idempotent answer.
+    assert_eq!(
+        service
+            .stage_snapshot_closure(&VAULT, &[0x31; 16], &raw(&ids))
+            .unwrap(),
+        staged
+    );
+
+    // One id more than the bound.
+    let mut over = raw(&ids);
+    over.extend_from_slice(&[0xff; 32]);
+    assert_eq!(
+        service.stage_snapshot_closure(&VAULT, &[0x31; 16], &over),
+        Err(ServiceError::SnapshotTooLarge)
+    );
+    // Not whole ids; out of order; another commitment (same count, one id changed).
+    let mut short = raw(&ids);
+    short.pop();
+    assert_eq!(
+        service.stage_snapshot_closure(&VAULT, &[0x31; 16], &short),
+        Err(ServiceError::MalformedObject)
+    );
+    let mut unordered = raw(&ids);
+    unordered.swap(0, 32); // the first two ids exchange their first byte only: not ascending
+    let mut swapped = ids.clone();
+    swapped.swap(0, 1);
+    assert_eq!(
+        service.stage_snapshot_closure(&VAULT, &[0x31; 16], &raw(&swapped)),
+        Err(ServiceError::MalformedObject)
+    );
+    let mut changed = ids.clone();
+    changed[MAX_SNAPSHOT_CLOSURE - 1] = [0xee; 32];
+    assert_eq!(
+        service.stage_snapshot_closure(&VAULT, &[0x31; 16], &raw(&changed)),
+        Err(ServiceError::MalformedObject)
+    );
+}
+
+/// A closure staged with the snapshot is the one judged: a list in the install request beside it is
+/// `MalformedRequest`, and so is a list above 4096 with none staged.
+#[test]
+fn a_list_beside_a_staged_closure_is_refused_as_a_malformed_request() {
+    use sync_core::snapshot_service::EpochInstall;
+    let rig = Rig::genesis("closure-beside");
+    let service = FakeSnapshotService::new(Credential::Account);
+    let ids = ascending_ids_with_receipts(&service, 4097);
+    let container = container_committing_to(&rig, 0x41, &ids);
+    service
+        .stage_snapshot(&VAULT, &[0x41; 16], &container)
+        .unwrap();
+    service
+        .stage_snapshot_closure(&VAULT, &[0x41; 16], &raw(&ids))
+        .unwrap();
+    fn install<'a>(rig: &'a Rig, manifest: &'a [ArtifactId]) -> EpochInstall<'a> {
+        EpochInstall {
+            base_seq: 0,
+            membership_record: Some(&rig.chain.memberships[0]),
+            epoch_record: &rig.chain.epochs[0],
+            snapshot_id: Some([0x41; 16]),
+            artifact_manifest: manifest,
+        }
+    }
+    let one = as_artifact_ids(&ids[..1]);
+    assert_eq!(
+        service.install_epoch(&VAULT, &install(&rig, &one)),
+        Err(ServiceError::MalformedRequest)
+    );
+    // No closure staged for another snapshot: a list of 4097 in the request is not allowed.
+    let other = container_committing_to(&rig, 0x42, &ids);
+    service.stage_snapshot(&VAULT, &[0x42; 16], &other).unwrap();
+    let all = as_artifact_ids(&ids);
+    let mut over = install(&rig, &all);
+    over.snapshot_id = Some([0x42; 16]);
+    assert_eq!(
+        service.install_epoch(&VAULT, &over),
+        Err(ServiceError::MalformedRequest)
+    );
+}

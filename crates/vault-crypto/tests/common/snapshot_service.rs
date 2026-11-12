@@ -10,12 +10,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Mutex;
 
-use sync_core::artifact::ArtifactId;
-use sync_core::envelope::{binding_commitment, ArtifactManifest};
+use sync_core::artifact::{ArtifactId, ClosureManifest, MAX_CLOSURE_SIDECAR_LEN};
+use sync_core::envelope::binding_commitment;
 use sync_core::header::{parse_container, ObjectKind, OBJECT_SNAPSHOT};
 use sync_core::membership::verify_chain;
 use sync_core::snapshot_service::{
-    EpochInstall, InstalledEpoch, PublishedSnapshot, ServiceError, SnapshotService, StagedSnapshot,
+    EpochInstall, InstalledEpoch, PublishedSnapshot, ServiceError, SnapshotService, StagedClosure,
+    StagedSnapshot, MAX_INLINE_CLOSURE,
 };
 
 /// The credential the calls are made with.
@@ -56,6 +57,11 @@ struct State {
     /// The durable receipts: each artifact id with the SHA-256 of the ciphertext the service holds.
     receipts: BTreeMap<ArtifactId, [u8; 32]>,
     pins: BTreeSet<ArtifactId>,
+    /// The closure sidecar held with each snapshot, as its ids' raw bytes: staged with
+    /// `stageSnapshotClosure`, or kept from the request's list when the snapshot was published.
+    closures: HashMap<[u8; 16], Vec<u8>>,
+    /// The closure list each `publishSnapshot` and `installEpoch` request carried, by operation.
+    requests: Vec<(&'static str, Vec<ArtifactId>)>,
     faults: VecDeque<Fault>,
     calls: Vec<&'static str>,
 }
@@ -160,6 +166,29 @@ impl FakeSnapshotService {
         self.state.lock().unwrap().published.clone()
     }
 
+    /// The closure sidecar the service holds for `snapshot_id`, as the ids' raw bytes.
+    pub fn closure_of(&self, snapshot_id: &[u8; 16]) -> Option<Vec<u8>> {
+        self.state
+            .lock()
+            .unwrap()
+            .closures
+            .get(snapshot_id)
+            .cloned()
+    }
+
+    /// The closure list the last request of `operation` (`publish_snapshot` or `install_epoch`)
+    /// carried, if there was one.
+    pub fn manifest_sent(&self, operation: &str) -> Option<Vec<ArtifactId>> {
+        self.state
+            .lock()
+            .unwrap()
+            .requests
+            .iter()
+            .rev()
+            .find(|(name, _)| *name == operation)
+            .map(|(_, ids)| ids.clone())
+    }
+
     pub fn is_staged(&self, snapshot_id: &[u8; 16]) -> bool {
         self.state.lock().unwrap().staged.contains_key(snapshot_id)
     }
@@ -257,6 +286,79 @@ impl SnapshotService for FakeSnapshotService {
         })
     }
 
+    fn stage_snapshot_closure(
+        &self,
+        vault_id: &[u8; 16],
+        snapshot_id: &[u8; 16],
+        sidecar: &[u8],
+    ) -> Result<StagedClosure, ServiceError> {
+        let _ = vault_id;
+        self.call("stage_snapshot_closure", |state, credential| {
+            // Protocol 4.14, in its order: the length, from the headers alone; then the vault's
+            // authorization, the halt gate and the snapshot; then the content.
+            if sidecar.len() > MAX_CLOSURE_SIDECAR_LEN {
+                return Err(ServiceError::SnapshotTooLarge);
+            }
+            if sidecar.len() % 32 != 0 {
+                return Err(ServiceError::MalformedObject);
+            }
+            if state.vault.is_some() && credential == Credential::Account {
+                return Err(ServiceError::Forbidden);
+            }
+            halt_gate(state, credential)?;
+            let container = match state.staged.get(snapshot_id) {
+                Some(container) => container,
+                None => return Err(ServiceError::SnapshotNotFound),
+            };
+            let parsed = parse_container(container).map_err(|_| ServiceError::MalformedObject)?;
+            let ObjectKind::Snapshot {
+                artifact_manifest_commitment,
+                ..
+            } = &parsed.header.object
+            else {
+                return Err(ServiceError::MalformedObject);
+            };
+            // The ids strictly ascending, and the commitment the server computes over them the
+            // staged header's.
+            let closure = ClosureManifest::from_sidecar(sidecar)
+                .map_err(|_| ServiceError::MalformedObject)?;
+            if closure.commitment() != *artifact_manifest_commitment {
+                return Err(ServiceError::MalformedObject);
+            }
+            state.closures.insert(*snapshot_id, sidecar.to_vec());
+            Ok(StagedClosure {
+                snapshot_id: *snapshot_id,
+                artifact_count: (sidecar.len() / 32) as u64,
+            })
+        })
+    }
+
+    fn get_snapshot_closure(
+        &self,
+        vault_id: &[u8; 16],
+        snapshot_id: &[u8; 16],
+    ) -> Result<Vec<u8>, ServiceError> {
+        let _ = vault_id;
+        self.call("get_snapshot_closure", |state, _| {
+            if state.vault.is_none() {
+                return Err(ServiceError::VaultNotFound);
+            }
+            // A staged snapshot's closure is not returned: only a published one's.
+            if !state
+                .published
+                .iter()
+                .any(|p| &p.snapshot_id == snapshot_id)
+            {
+                return Err(ServiceError::SnapshotNotFound);
+            }
+            state
+                .closures
+                .get(snapshot_id)
+                .cloned()
+                .ok_or(ServiceError::SnapshotNotFound)
+        })
+    }
+
     fn publish_snapshot(
         &self,
         vault_id: &[u8; 16],
@@ -266,6 +368,9 @@ impl SnapshotService for FakeSnapshotService {
     ) -> Result<PublishedSnapshot, ServiceError> {
         let _ = vault_id;
         self.call("publish_snapshot", |state, credential| {
+            state
+                .requests
+                .push(("publish_snapshot", artifact_manifest.to_vec()));
             let Some(vault) = state.vault.as_ref() else {
                 return Err(ServiceError::VaultNotFound);
             };
@@ -299,8 +404,11 @@ impl SnapshotService for FakeSnapshotService {
             if parsed.header.base_seq != base_seq {
                 return Err(ServiceError::MalformedObject);
             }
-            let ids: Vec<[u8; 32]> = artifact_manifest.iter().map(|id| *id.as_bytes()).collect();
-            let sidecar = ArtifactManifest::new(ids).map_err(|_| ServiceError::MalformedObject)?;
+            let closure = closure_of_request(state, snapshot_id, artifact_manifest)?;
+            let artifact_manifest = closure.as_slice();
+            let sidecar =
+                ClosureManifest::new(artifact_manifest.iter().map(|id| *id.as_bytes()).collect())
+                    .map_err(|_| ServiceError::MalformedObject)?;
             if sidecar.commitment() != *artifact_manifest_commitment {
                 return Err(ServiceError::MalformedObject);
             }
@@ -308,6 +416,7 @@ impl SnapshotService for FakeSnapshotService {
                 .iter()
                 .filter(|id| !state.receipts.contains_key(id))
                 .copied()
+                .take(MAX_INLINE_CLOSURE)
                 .collect();
             if !missing.is_empty() {
                 return Err(ServiceError::ArtifactMissing { missing });
@@ -330,6 +439,12 @@ impl SnapshotService for FakeSnapshotService {
                 key_epoch: parsed.header.key_epoch,
             };
             state.pins.extend(artifact_manifest.iter().copied());
+            state.closures.entry(*snapshot_id).or_insert_with(|| {
+                artifact_manifest
+                    .iter()
+                    .flat_map(|id| *id.as_bytes())
+                    .collect()
+            });
             state.published.push(published);
             Ok(published)
         })
@@ -341,6 +456,9 @@ impl SnapshotService for FakeSnapshotService {
         install: &EpochInstall<'_>,
     ) -> Result<InstalledEpoch, ServiceError> {
         self.call("install_epoch", |state, _credential| {
+            state
+                .requests
+                .push(("install_epoch", install.artifact_manifest.to_vec()));
             if let Some(vault) = &state.vault {
                 // The very same genesis again is an exact retry; anything else is VaultExists.
                 let same = install.membership_record == Some(vault.genesis_membership.as_slice())
@@ -377,29 +495,22 @@ impl SnapshotService for FakeSnapshotService {
             if parsed.header.key_epoch != chain.key_epoch() || parsed.header.base_seq != 0 {
                 return Err(ServiceError::MalformedObject);
             }
-            let ids: Vec<[u8; 32]> = install
-                .artifact_manifest
-                .iter()
-                .map(|id| *id.as_bytes())
-                .collect();
-            let sidecar = ArtifactManifest::new(ids).map_err(|_| ServiceError::MalformedObject)?;
+            let closure = closure_of_request(state, &snapshot_id, install.artifact_manifest)?;
+            let sidecar = ClosureManifest::new(closure.iter().map(|id| *id.as_bytes()).collect())
+                .map_err(|_| ServiceError::MalformedObject)?;
             if sidecar.commitment() != *artifact_manifest_commitment {
                 return Err(ServiceError::MalformedObject);
             }
-            let missing: Vec<ArtifactId> = install
-                .artifact_manifest
+            let missing: Vec<ArtifactId> = closure
                 .iter()
                 .filter(|id| !state.receipts.contains_key(id))
                 .copied()
+                .take(MAX_INLINE_CLOSURE)
                 .collect();
             if !missing.is_empty() {
                 return Err(ServiceError::ArtifactMissing { missing });
             }
-            let hashes: Vec<[u8; 32]> = install
-                .artifact_manifest
-                .iter()
-                .map(|id| state.receipts[id])
-                .collect();
+            let hashes: Vec<[u8; 32]> = closure.iter().map(|id| state.receipts[id]).collect();
             if binding_commitment(&hashes, 1 << 20).map_err(|_| ServiceError::MalformedObject)?
                 != *artifact_binding_commitment
             {
@@ -417,7 +528,11 @@ impl SnapshotService for FakeSnapshotService {
                     .ok_or(ServiceError::EpochRecordInvalid)?,
                 already_installed: false,
             };
-            state.pins.extend(install.artifact_manifest.iter().copied());
+            state.pins.extend(closure.iter().copied());
+            state
+                .closures
+                .entry(snapshot_id)
+                .or_insert_with(|| closure.iter().flat_map(|id| *id.as_bytes()).collect());
             state.published.push(PublishedSnapshot {
                 snapshot_id,
                 base_seq: 0,
@@ -484,5 +599,33 @@ impl SnapshotService for FakeSnapshotService {
                 .ok_or(ServiceError::SnapshotNotFound)
         })?;
         Ok(Box::new(std::io::Cursor::new(bytes)))
+    }
+}
+
+/// The closure a `publishSnapshot` or `installEpoch` request is judged against (protocol 4.4): the
+/// one staged with the snapshot if it has one (and the request's list is then empty), the request's
+/// list otherwise (at most 4096 ids).
+fn closure_of_request(
+    state: &State,
+    snapshot_id: &[u8; 16],
+    requested: &[ArtifactId],
+) -> Result<Vec<ArtifactId>, ServiceError> {
+    let published = state
+        .published
+        .iter()
+        .any(|p| &p.snapshot_id == snapshot_id);
+    match state.closures.get(snapshot_id) {
+        // A closure was staged with the snapshot: a list in the request beside it is refused.
+        Some(_) if !requested.is_empty() && !published => Err(ServiceError::MalformedRequest),
+        Some(staged) if requested.is_empty() => Ok(staged
+            .chunks_exact(32)
+            .map(|chunk| ArtifactId::from_derived(chunk.try_into().expect("32 bytes")))
+            .collect()),
+        _ => {
+            if requested.len() > MAX_INLINE_CLOSURE {
+                return Err(ServiceError::MalformedRequest);
+            }
+            Ok(requested.to_vec())
+        }
     }
 }
