@@ -215,6 +215,74 @@ fn the_scratch_vault_is_the_base_not_the_live_vault_and_the_live_vault_is_untouc
 }
 
 #[test]
+fn a_scratch_vault_can_be_built_from_another_image_at_the_position_the_caller_names() {
+    let (dir, live, account, scratch_path) = live_with_base();
+    // An image that is not the live vault's own base: a copy, so the test can tell it apart from
+    // `sync/base.db` by its position and by what it is left as.
+    let image = dir.path().join("genesis-image.db");
+    std::fs::copy(crate::base_image::base_image_path(live.db_path()), &image).unwrap();
+    let image_before = std::fs::read(&image).unwrap();
+    live.dispatch(meta(), rename(account, "Renamed after the base"))
+        .unwrap();
+    let live_before = live.snapshot_bytes().unwrap();
+
+    let scratch = live.scratch_from_image(&image, 3, &scratch_path).unwrap();
+
+    // The position is the caller's, not the live base's (5).
+    assert_eq!((scratch.base_seq(), scratch.head_seq()), (3, 3));
+    assert_eq!(account_name(scratch.worker(), account), "Checking");
+    scratch
+        .worker()
+        .dispatch(meta(), rename(account, "Written to the copy"))
+        .unwrap();
+    drop(scratch);
+    assert_eq!(
+        std::fs::read(&image).unwrap(),
+        image_before,
+        "the image is only ever copied"
+    );
+    assert_eq!(live.snapshot_bytes().unwrap(), live_before);
+    assert!(matches!(
+        live.scratch_from_image(&image, 3, &scratch_path),
+        Err(RebaseError::ScratchExists)
+    ));
+    let missing = dir.path().join("rebase").join("none.db");
+    assert!(matches!(
+        live.scratch_from_image(&dir.path().join("absent.db"), 3, &missing),
+        Err(RebaseError::Db(_))
+    ));
+    assert!(!missing.exists(), "a failed copy leaves nothing behind");
+}
+
+#[test]
+fn an_image_that_records_its_position_must_agree_with_the_caller_and_a_negative_one_is_refused() {
+    let (dir, live, _account, scratch_path) = live_with_base();
+    // The vault's own bytes carry a `sync_base` row (position 5); the base image does not.
+    let image = dir.path().join("recorded-position.db");
+    std::fs::write(&image, live.snapshot_bytes().unwrap()).unwrap();
+    for claimed in [3, 6] {
+        let error = live
+            .scratch_from_image(&image, claimed, &scratch_path)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                RebaseError::ImagePositionMismatch { claimed: c, recorded: 5 } if c == claimed
+            ),
+            "{claimed}: {error:?}"
+        );
+        assert!(!scratch_path.exists(), "a refusal leaves no scratch vault");
+    }
+    assert!(matches!(
+        live.scratch_from_image(&image, -1, &scratch_path),
+        Err(RebaseError::NegativeBaseSeq(-1))
+    ));
+    assert!(!scratch_path.exists());
+    let scratch = live.scratch_from_image(&image, 5, &scratch_path).unwrap();
+    assert_eq!((scratch.base_seq(), scratch.head_seq()), (5, 5));
+}
+
+#[test]
 fn a_scratch_path_that_exists_is_refused_and_left_alone() {
     let (_dir, live, _account, scratch_path) = live_with_base();
     std::fs::create_dir_all(scratch_path.parent().unwrap()).unwrap();
@@ -696,6 +764,22 @@ mod executor {
             sealed_before,
             "the meta commitment after the rollback and replay equals the one sealed before it"
         );
+        // The instant itself is on the log row of both vaults, taken from the command and never
+        // from the clock (migration 73): a replay that read the clock would stamp "now".
+        let logged = |worker: &DbWorker| -> Option<i64> {
+            worker
+                .read_connection()
+                .unwrap()
+                .query_row(
+                    "SELECT issued_at FROM operation_log WHERE command_id = ?1",
+                    [original.command_id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let expected = Some(original.issued_at.as_unix_micros());
+        assert_eq!(logged(&live), expected);
+        assert_eq!(logged(scratch.worker()), expected);
     }
 
     #[test]
@@ -4114,6 +4198,48 @@ mod overlay {
                 liquid_account_cmd(AccountId::new(), Currency::Usd, 1),
             )
             .unwrap();
+    }
+
+    #[test]
+    fn begin_swap_refuses_a_vault_whose_base_is_not_ready_and_changes_nothing() {
+        // 04b's #308 F1: the swap restores the base the rebase rolled back to, so a base that is
+        // missing (`NoBase`) or already mid-swap (`Rebasing`) is refused before anything is recorded.
+        for (state, digest_sql) in [
+            ("NoBase", "base_digest = NULL"),
+            ("Rebasing", "base_digest = base_digest"),
+        ] {
+            let w = world();
+            drift(&w);
+            let image = w.live.capture_preservation().unwrap();
+            exec(
+                &w.live,
+                &format!("UPDATE sync_base SET state = '{state}', {digest_sql}"),
+                [],
+            );
+
+            let refused = w.live.begin_swap(&image);
+
+            assert!(
+                matches!(refused, Err(RebaseError::NotReadyToSwap)),
+                "{state}: {refused:?}"
+            );
+            assert_eq!(
+                w.live
+                    .lock()
+                    .conn
+                    .query_row("SELECT state FROM sync_base", [], |r| r.get::<_, String>(0))
+                    .unwrap(),
+                state,
+                "the record is as it was"
+            );
+            // The worker was not frozen.
+            w.live
+                .dispatch(
+                    meta(),
+                    liquid_account_cmd(AccountId::new(), Currency::Usd, 1),
+                )
+                .unwrap();
+        }
     }
 
     #[test]

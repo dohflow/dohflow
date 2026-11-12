@@ -20,10 +20,16 @@ use crate::{DbError, IssuedAt};
 /// (no hash depends on them), and EXCLUDED from every cross-replica and snapshot comparison (the
 /// replay property, the two-vault test, genesis and snapshot digests). `created_at` is the
 /// recording device's wall clock (personal-cfo-32fmp.4 AC2); `applied_base_seq` and `rebased_from`
-/// are this module's (bxsbz.1). The CLASS-0 manifest states the same list for `operation_log`, and a
+/// are this module's (bxsbz.1); `issued_at` is the instant the command was issued, in Unix
+/// microseconds, kept so a command taken before Sync was armed can be replayed
+/// (personal-cfo-1cltt.5). The CLASS-0 manifest states the same list for `operation_log`, and a
 /// test keeps the two equal.
-pub const DEVICE_LOCAL_OPERATION_LOG_COLUMNS: &[&str] =
-    &["created_at", "applied_base_seq", "rebased_from"];
+pub const DEVICE_LOCAL_OPERATION_LOG_COLUMNS: &[&str] = &[
+    "created_at",
+    "applied_base_seq",
+    "rebased_from",
+    "issued_at",
+];
 
 /// The server seq of the base a local command is applied on, or `None` while Sync is off. Sync is
 /// enabled on this device exactly when a `sync_base` row exists, so `Some` is also the switch that

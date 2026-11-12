@@ -2667,6 +2667,51 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Version 73 (personal-cfo-1cltt.5, slice C; provisional: it moves if another migration lands first).
+    // Two device-local additions:
+    // * `operation_log.issued_at` (INTEGER, nullable, Unix microseconds, the encoding of
+    //   `sync_outbox.issued_at`) is the instant the command was issued, which `apply` reads for
+    //   every id and timestamp it mints. Until now it lived only in the outbox row, so a command
+    //   taken after the genesis export and before Sync was armed (no outbox row) lost it and could
+    //   not be replayed faithfully. `apply` now records it on every row (a local command, a server
+    //   envelope, a rebase step), Sync on or off. A row written before this column has NULL. It is
+    //   device-local like `created_at`: outside the write set, and out of every cross-replica and
+    //   snapshot comparison.
+    // * `sync_genesis` records **which snapshot the genesis was and the SHA-256 of the container this
+    // device sent**: `genesis_snapshot_id` and `genesis_container_sha256`, written in the transaction
+    // that records the genesis as published and BEFORE the saved container is dropped. The saved
+    // container (and its `sync_saved_snapshot` record) is the only other place either lives, and it
+    // goes the moment the publish is recorded. A vault that enabled Sync under an earlier build has
+    // neither (NULL): a bootstrap that needs them for its genesis check says so by name rather than
+    // trusting the service's copy. Both or neither: a digest without an id, or the reverse, is
+    // refused.
+    Migration {
+        version: 73,
+        name: "sync_genesis_snapshot_identity",
+        up: "ALTER TABLE operation_log ADD COLUMN issued_at INTEGER;
+             ALTER TABLE sync_genesis ADD COLUMN genesis_snapshot_id BLOB
+                 CHECK (genesis_snapshot_id IS NULL OR length(genesis_snapshot_id) = 16);
+             ALTER TABLE sync_genesis ADD COLUMN genesis_container_sha256 BLOB
+                 CHECK (genesis_container_sha256 IS NULL
+                        OR (length(genesis_container_sha256) = 32
+                            AND genesis_snapshot_id IS NOT NULL));
+             CREATE TRIGGER sync_genesis_snapshot_identity_whole
+             BEFORE UPDATE OF genesis_snapshot_id ON sync_genesis
+             WHEN NEW.genesis_snapshot_id IS NOT NULL
+                  AND NEW.genesis_container_sha256 IS NULL
+                  AND OLD.genesis_container_sha256 IS NULL
+             BEGIN
+                 SELECT RAISE(ABORT, 'a genesis snapshot id is recorded with its container digest');
+             END;",
+        down: Some(
+            "DROP TRIGGER sync_genesis_snapshot_identity_whole;
+             ALTER TABLE sync_genesis DROP COLUMN genesis_container_sha256;
+             ALTER TABLE sync_genesis DROP COLUMN genesis_snapshot_id;
+             ALTER TABLE operation_log DROP COLUMN issued_at;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
@@ -4209,8 +4254,9 @@ mod tests {
         );
         assert!(origin.is_ok(), "an unchanged cursor is not a move back");
 
-        // 70, 71 and 72 (`sync_artifacts`, `sync_notices`, the outbox rebuild) sit above 69: stepping to 68 reverts all four.
-        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 4);
+        // 70, 71, 72 and 73 (`sync_artifacts`, `sync_notices`, the outbox rebuild, the genesis
+        // identity) sit above 69: stepping to 68 reverts all five.
+        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 5);
         assert!(
             objects(&conn).is_empty(),
             "down drops both tables and every trigger"
@@ -4249,8 +4295,9 @@ mod tests {
                 "sync_artifacts"
             ]
         );
-        // 71 (`sync_notices`) and 72 (the outbox rebuild) sit above 70: stepping to 69 reverts all three.
-        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 3);
+        // 71, 72 and 73 (`sync_notices`, the outbox rebuild, the genesis identity) sit above 70:
+        // stepping to 69 reverts all four.
+        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 4);
         assert!(objects(&conn).is_empty());
         apply(&mut conn, MIGRATIONS).unwrap();
         let rows: i64 = conn
@@ -4376,8 +4423,9 @@ mod tests {
         assert!(insert("something_else", 16, 3).is_err());
         assert!(insert("import_discarded", 15, 3).is_err());
         assert!(insert("import_discarded", 16, -1).is_err());
-        // 72 (the outbox rebuild) sits above 71: stepping to 70 reverts both.
-        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 2);
+        // 72 and 73 (the outbox rebuild, the genesis identity) sit above 71: stepping to 70
+        // reverts all three.
+        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 3);
         let left: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%sync_notices%'",
@@ -4455,6 +4503,8 @@ mod tests {
         outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "zeroblob(2)").unwrap();
         outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
 
+        // 73 (the genesis identity) sits above 72: step past it first.
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 1);
         assert_eq!(migrate_down(&mut conn, 71).unwrap(), 1);
 
         let rows: i64 = conn
@@ -4503,6 +4553,7 @@ mod tests {
         outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "NULL").unwrap();
         outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
 
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 1);
         assert!(migrate_down(&mut conn, 71).is_err());
 
         let applied: i64 = conn
@@ -4548,6 +4599,75 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(rows, [(1, None), (2, Some(vec![0, 0, 0]))]);
+    }
+
+    /// 73 adds the genesis snapshot's identity to `sync_genesis`: two nullable columns, both or
+    /// neither, that an existing row keeps as NULL; down drops them and up adds them again.
+    #[test]
+    fn v73_adds_the_genesis_snapshot_identity_both_or_neither_and_down_drops_it() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..72]).unwrap();
+        // A genesis recorded by an earlier build.
+        conn.execute(
+            "INSERT INTO sync_genesis (singleton, vault_id, membership_record, epoch_record, state,
+                                       persisted_at, updated_at)
+             VALUES (1, zeroblob(16), x'01', x'02', 'Published', 't', 't')",
+            [],
+        )
+        .unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let identity = |conn: &Connection| -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+            conn.query_row(
+                "SELECT genesis_snapshot_id, genesis_container_sha256 FROM sync_genesis",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            identity(&conn),
+            (None, None),
+            "an earlier build's row keeps NULL"
+        );
+
+        let set = |sql: &str| conn.execute(sql, []);
+        assert!(set("UPDATE sync_genesis SET genesis_snapshot_id = zeroblob(15)").is_err());
+        assert!(
+            set("UPDATE sync_genesis SET genesis_snapshot_id = zeroblob(16)").is_err(),
+            "an id without its digest"
+        );
+        assert!(
+            set("UPDATE sync_genesis SET genesis_container_sha256 = zeroblob(32)").is_err(),
+            "a digest without its id"
+        );
+        assert!(
+            set("UPDATE sync_genesis SET genesis_snapshot_id = zeroblob(16),
+                                     genesis_container_sha256 = zeroblob(31)")
+            .is_err()
+        );
+        assert!(
+            set("UPDATE sync_genesis SET genesis_snapshot_id = zeroblob(16),
+                                     genesis_container_sha256 = zeroblob(32)")
+            .is_ok()
+        );
+        assert_eq!(identity(&conn).0.map(|id| id.len()), Some(16));
+
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 1);
+        let columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sync_genesis')
+                 WHERE name LIKE 'genesis_%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 0, "down drops both columns");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_genesis", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "and keeps the row");
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(identity(&conn), (None, None));
     }
 
     fn hex_upper(bytes: &[u8]) -> String {

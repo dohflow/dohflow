@@ -139,6 +139,20 @@ fn enabling_publishes_one_genesis_and_a_second_call_makes_no_request() {
         genesis_snapshot_id(&chain.epoch_head_id().unwrap())
     );
     assert_eq!((published[0].base_seq, published[0].key_epoch), (0, 1));
+    // The snapshot's identity is recorded with the outcome, and the digest is of exactly the
+    // container the service holds (what this device sent), read back here through `getSnapshot`.
+    {
+        use sync_core::snapshot_service::{copy_snapshot_container, SnapshotService};
+        let mut reader = device
+            .service
+            .get_snapshot(&device.vault_id(), &published[0].snapshot_id)
+            .unwrap();
+        let held =
+            copy_snapshot_container(&mut reader, &mut std::io::sink(), 1 << 30, None).unwrap();
+        assert_eq!(genesis.genesis_snapshot_id, Some(published[0].snapshot_id));
+        assert_eq!(genesis.genesis_container_sha256, Some(held.sha256));
+    }
+    let calls_after_readback = device.service.calls().len();
     assert!(
         device.custody().has_epoch_key(1).unwrap(),
         "K_1 is installed"
@@ -157,7 +171,11 @@ fn enabling_publishes_one_genesis_and_a_second_call_makes_no_request() {
     // A published genesis is never re-minted, re-sent or re-checked against the service.
     let before = genesis.clone();
     assert_eq!(device.enable().unwrap(), EnableOutcome::Enabled);
-    assert_eq!(device.service.calls().len(), 2, "no request");
+    assert_eq!(
+        device.service.calls().len(),
+        calls_after_readback,
+        "no request"
+    );
     assert_eq!(device.genesis().unwrap(), before);
 }
 
@@ -427,6 +445,11 @@ fn the_outcome_is_recorded_before_the_saved_container_is_dropped_so_a_failed_rec
         "and it was not recorded"
     );
     assert_eq!(
+        device.genesis().unwrap().genesis_snapshot_id,
+        None,
+        "the identity is recorded with the outcome, not before it"
+    );
+    assert_eq!(
         device.saved_files(),
         1,
         "the saved container survives a failed record"
@@ -454,6 +477,13 @@ fn the_outcome_is_recorded_before_the_saved_container_is_dropped_so_a_failed_rec
         "the same bytes: no second counter"
     );
     assert_eq!(device.saved_files(), 0);
+    let genesis = device.genesis().unwrap();
+    assert_eq!(
+        genesis.genesis_snapshot_id,
+        Some(device.service.published()[0].snapshot_id),
+        "a resumed publish records the identity from the saved container's record"
+    );
+    assert!(genesis.genesis_container_sha256.is_some());
 }
 
 // ---- the vault the service already knows (R39) -------------------------------------------------
@@ -483,6 +513,11 @@ fn a_vault_the_service_knows_ends_as_vault_known_with_nothing_published_or_disca
         "nothing was published"
     );
     assert_eq!(device.saved_files(), 0);
+    assert_eq!(
+        device.genesis().unwrap().genesis_snapshot_id,
+        None,
+        "a genesis the service refused has no snapshot of its own to record"
+    );
     assert_eq!(
         (device.count("operation_log"), device.count("accounts")),
         (log, accounts),
