@@ -238,14 +238,147 @@ pub(crate) fn manifest_bytes_bounded(ids: &[[u8; 32]], max: usize) -> Vec<u8> {
     w.finish()
 }
 
+/// The first bytes of the binding commitment's preimage: the label and the `u32` count of the list (C.3).
+/// [`BindingCommitter`] starts its hash here, and [`binding_commitment`] is [`BindingCommitter`] over
+/// a slice, so the commitment has one definition.
+fn binding_preimage_head(count: u32) -> Vec<u8> {
+    let mut w = Writer::with_label("dohflow/sync-artifact-binding/v1");
+    w.u32(count);
+    w.finish()
+}
+
+/// Why a stream of ciphertext hashes is not the list it was declared to be. Only a count and a bound can
+/// be wrong: a hash is any 32 bytes, and the order is the caller's (the committer never sees the ids).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum BindingError {
+    /// The declared count is above the list bound of the object type.
+    #[error("the binding list holds more hashes than its bound")]
+    TooManyHashes,
+    /// The stream ended inside a hash.
+    #[error("the binding list is not a whole number of 32-byte hashes")]
+    NotWholeHashes,
+    /// The stream held more or fewer hashes than the count it was declared with.
+    #[error("the binding list does not hold the number of hashes declared")]
+    CountMismatch,
+}
+
+/// The binding commitment of a manifest's ciphertext hashes (C.3, header field 18) computed **as the
+/// hashes stream**, holding none of them: one hash state and at most one partial hash
+/// (personal-cfo-v98vd AC31). This is the one definition of the commitment: [`binding_commitment`]
+/// is this committer over a slice, so the client's producer and receiver, and the service that
+/// pages the receipt hashes of a closure of up to 2^20 ids (32 MiB of hashes) through it, all call
+/// the same code.
+///
+/// The hashes are fed **in the strictly ascending order of the ids they belong to**; the committer
+/// never sees the ids and does not sort. A chunk's size is the caller's, and may end inside a hash.
+/// An error is sticky: after one, `push` and `finish` answer it again.
+pub struct BindingCommitter {
+    hasher: Sha256,
+    declared: u64,
+    seen: u64,
+    pending: [u8; 32],
+    pending_len: usize,
+    failed: Option<BindingError>,
+}
+
+impl BindingCommitter {
+    /// A committer for a list of exactly `count` hashes, with the list bound `max` of the object type
+    /// (4096 for an envelope's delta, 2^20 for a snapshot's closure).
+    ///
+    /// # Errors
+    /// [`BindingError::TooManyHashes`] when `count` is above `max` (or above what a `u32` count holds).
+    pub fn new(count: u64, max: usize) -> Result<Self, BindingError> {
+        if count > max as u64 {
+            return Err(BindingError::TooManyHashes);
+        }
+        let head_count = u32::try_from(count).map_err(|_| BindingError::TooManyHashes)?;
+        let mut hasher = Sha256::new();
+        hasher.update(binding_preimage_head(head_count));
+        Ok(Self {
+            hasher,
+            declared: count,
+            seen: 0,
+            pending: [0; 32],
+            pending_len: 0,
+            failed: None,
+        })
+    }
+
+    /// Feeds the next bytes of the hashes, of any size: a chunk may end inside a hash.
+    ///
+    /// # Errors
+    /// [`BindingError::CountMismatch`] for a hash past the declared count.
+    pub fn push(&mut self, mut chunk: &[u8]) -> Result<(), BindingError> {
+        if let Some(error) = self.failed {
+            return Err(error);
+        }
+        let result = (|| {
+            if self.pending_len > 0 {
+                let take = (32 - self.pending_len).min(chunk.len());
+                self.pending[self.pending_len..self.pending_len + take]
+                    .copy_from_slice(&chunk[..take]);
+                self.pending_len += take;
+                chunk = &chunk[take..];
+                if self.pending_len < 32 {
+                    return Ok(());
+                }
+                self.pending_len = 0;
+                self.take(self.pending)?;
+            }
+            let (whole, rest) = chunk.as_chunks::<32>();
+            for hash in whole {
+                self.take(*hash)?;
+            }
+            self.pending[..rest.len()].copy_from_slice(rest);
+            self.pending_len = rest.len();
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.failed = Some(error);
+        }
+        result
+    }
+
+    fn take(&mut self, hash: [u8; 32]) -> Result<(), BindingError> {
+        if self.seen == self.declared {
+            return Err(BindingError::CountMismatch);
+        }
+        self.hasher.update(hash);
+        self.seen += 1;
+        Ok(())
+    }
+
+    /// The binding commitment, once the hashes have ended.
+    ///
+    /// # Errors
+    /// [`BindingError::NotWholeHashes`] when the stream ended inside a hash,
+    /// [`BindingError::CountMismatch`] when it held fewer hashes than declared, or the error that
+    /// stopped an earlier `push`.
+    pub fn finish(self) -> Result<BindingCommitment, BindingError> {
+        if let Some(error) = self.failed {
+            return Err(error);
+        }
+        if self.pending_len != 0 {
+            return Err(BindingError::NotWholeHashes);
+        }
+        if self.seen != self.declared {
+            return Err(BindingError::CountMismatch);
+        }
+        Ok(BindingCommitment::from_derived(
+            self.hasher.finalize().into(),
+        ))
+    }
+}
+
 /// The binding commitment of a manifest's ciphertext hashes (C.3, header field 18):
 /// `SHA-256(label "dohflow/sync-artifact-binding/v1" ‖ list(digest, N) of the ciphertext_sha256 of
 /// each artifact, in the strictly ascending order of the ids they belong to)`, with `N` the bound of
 /// the object type (4096 for an envelope's delta, 2^20 for a snapshot's closure). The caller passes
 /// the hashes **in id order**; the function does not sort them, because it never sees the ids.
 ///
-/// This is the one function that defines the commitment: the client's producer and receiver and the
-/// service's check at the steps that require every receipt all call it.
+/// This is [`BindingCommitter`] over a slice, the one definition of the commitment: the client's
+/// producer and receiver and the service's check at the steps that require every receipt all call it
+/// (the service, for a closure too large to hold, through the committer).
 ///
 /// # Errors
 /// [`WireError::TooLong`] if there are more than `max` hashes.
@@ -253,13 +386,16 @@ pub fn binding_commitment(
     hashes_in_id_order: &[[u8; 32]],
     max: usize,
 ) -> Result<BindingCommitment, WireError> {
-    let mut w = Writer::with_label("dohflow/sync-artifact-binding/v1");
-    w.list(max, hashes_in_id_order, |w, hash| {
-        w.fixed(hash);
-    })?;
-    Ok(BindingCommitment::from_derived(
-        Sha256::digest(w.as_bytes()).into(),
-    ))
+    let mut committer = BindingCommitter::new(hashes_in_id_order.len() as u64, max)
+        .map_err(|_| WireError::TooLong)?;
+    for hash in hashes_in_id_order {
+        committer
+            .push(hash)
+            .expect("a slice of the declared length is never over its count");
+    }
+    Ok(committer
+        .finish()
+        .expect("a slice of the declared length is a whole list"))
 }
 
 /// One artifact of a delta or a closure as the sealed object names it: its service address and the

@@ -362,7 +362,7 @@ fn record_moved() -> BaseImageError {
     image_error("the base record changed during the capture".to_owned()).into()
 }
 
-fn fsync_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn fsync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
