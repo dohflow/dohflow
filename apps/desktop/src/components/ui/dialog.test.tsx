@@ -2,7 +2,14 @@ import { useRef, useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { Button } from "@/components/ui/button";
-import { COMPACT_SHEET } from "@/lib/sheet";
+import {
+  bodyIsStarved,
+  COMPACT_BODY_CRAMPED,
+  COMPACT_FOOTER_WRAPS,
+  COMPACT_SHEET,
+  COMPACT_SHEET_CRAMPED,
+  CRAMPED_BODY_LINES,
+} from "@/lib/sheet";
 import {
   Dialog,
   DialogBody,
@@ -293,4 +300,97 @@ describe("the shared Dialog (personal-cfo-4d8.6.1)", () => {
     expect(content).toHaveAccessibleName("Undo “Maternity leave”?");
   });
 
+
+  describe("a sheet that does not fit (largest text size, long name; slice B, Studio's review)", () => {
+    // jsdom has no layout: report the heights a phone at the largest text size would give. The header and the
+    // footer are tall (a nine-line title, two stacked actions); the sheet's cap is 812.
+    function withHeights(heights: { header: number; footer: number; body?: number }) {
+      return vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+        if (this.dataset.testid === "header") return heights.header;
+        if (this.dataset.testid === "footer") return heights.footer;
+        if (this.dataset.testid === "body") return heights.body ?? 0;
+        return 0;
+      });
+    }
+    function Sheet() {
+      return (
+        <Dialog open>
+          <DialogContent style={{ maxHeight: "812px" }}>
+            <DialogHeader data-testid="header">
+              <DialogTitle>A very long title</DialogTitle>
+            </DialogHeader>
+            <DialogBody data-testid="body" style={{ lineHeight: "75px" }}>
+              Body text.
+            </DialogBody>
+            <DialogFooter data-testid="footer">
+              <Button>Cancel</Button>
+              <Button>Delete scenario</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      );
+    }
+
+    it("pins the threshold: fewer than three lines of body left is starved, exactly three is not", () => {
+      expect(CRAMPED_BODY_LINES).toBe(3);
+      expect(bodyIsStarved({ limit: 812, chrome: 34, others: 727, lineHeight: 17 })).toBe(false); // 51pt left, 17pt lines: exactly 3
+      expect(bodyIsStarved({ limit: 812, chrome: 34, others: 728, lineHeight: 17 })).toBe(true);
+      expect(bodyIsStarved({ limit: 812, chrome: 34, others: 1000, lineHeight: 75 })).toBe(true); // the measured case: a nine-line title
+      expect(bodyIsStarved({ limit: 812, chrome: 34, others: 130, lineHeight: 75 })).toBe(false); // a short confirmation
+    });
+
+    it("scrolls as a whole when the title and footer starve the body", () => {
+      const spy = withHeights({ header: 1000, footer: 170 });
+      try {
+        render(<Sheet />);
+        const sheet = screen.getByRole("dialog");
+        expect(sheet).toHaveAttribute("data-cramped");
+        expect(screen.getByTestId("body")).toHaveClass(...COMPACT_BODY_CRAMPED.split(" "));
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("leaves a sheet that fits exactly as it was: no data-cramped, the body keeps its own scrolling", () => {
+      // A very tall body must not count against itself: the measure is the OTHER children's heights (04d's survivor).
+      const spy = withHeights({ header: 60, footer: 80, body: 5000 });
+      try {
+        render(<Sheet />);
+        expect(screen.getByRole("dialog")).not.toHaveAttribute("data-cramped");
+        const body = screen.getByTestId("body");
+        for (const name of COMPACT_BODY_CRAMPED.split(" ")) expect(body).not.toHaveClass(name);
+        expect(body).toHaveClass("min-h-0", "flex-1", "overflow-y-auto");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("focuses the safe action without scrolling the sheet, so a cramped sheet opens on its title", () => {
+      const focus = vi.spyOn(HTMLElement.prototype, "focus");
+      try {
+        render(<Harness focusConfirm />);
+        openDialog();
+        const confirm = screen.getByRole("button", { name: "Undo scenario" });
+        const calls = focus.mock.calls.map((args, index) => ({ args, target: focus.mock.contexts[index] }));
+        expect(calls).toContainEqual({ args: [{ preventScroll: true }], target: confirm });
+        expect(document.activeElement).toBe(confirm);
+      } finally {
+        focus.mockRestore();
+      }
+    });
+
+    it("every reflow class is behind `compact:`, and the sheet carries the whole-sheet scroll only on data-cramped", () => {
+      render(<Sheet />);
+      const sheet = screen.getByRole("dialog");
+      for (const name of COMPACT_SHEET_CRAMPED.split(" ")) {
+        expect(name).toMatch(/^compact:data-\[cramped\]:/);
+        expect(sheet).toHaveClass(name);
+      }
+      for (const name of [...COMPACT_BODY_CRAMPED.split(" "), ...COMPACT_FOOTER_WRAPS.split(" ")]) {
+        expect(name.startsWith("compact:")).toBe(true);
+      }
+      const footer = screen.getByTestId("footer");
+      for (const name of COMPACT_FOOTER_WRAPS.split(" ")) expect(footer).toHaveClass(name);
+    });
+  });
 });

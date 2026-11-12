@@ -13,7 +13,14 @@ import STYLESHEETS from "virtual:tailwind-sheets";
 
 import { COMPACT_QUERY } from "@/lib/compact";
 import { SAFE_AREA_PADDING } from "@/lib/safeArea";
-import { COMPACT_DRAWER_CLEARS_CHROME, COMPACT_DRAWER_PADDED_6, COMPACT_SHEET } from "@/lib/sheet";
+import {
+  COMPACT_BODY_CRAMPED,
+  COMPACT_DRAWER_CLEARS_CHROME,
+  COMPACT_DRAWER_PADDED_6,
+  COMPACT_FOOTER_WRAPS,
+  COMPACT_SHEET,
+  COMPACT_SHEET_CRAMPED,
+} from "@/lib/sheet";
 
 async function compiled(candidates: string[]): Promise<string> {
   const compiler = await compile(globalsCss, {
@@ -245,6 +252,9 @@ describe("compact layout seams as compiled (personal-cfo-i93n3.25)", () => {
       ...COMPACT_SHEET.split(" "),
       ...COMPACT_DRAWER_PADDED_6.split(" "),
       ...COMPACT_DRAWER_CLEARS_CHROME.split(" "),
+      ...COMPACT_SHEET_CRAMPED.split(" "),
+      ...COMPACT_BODY_CRAMPED.split(" "),
+      ...COMPACT_FOOTER_WRAPS.split(" "),
     ];
 
     it("every sheet and drawer class is behind `compact:`, so a desktop window renders as before", async () => {
@@ -264,6 +274,13 @@ describe("compact layout seams as compiled (personal-cfo-i93n3.25)", () => {
         /padding-bottom:\s*max\(var\(--safe-area-bottom\),\s*var\(--keyboard-inset\)\)/,
         /padding-top:\s*calc\(1\.5rem \+ var\(--safe-area-top\)\)/,
         /border-top-left-radius/,
+        // the reflow for a sheet that does not fit (largest text size, long name): the sheet scrolls as a whole,
+        // the body stops being its own tiny region, footer buttons may wrap
+        /overflow-y:\s*auto/,
+        /overflow:\s*visible/,
+        /white-space:\s*normal/,
+        /overflow-wrap:\s*anywhere/,
+        /height:\s*auto/,
       ]) {
         expect(inCompact).toMatch(declaration);
       }
