@@ -14,7 +14,7 @@ use common::{chain, epoch_key, Chain, VAULT};
 use platform_mock::MockWitness;
 use sync_core::artifact::ArtifactId;
 use sync_core::membership::{verify_chain, VerifiedState};
-use sync_core::snapshot_service::{ServiceError, SnapshotSource};
+use sync_core::snapshot_service::{ServiceError, SnapshotService, SnapshotSource};
 use sync_core::status::{ApplyFailureCode, HaltEvidence, InvalidEnvelope, StopReason, SyncStatus};
 use vault_crypto::sync_counter::{CounterRegister, NonceError, RegisterStore};
 use vault_crypto::sync_envelope::{EpochKey, SealerIdentity};
@@ -586,6 +586,26 @@ fn a_device_the_service_reports_halted_gets_its_own_typed_error() {
     assert_eq!(
         rig.publish(&service, &HEALTHY, &re_snapshot(0x02, 5, &plaintext)),
         Err(PublishError::ServiceHalted { stopped_at: 1003 })
+    );
+}
+
+#[test]
+fn the_simulator_judges_the_container_before_the_vault_side_forbidden_and_the_halt_gate() {
+    // Protocol 4.9, the order of decision: the checks that need no vault state come first, then the
+    // authorization that needs the vault, then the halt gate.
+    let rig = Rig::genesis("order");
+    let service = service_with_genesis(&rig);
+    service.halt_device(1003);
+    // A device that reported a halt, sending bytes that are no container: MalformedObject, not the halt.
+    assert_eq!(
+        service.stage_snapshot(&VAULT, &[7; 16], &[0; 20]),
+        Err(ServiceError::MalformedObject)
+    );
+    // An account credential after the genesis, sending the same: still the stateless refusal, not Forbidden.
+    service.set_credential(Credential::Account);
+    assert_eq!(
+        service.stage_snapshot(&VAULT, &[7; 16], &[0; 20]),
+        Err(ServiceError::MalformedObject)
     );
 }
 

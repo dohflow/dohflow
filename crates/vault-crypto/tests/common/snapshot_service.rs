@@ -219,11 +219,8 @@ impl SnapshotService for FakeSnapshotService {
         container: &[u8],
     ) -> Result<StagedSnapshot, ServiceError> {
         self.call("stage_snapshot", |state, credential| {
-            halt_gate(state, credential)?;
-            // Once a genesis is installed the account credential is not a device (protocol 2.4).
-            if state.vault.is_some() && credential == Credential::Account {
-                return Err(ServiceError::Forbidden);
-            }
+            // The order of protocol 4.9: the checks that need no vault state (the container and the ids its
+            // header names), then the authorization that needs the vault (`Forbidden`), then the halt gate.
             let parsed = parse_container(container).map_err(|_| ServiceError::MalformedObject)?;
             let header = &parsed.header;
             if &header.vault_id != vault_id
@@ -232,6 +229,11 @@ impl SnapshotService for FakeSnapshotService {
             {
                 return Err(ServiceError::MalformedObject);
             }
+            // Once a genesis is installed the account credential is not a device (protocol 2.4).
+            if state.vault.is_some() && credential == Credential::Account {
+                return Err(ServiceError::Forbidden);
+            }
+            halt_gate(state, credential)?;
             // Before the genesis the epoch must be 1; afterwards the one in force or the next.
             let in_force = state.vault.as_ref().map(|v| v.key_epoch);
             let allowed = match in_force {
