@@ -52,7 +52,9 @@ use vault_crypto::sync_artifact_flow::{fetch_container, open_fetched, FetchError
 use vault_crypto::sync_envelope::EpochKey;
 
 use crate::snapshot_install::SnapshotAttachment;
-use crate::sync_artifacts::{create_attachment_from_snapshot_row, CreateAttachmentError};
+use crate::sync_artifacts::{
+    create_attachment_from_snapshot_row, CreateAttachmentError, MappingError,
+};
 use crate::sync_live_closure::{seed, LiveClosureError, LiveEntry};
 use crate::sync_materialize::{BatchPartRef, MaterializeError};
 use crate::{DbError, DbWorker};
@@ -137,6 +139,12 @@ pub enum LocalFault {
     /// The database failed.
     #[error("{0}")]
     Db(DbError),
+    /// An artifact's mapping could not be recorded.
+    #[error("{0}")]
+    Mapping(MappingError),
+    /// The live closure could not be seeded.
+    #[error("{0}")]
+    LiveClosure(LiveClosureError),
 }
 
 /// Why the closure was not materialized.
@@ -162,10 +170,7 @@ impl From<DbError> for ClosureError {
 
 impl From<LiveClosureError> for ClosureError {
     fn from(error: LiveClosureError) -> Self {
-        match error {
-            LiveClosureError::Db(error) => Self::Local(LocalFault::Db(error)),
-            other => Self::Local(LocalFault::Db(DbError::InvalidCommand(other.to_string()))),
-        }
+        Self::Local(LocalFault::LiveClosure(error))
     }
 }
 
@@ -417,9 +422,9 @@ pub(crate) fn finish(
                     | CreateAttachmentError::WrongAttachment => {
                         InvalidSnapshot::AttachmentWithoutArtifact.into()
                     }
-                    CreateAttachmentError::Mapping(error) => ClosureError::Local(LocalFault::Db(
-                        DbError::InvalidCommand(error.to_string()),
-                    )),
+                    CreateAttachmentError::Mapping(error) => {
+                        ClosureError::Local(LocalFault::Mapping(error))
+                    }
                     CreateAttachmentError::Store(error) => {
                         ClosureError::Local(LocalFault::Db(error))
                     }
