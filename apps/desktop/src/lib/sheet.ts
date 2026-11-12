@@ -110,5 +110,5 @@ export function bodyIsStarved(input: {
 
 /// A shared-dialog consumer that sets `overflow-visible` on `DialogContent` (so a popover can open past its edge on a desktop
 /// window) must also take this on compact: there the sheet is the scroll container, and without it a sheet taller than the screen
-/// is clipped and its actions cannot be reached (personal-cfo-i93n3.25 slice B, the New category dialog at the largest text size).
-export const COMPACT_SHEET_SCROLLS = "compact:overflow-y-auto";
+/// runs past the bottom edge and its actions cannot be reached (personal-cfo-i93n3.25 slice B, the New category dialog at the largest text size). `overflow-y: auto` makes `overflow-x` auto too, so a panel wider than the sheet would shift it sideways; `overflow-x-hidden` stops that.
+export const COMPACT_SHEET_SCROLLS = "compact:overflow-y-auto compact:overflow-x-hidden";

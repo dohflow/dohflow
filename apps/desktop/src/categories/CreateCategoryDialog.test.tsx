@@ -102,6 +102,7 @@ describe("CreateCategoryDialog", () => {
     expect(dialog.className).toMatch(/\boverflow-visible\b/);
     // On a phone the sheet itself scrolls (the sheet is the scroll container there): a class that only compiles under `compact:`.
     expect(dialog.className).toMatch(/\bcompact:overflow-y-auto\b/);
+    expect(dialog.className).toMatch(/\bcompact:overflow-x-hidden\b/);
     // The wrapper the form sits in (DialogBody), by itself: it defaults to scrolling.
     const body = screen.getByLabelText("Category name").closest("form")!.parentElement!.parentElement!.parentElement!;
     expect(body.className).toMatch(/\boverflow-visible\b/);

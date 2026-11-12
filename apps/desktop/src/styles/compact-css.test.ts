@@ -288,13 +288,18 @@ describe("compact layout seams as compiled (personal-cfo-i93n3.25)", () => {
       }
     });
 
-    it("a consumer's overflow-visible is overridden by overflow-y:auto only under the compact query", async () => {
-      expect(COMPACT_SHEET_SCROLLS.startsWith("compact:")).toBe(true);
-      const css = await compiled([COMPACT_SHEET_SCROLLS, "overflow-visible"]);
+    it("a consumer's overflow-visible is overridden by overflow-y:auto and overflow-x:hidden only under the compact query", async () => {
+      expect(COMPACT_SHEET_SCROLLS.split(" ").every((name) => name.startsWith("compact:"))).toBe(true);
+      expect(COMPACT_SHEET_SCROLLS.split(" ")).toEqual(["compact:overflow-y-auto", "compact:overflow-x-hidden"]);
+      const css = await compiled([...COMPACT_SHEET_SCROLLS.split(" "), "overflow-visible"]);
       const { blocks, rest } = splitCompactBlocks(css);
-      expect(blocks.join("\n")).toMatch(/overflow-y:\s*auto/);
-      // Outside the compact query overflow-y:auto compiles nowhere: a desktop window keeps its overflow-visible.
+      const inCompact = blocks.join("\n");
+      // Both declarations compile under the compact query (the x one stops a panel wider than the sheet from shifting it sideways)...
+      expect(inCompact).toMatch(/overflow-y:\s*auto/);
+      expect(inCompact).toMatch(/overflow-x:\s*hidden/);
+      // ...and nowhere else: a desktop window keeps its overflow-visible.
       expect(rest).not.toMatch(/overflow-y:\s*auto/);
+      expect(rest).not.toMatch(/overflow-x:\s*hidden/);
       expect(rest).toMatch(/overflow:\s*visible/);
     });
 
