@@ -3119,6 +3119,22 @@ impl Kernel {
         Ok(self.worker.capture_preservation()?)
     }
 
+    /// Remove a rebase's working files: the rebuilt vault, the new base image, trial copies and the
+    /// runner-lock sidecars under `sync/rebase-*`. The caller drops its
+    /// [`db_worker::rebase::Scratch`] first (a rebase that stops after `rebase_local`, a block, an
+    /// overlay error or an error inside `into_swap` leaves them behind, and each is a full copy of the
+    /// vault under the current key). A swap that ends or is refused removes them itself
+    /// ([`VaultController::swap_rebased`]), and every open and every rotation's prepare removes any
+    /// that are left. Returns how many files it removed. Never touches `base.db`, `pre-rebase.db` or
+    /// the saved snapshots.
+    ///
+    /// # Errors
+    /// [`KernelError::Vault`] if the directory cannot be listed or a file cannot be removed.
+    pub fn abandon_rebase(&self) -> Result<usize, KernelError> {
+        db_worker::base_image::remove_rebase_artifacts(self.worker.db_path())
+            .map_err(|error| KernelError::Vault(format!("removing rebase files: {error}")))
+    }
+
     /// Remove `sync/pre-rebase.db`, the vault a rebase swap replaced, which the swap keeps until
     /// the next accepted push (ADR 0074 decision 2; personal-cfo-bxsbz.7). The push path calls this
     /// once the service has accepted a push after the swap: from then on the rebased vault is the

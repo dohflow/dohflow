@@ -644,6 +644,31 @@ mod protocol_tests {
     }
 
     #[test]
+    fn an_abandoned_rebase_removes_its_working_files_and_only_those() {
+        // 04b's #308 O2: a rebase that stops before the swap (a block, an overlay error, an error
+        // inside `into_swap`) leaves its scratch vault, new base and lock sidecars behind.
+        let (_dir, path, controller) = seeded();
+        let paths = SwapPaths::new(&path);
+        let kernel = controller.kernel().unwrap();
+        let mut scratch = kernel.rollback_to_base(BASE_SEQ).unwrap();
+        scratch.apply_pulled(&[]).unwrap();
+        scratch.rebase_local(&[]).unwrap();
+        drop(scratch);
+        let saved = paths.sync.join("snapshots");
+        fs::create_dir_all(&saved).unwrap();
+        fs::write(saved.join("00.snapshot"), b"sealed").unwrap();
+        let base = hash(&paths.base);
+        assert!(!rebase_names(&path).is_empty());
+
+        assert!(kernel.abandon_rebase().unwrap() >= 3);
+
+        assert_no_swap_files(&path);
+        assert_eq!(hash(&paths.base), base);
+        assert_eq!(fs::read(saved.join("00.snapshot")).unwrap(), b"sealed");
+        assert_eq!(kernel.abandon_rebase().unwrap(), 0, "idempotent");
+    }
+
+    #[test]
     fn the_previous_vault_is_discarded_on_request_and_nothing_else_under_sync_is_touched() {
         let (_dir, path, mut controller) = seeded();
         let (inputs, image) = rebuilt(&controller);
