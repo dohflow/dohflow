@@ -33,6 +33,7 @@ use vault_crypto::generate_dek;
 use vault_crypto::sync_envelope::EpochKey;
 
 const PDF: &[u8] = b"%PDF-1.4\nthe first attachment\n%%EOF\n";
+const TWIN: [u8; 16] = [0x55; 16];
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\nthe second attachment";
 /// A string that appears only in batch plaintext: it must never be in a spool file.
 const MARKER: &str = "PLAINTEXT-MARKER-0123456789";
@@ -116,6 +117,13 @@ impl Origin {
     /// made) and `batches` batches of two parts, every artifact put on the service, and the genesis
     /// snapshot it would publish.
     fn new(batches: u8) -> Self {
+        Self::build(batches, false)
+    }
+
+    /// [`Self::new`], and with `twin` a third attachment: the same bytes as the first under another
+    /// attachment id (two devices attached one file), its row sharing the first's blob, its own
+    /// artifact on the service and in the snapshot.
+    fn build(batches: u8, twin: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let worker =
             DbWorker::open_with_raw_key(dir.path().join("origin.db"), generate_dek().unwrap())
@@ -142,6 +150,32 @@ impl Origin {
             )
             .unwrap();
         let (_, produced) = worker.produce_closure(&service, &key).unwrap();
+        let mut extra: Vec<BoundArtifact> = Vec::new();
+        if twin {
+            let published =
+                artifacts::publish_attachment(&service, &key, 0x9a, TWIN, PDF, "application/pdf");
+            extra.push(BoundArtifact {
+                id: *published.id.as_bytes(),
+                ciphertext_sha256: published.hash,
+            });
+            let conn = worker.read_connection().unwrap();
+            conn.execute(
+                "INSERT INTO attachments (id, storage_id, wrapped_content_key, content_key_nonce,
+                        content_nonce, content_alg, plaintext_size, mime_type, original_filename,
+                        ref_count, created_at)
+                 SELECT ?2, storage_id, wrapped_content_key, content_key_nonce, content_nonce,
+                        content_alg, plaintext_size, mime_type, 'twin.pdf', 0, created_at
+                   FROM attachments WHERE id = ?1",
+                rusqlite::params![attachment.as_slice(), TWIN.as_slice()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO attachment_links (attachment_id, entity_kind, entity_id, created_at)
+                 VALUES (?1, 'transaction', ?2, 't')",
+                rusqlite::params![TWIN.as_slice(), [0x78_u8; 16].as_slice()],
+            )
+            .unwrap();
+        }
         // A later class-1 edit of the row: its media type is no longer the artifact's.
         worker
             .read_connection()
@@ -151,13 +185,15 @@ impl Origin {
                 [attachment.as_slice()],
             )
             .unwrap();
-        let bound: Vec<BoundArtifact> = produced
+        let mut bound: Vec<BoundArtifact> = produced
             .iter()
             .map(|p| BoundArtifact {
                 id: *p.id.as_bytes(),
                 ciphertext_sha256: p.ciphertext_sha256,
             })
             .collect();
+        bound.extend(extra);
+        bound.sort_by_key(|b| b.id);
         let (plaintext, _) = export_genesis_with_mark(
             &worker.read_connection().unwrap(),
             &ExportInput {
@@ -718,49 +754,44 @@ fn a_snapshot_with_no_artifact_ignores_a_service_the_caller_passes() {
     );
 }
 
-/// A materialize error caused by an artifact's CONTENT is deterministic exactly as the closure check
-/// would have ruled, whatever order the artifacts arrive in: two attachment artifacts carrying the
-/// same bytes cannot both be materialized (the second finds the blob held).
+/// Two attachment ids with the same bytes are honest (two devices attached the same file): the replica
+/// is built with both rows sharing ONE blob, each reads the bytes, and it is not a verdict.
 #[test]
-fn a_materialize_error_caused_by_content_is_a_deterministic_invalid_snapshot() {
-    let origin = Origin::new(1);
-    let twin = artifacts::publish_attachment(
-        &origin.service,
-        &origin.key,
-        0x9a,
-        [0x55; 16],
-        PDF,
-        "application/pdf",
-    );
-    let mut verified = origin.verified.clone();
-    verified
-        .manifest
-        .artifacts
-        .push(sync_core::snapshot::ArtifactEntry {
-            id: twin
-                .id
-                .as_bytes()
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
-            ciphertext_sha256: twin.hash.iter().map(|b| format!("{b:02x}")).collect(),
-        });
-    verified.manifest.artifacts.sort_by(|a, b| a.id.cmp(&b.id));
+fn two_attachment_ids_with_the_same_bytes_are_built_with_one_blob() {
+    let origin = Origin::build(1, true);
     let dir = tempfile::tempdir().unwrap();
-    let error = origin
-        .bootstrap(&verified, dir.path(), Some(&origin.service))
-        .unwrap_err();
-    assert!(
-        matches!(
-            error,
-            BootstrapError::Invalid(InvalidSnapshot::Content(
-                db_worker::sync_bootstrap_artifacts::ContentFault::BlobHeld
-            ))
-        ),
-        "{error:?}"
+    let born = origin
+        .bootstrap(&origin.verified, dir.path(), Some(&origin.service))
+        .unwrap();
+    let replica = &born.worker;
+    let rows = count(
+        replica,
+        "SELECT COUNT(*) FROM attachments WHERE original_filename IN ('a.pdf', 'twin.pdf')",
     );
-    assert_eq!(error.kind(), FailureKind::Deterministic);
-    assert_no_vault_and_no_spool(dir.path());
+    assert_eq!(rows, 2);
+    assert_eq!(
+        count(
+            replica,
+            "SELECT COUNT(DISTINCT storage_id) FROM attachments
+              WHERE original_filename IN ('a.pdf', 'twin.pdf')"
+        ),
+        1,
+        "the two rows name one blob"
+    );
+    for id in [origin.attachment, TWIN] {
+        let id = core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes(id));
+        assert_eq!(replica.read_attachment_bytes(id).unwrap(), PDF);
+    }
+    let blobs = std::fs::read_dir(dir.path().join("blobs")).unwrap().count();
+    assert_eq!(blobs, 2, "the shared PDF blob and the PNG blob");
+    // No staging is left, and no spool.
+    assert_eq!(
+        count(
+            replica,
+            "SELECT COUNT(*) FROM sync_artifacts WHERE staged_storage_id IS NOT NULL"
+        ),
+        0
+    );
 }
 
 /// A spool an earlier build left (a crash) is discarded at the next start, with the build it belonged

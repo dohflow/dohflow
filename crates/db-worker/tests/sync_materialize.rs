@@ -20,6 +20,7 @@ use sync_core::source_batch::{BatchRow, RecordRow, RunRow, SourceBatch};
 use vault_crypto::{derive_kek, generate_dek, generate_salt, unwrap_dek, wrap_dek, Dek, Profile};
 
 const PDF: &[u8] = b"%PDF-1.4\nmaterialized attachment\n%%EOF\n";
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\nanother attachment";
 const ART: [u8; 32] = [0x51; 32];
 const ART2: [u8; 32] = [0x52; 32];
 const HASH: [u8; 32] = [0x61; 32];
@@ -172,46 +173,310 @@ fn materializing_an_attachment_twice_changes_nothing() {
     assert_eq!(vault.worker.read_attachment_bytes(attachment).unwrap(), PDF);
 }
 
+fn attachment_id(bytes: [u8; 16]) -> core_ledger::AttachmentId {
+    core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes(bytes))
+}
+
+/// The attachment ids of the rows naming a blob, lowest first.
+fn rows_naming(vault: &Vault, bytes: &[u8]) -> i64 {
+    vault
+        .worker
+        .read_connection()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM attachments WHERE storage_id = ?1",
+            [vault_crypto::storage_id(&vault.dek, bytes).as_str()],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// AC9: identical bytes under another attachment id reuse the blob: nothing is overwritten or
+/// re-encrypted, the staging is a copy of the holder's crypto fields, and both rows read the bytes.
 #[test]
-fn identical_bytes_under_another_attachment_are_refused_and_nothing_is_written() {
+fn identical_bytes_under_another_attachment_reuse_the_blob() {
     let (service, key) = (FakeService::default(), key_of(1, 0));
     let vault = Vault::new();
-    // An attachment this device already stores.
-    vault.worker.import_attachment(PDF, None, None).unwrap();
+    // An attachment this device already stores (a local import).
+    let holder = vault.worker.import_attachment(PDF, None, None).unwrap();
     let before = fs::read(vault.blob_path(PDF)).unwrap();
     let (artifact, hash, id) = artifact(&service, &key, 0x51, ATT, PDF);
-    assert!(matches!(
-        vault.worker.materialize_attachment(1, &hash, &artifact),
-        Err(MaterializeError::BlobHeld)
-    ));
+    vault
+        .worker
+        .materialize_attachment(1, &hash, &artifact)
+        .unwrap();
     assert_eq!(
         fs::read(vault.blob_path(PDF)).unwrap(),
         before,
-        "the blob is not overwritten"
+        "not overwritten"
     );
+    assert_eq!(fs::read_dir(vault.blobs()).unwrap().count(), 1, "one file");
+    let conn = vault.worker.read_connection().unwrap();
+    let staged = lookup(&conn, 1, &id).unwrap().unwrap().staged.unwrap();
+    // The staging is the holder's crypto fields.
+    let (wrapped, key_nonce, content_nonce): (Vec<u8>, Vec<u8>, Vec<u8>) = conn
+        .query_row(
+            "SELECT wrapped_content_key, content_key_nonce, content_nonce FROM attachments
+              WHERE id = ?1",
+            [holder.as_uuid()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(staged.wrapped_content_key, wrapped);
+    assert_eq!(staged.content_key_nonce, key_nonce);
+    assert_eq!(staged.content_nonce, content_nonce);
+
+    // The apply creates the second row; both read, and the lookup by bytes is the lowest id.
+    let second = attachment_id(ATT);
+    create_attachment_from_staged(&conn, 1, &id, second, None, "t").unwrap();
+    assert_eq!(rows_naming(&vault, PDF), 2);
+    assert_eq!(vault.worker.read_attachment_bytes(holder).unwrap(), PDF);
+    assert_eq!(vault.worker.read_attachment_bytes(second).unwrap(), PDF);
+    let again = vault.worker.import_attachment(PDF, None, None).unwrap();
+    assert_eq!(
+        again.as_uuid().as_bytes().min(second.as_uuid().as_bytes()),
+        again.as_uuid().as_bytes(),
+        "an import of the bytes returns the lowest id"
+    );
+}
+
+/// AC9: two artifacts with the same bytes staged on one device (no row yet) share the blob too, and a
+/// delete of one attachment keeps the bytes for the other and removes the file with the last.
+#[test]
+fn two_artifacts_with_the_same_bytes_share_a_blob_and_a_delete_keeps_it_for_the_other() {
+    let (service, key) = (FakeService::default(), key_of(1, 0));
+    let vault = Vault::new();
+    let (first, first_hash, first_id) = artifact(&service, &key, 0x71, ATT, PDF);
+    let (second, second_hash, second_id) = artifact(&service, &key, 0x72, ATT2, PDF);
+    vault
+        .worker
+        .materialize_attachment(1, &first_hash, &first)
+        .unwrap();
+    vault
+        .worker
+        .materialize_attachment(1, &second_hash, &second)
+        .unwrap();
+    assert_eq!(fs::read_dir(vault.blobs()).unwrap().count(), 1);
+    let conn = vault.worker.read_connection().unwrap();
+    let (a, b) = (attachment_id(ATT), attachment_id(ATT2));
+    create_attachment_from_staged(&conn, 1, &first_id, a, None, "t").unwrap();
+    create_attachment_from_staged(&conn, 1, &second_id, b, None, "t").unwrap();
+    assert_eq!(rows_naming(&vault, PDF), 2);
+    let entity = uuid::Uuid::from_bytes([0x44; 16]);
+    vault
+        .worker
+        .link_attachment(a, "transaction", entity)
+        .unwrap();
+    vault
+        .worker
+        .link_attachment(b, "transaction", entity)
+        .unwrap();
+
+    // Deleting one attachment keeps the other's bytes (and the file).
+    vault
+        .worker
+        .unlink_attachment(a, "transaction", entity)
+        .unwrap();
+    assert!(vault.blob_path(PDF).is_file());
+    assert_eq!(vault.worker.read_attachment_bytes(b).unwrap(), PDF);
+    // The last one removes the file.
+    vault
+        .worker
+        .unlink_attachment(b, "transaction", entity)
+        .unwrap();
+    assert!(!vault.blob_path(PDF).exists());
+}
+
+/// F2: a materialize retry after the apply consumed the staging, with a lower-id attachment sharing
+/// the blob, leaves no staging behind (it asks by attachment id, not by blob name).
+#[test]
+fn a_retry_after_the_apply_with_a_lower_id_sharer_leaves_no_staging() {
+    let (service, key) = (FakeService::default(), key_of(1, 0));
+    let vault = Vault::new();
+    // The lower-id sharer: ids are random for an import, so insert a row that sorts first.
+    let (low, low_hash, low_id) = artifact(&service, &key, 0x71, [0x01; 16], PDF);
+    vault
+        .worker
+        .materialize_attachment(1, &low_hash, &low)
+        .unwrap();
+    let (high, high_hash, high_id) = artifact(&service, &key, 0x72, [0x09; 16], PDF);
+    vault
+        .worker
+        .materialize_attachment(1, &high_hash, &high)
+        .unwrap();
+    let conn = vault.worker.read_connection().unwrap();
+    create_attachment_from_staged(&conn, 1, &low_id, attachment_id([0x01; 16]), None, "t").unwrap();
+    create_attachment_from_staged(&conn, 1, &high_id, attachment_id([0x09; 16]), None, "t")
+        .unwrap();
+    // The retry of the HIGHER id's materialization after its apply.
+    vault
+        .worker
+        .materialize_attachment(1, &high_hash, &high)
+        .unwrap();
+    assert_eq!(lookup(&conn, 1, &high_id).unwrap().unwrap().staged, None);
+    let staged: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_artifacts WHERE staged_storage_id IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(staged, 0, "no staging leaks");
+    // Deleting both rows removes the file.
+    let entity = uuid::Uuid::from_bytes([0x44; 16]);
+    for id in [[0x01; 16], [0x09; 16]] {
+        vault
+            .worker
+            .link_attachment(attachment_id(id), "transaction", entity)
+            .unwrap();
+        vault
+            .worker
+            .unlink_attachment(attachment_id(id), "transaction", entity)
+            .unwrap();
+    }
+    assert!(!vault.blob_path(PDF).exists());
+}
+
+/// F4: a local-origin row and a received row share a blob. Producing the local one is first-published
+/// at its own address (and again is an exact retry); producing the received one is refused, because
+/// its address is its mapping's and deriving it from the blob would name the local row's artifact.
+#[test]
+fn producing_a_received_row_that_shares_a_blob_with_a_local_one_is_refused() {
+    use db_worker::sync_produce::ProduceError;
+    let (service, key) = (FakeService::default(), key_of(1, 0));
+    let vault = Vault::new();
+    let local = vault.worker.import_attachment(PDF, None, None).unwrap();
+    let (artifact, hash, id) = artifact(&service, &key, 0x51, ATT, PDF);
+    vault
+        .worker
+        .materialize_attachment(1, &hash, &artifact)
+        .unwrap();
+    let received = attachment_id(ATT);
+    {
+        let conn = vault.worker.read_connection().unwrap();
+        create_attachment_from_staged(&conn, 1, &id, received, None, "t").unwrap();
+    }
+    let first = vault
+        .worker
+        .produce_attachment_artifact(&service, &key, local.as_uuid().as_bytes())
+        .unwrap();
+    assert_ne!(
+        *first.id.as_bytes(),
+        id,
+        "the local row has its own address"
+    );
+    let again = vault
+        .worker
+        .produce_attachment_artifact(&service, &key, local.as_uuid().as_bytes())
+        .unwrap();
+    assert_eq!(again.id, first.id, "an exact retry");
+    assert!(matches!(
+        vault
+            .worker
+            .produce_attachment_artifact(&service, &key, received.as_uuid().as_bytes()),
+        Err(ProduceError::AttachmentMapped)
+    ));
+}
+
+/// F3: unlink removes a blob only by the one predicate the sweep uses: a blob the base image (the
+/// rebase rollback target) names survives the delete of its last row, and is the sweep's to keep.
+#[test]
+fn an_unlink_keeps_a_blob_the_base_image_names_and_removes_it_otherwise() {
+    let vault = Vault::new();
+    let entity = uuid::Uuid::from_bytes([0x44; 16]);
+    let id = vault.worker.import_attachment(PDF, None, None).unwrap();
+    vault
+        .worker
+        .link_attachment(id, "transaction", entity)
+        .unwrap();
+    // The base image is taken while the row exists, so it names the blob.
+    vault.worker.initialize_base_image(0).unwrap();
+    vault
+        .worker
+        .unlink_attachment(id, "transaction", entity)
+        .unwrap();
+    assert!(
+        vault.blob_path(PDF).is_file(),
+        "a rollback to the base needs the bytes"
+    );
+    assert_eq!(
+        vault.worker.sweep_orphan_blobs().unwrap(),
+        0,
+        "the sweep agrees"
+    );
+
+    // With no base image naming it, the delete of the last row removes the file.
+    let other = Vault::new();
+    let id = other.worker.import_attachment(PNG, None, None).unwrap();
+    other
+        .worker
+        .link_attachment(id, "transaction", entity)
+        .unwrap();
+    other
+        .worker
+        .unlink_attachment(id, "transaction", entity)
+        .unwrap();
+    assert!(!other.blob_path(PNG).exists());
+
+    // And a rebase in progress holds every removal.
+    let held = Vault::new();
+    let id = held.worker.import_attachment(PDF, None, None).unwrap();
+    held.worker
+        .link_attachment(id, "transaction", entity)
+        .unwrap();
+    let sync = held.dir.path().join("sync");
+    fs::create_dir_all(&sync).unwrap();
+    fs::write(sync.join("pre-rebase.db"), b"x").unwrap();
+    held.worker
+        .unlink_attachment(id, "transaction", entity)
+        .unwrap();
+    assert!(
+        held.blob_path(PDF).is_file(),
+        "nothing is removed during a rebase"
+    );
+}
+
+/// R3: a holder whose blob does not decrypt to the bytes, or whose blob is missing, is a local fault:
+/// nothing is written and the blob and the holder are left as they are.
+#[test]
+fn a_damaged_or_missing_holder_blob_is_a_local_fault_that_writes_nothing() {
+    let (service, key) = (FakeService::default(), key_of(1, 0));
+    let vault = Vault::new();
+    vault.worker.import_attachment(PDF, None, None).unwrap();
+    let (artifact, hash, id) = artifact(&service, &key, 0x51, ATT, PDF);
+
+    // Damaged: flip a byte of the holder's blob.
+    let path = vault.blob_path(PDF);
+    let original = fs::read(&path).unwrap();
+    let mut damaged = original.clone();
+    let last = damaged.len() - 1;
+    damaged[last] ^= 0xff;
+    fs::write(&path, &damaged).unwrap();
+    assert!(matches!(
+        vault.worker.materialize_attachment(1, &hash, &artifact),
+        Err(MaterializeError::BlobConflict)
+    ));
+    assert_eq!(fs::read(&path).unwrap(), damaged, "the blob is untouched");
     assert_eq!(
         lookup(&vault.worker.read_connection().unwrap(), 1, &id).unwrap(),
         None
     );
 
-    // The same when another artifact has the bytes staged.
-    let other = Vault::new();
-    let (first, first_hash, _) = artifact_pair(&service, &key, 0x71, ATT);
-    other
-        .worker
-        .materialize_attachment(1, &first_hash, &first)
-        .unwrap();
-    let (second, second_hash, second_id) = artifact_pair(&service, &key, 0x72, ATT2);
+    // Missing.
+    fs::remove_file(&path).unwrap();
     assert!(matches!(
-        other
-            .worker
-            .materialize_attachment(1, &second_hash, &second),
-        Err(MaterializeError::BlobHeld)
+        vault.worker.materialize_attachment(1, &hash, &artifact),
+        Err(MaterializeError::BlobMissing)
     ));
+    assert!(
+        !path.exists(),
+        "a blob is never re-written under a holder's key"
+    );
     assert_eq!(
-        lookup(&other.worker.read_connection().unwrap(), 1, &second_id).unwrap(),
+        lookup(&vault.worker.read_connection().unwrap(), 1, &id).unwrap(),
         None
     );
+    fs::write(&path, &original).unwrap();
 }
 
 /// Two attachments with the same bytes published under two addresses.

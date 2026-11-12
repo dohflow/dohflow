@@ -158,6 +158,18 @@ impl DbWorker {
     }
 }
 
+/// Add `rename` unless the list has it: attachments sharing a blob (AC9), and a staged artifact
+/// sharing one with a row, all name one file, and it is linked and renamed once (a second hard link
+/// to the new name would fail on the first).
+fn push_once(renames: &mut Vec<BlobRename>, rename: BlobRename) {
+    if !renames
+        .iter()
+        .any(|seen| seen.old == rename.old && seen.new == rename.new)
+    {
+        renames.push(rename);
+    }
+}
+
 /// Re-wrap and re-address every attachment row inside the copy at `dest`, in
 /// one transaction, and close the copy (ADR 0083 §3).
 fn rewrap_attachments(
@@ -194,20 +206,18 @@ fn rewrap_attachments(
                 id
             ],
         )?;
-        renames.push(BlobRename {
-            old: old_storage_id,
-            new: new_storage_id.as_str().to_owned(),
-        });
+        push_once(
+            &mut renames,
+            BlobRename {
+                old: old_storage_id,
+                new: new_storage_id.as_str().to_owned(),
+            },
+        );
     }
     // Storage ids are content-addressed, so a staged blob and an attachment holding the same bytes
     // share one file: it is renamed once.
     for rename in rewrap_staged_artifacts(&tx, old_dek, new_dek, blobs)? {
-        if !renames
-            .iter()
-            .any(|seen| seen.old == rename.old && seen.new == rename.new)
-        {
-            renames.push(rename);
-        }
+        push_once(&mut renames, rename);
     }
     tx.commit()?;
     drop(conn);

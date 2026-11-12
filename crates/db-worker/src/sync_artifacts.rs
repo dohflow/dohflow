@@ -343,9 +343,6 @@ pub fn create_attachment_from_snapshot_row(
     if crate::attachments::row_exists(conn, attachment_id)? {
         return Err(CreateAttachmentError::AlreadyExists);
     }
-    if crate::attachments::find_id_by_storage_id(conn, &staged.storage_id)?.is_some() {
-        return Err(CreateAttachmentError::StorageIdHeld);
-    }
     crate::attachments::insert_attachment_fields(
         conn,
         attachment_id,
@@ -380,10 +377,6 @@ pub enum CreateAttachmentError {
     /// An `attachments` row with this id already exists.
     #[error("the attachment already exists")]
     AlreadyExists,
-    /// Another attachment already stores a blob under this name (`attachments.storage_id` is
-    /// unique), so a second row cannot share it.
-    #[error("another attachment already stores this blob")]
-    StorageIdHeld,
     /// The snapshot row's plaintext size is not the size of the bytes the artifact carried: the
     /// producer's row and artifact disagree (a deterministic defect of the snapshot).
     #[error("the row's plaintext size is not the artifact's")]
@@ -423,9 +416,6 @@ pub fn create_attachment_from_staged(
     }
     if crate::attachments::row_exists(conn, attachment_id)? {
         return Err(CreateAttachmentError::AlreadyExists);
-    }
-    if crate::attachments::find_id_by_storage_id(conn, &staged.storage_id)?.is_some() {
-        return Err(CreateAttachmentError::StorageIdHeld);
     }
     crate::attachments::insert_attachment_fields(
         conn,

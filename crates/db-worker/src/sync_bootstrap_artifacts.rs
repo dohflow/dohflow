@@ -95,9 +95,9 @@ pub enum InvalidSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ContentFault {
-    /// Another attachment already stores a blob with these bytes.
-    #[error("another attachment already stores a blob with these bytes")]
-    BlobHeld,
+    /// The snapshot has an attachment id the vault already holds.
+    #[error("the vault already holds an attachment with this id")]
+    AttachmentExists,
     /// The artifact is not a valid attachment.
     #[error("the artifact is not a valid attachment")]
     NotAnAttachment,
@@ -247,7 +247,6 @@ fn fetch_error(error: FetchError, id: ArtifactId) -> ClosureError {
 
 fn materialize_error(error: MaterializeError) -> ClosureError {
     match error {
-        MaterializeError::BlobHeld => InvalidSnapshot::Content(ContentFault::BlobHeld).into(),
         MaterializeError::NotAnAttachment => {
             InvalidSnapshot::Content(ContentFault::NotAnAttachment).into()
         }
@@ -415,8 +414,8 @@ pub(crate) fn finish(
                     CreateAttachmentError::SizeDisagrees => {
                         ClosureError::from(InvalidSnapshot::AttachmentSize)
                     }
-                    CreateAttachmentError::AlreadyExists | CreateAttachmentError::StorageIdHeld => {
-                        InvalidSnapshot::Content(ContentFault::BlobHeld).into()
+                    CreateAttachmentError::AlreadyExists => {
+                        InvalidSnapshot::Content(ContentFault::AttachmentExists).into()
                     }
                     CreateAttachmentError::ArtifactMissing
                     | CreateAttachmentError::WrongAttachment => {

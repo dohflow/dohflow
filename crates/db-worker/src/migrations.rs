@@ -2749,9 +2749,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // StorageId) is a keyed hash of the bytes. `attachments.storage_id` stops being UNIQUE, which
     // SQLite can only do by rebuilding the table (the constraint was written inline in version 5),
     // and the staging index on `sync_artifacts.staged_storage_id` becomes non-unique for the same
-    // reason. The lookup by storage id keeps an index. Nothing references `attachments`, and the
-    // columns do not change. Down recreates the unique constraint and the unique index: while two rows
-    // share a blob the copy fails on the constraint and the step rolls back, so it never drops a row.
+    // reason. The lookup by storage id keeps an index. Nothing references `attachments` (so no
+    // foreign-key pause), and the columns do not change. Down refuses, atomically and typed (like 57
+    // and 59), while any blob name is shared across the rows and stagings together, because version
+    // 74's code assumes the two are disjoint; it never drops a row.
     Migration {
         version: 75,
         name: "attachments_share_a_blob",
@@ -2782,7 +2783,17 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              CREATE INDEX idx_sync_artifacts_staged_storage
                  ON sync_artifacts (staged_storage_id) WHERE staged_storage_id IS NOT NULL;",
         down: Some(
-            "DROP INDEX idx_sync_artifacts_staged_storage;
+            "CREATE TEMP TABLE attachments_down_refuses_a_shared_blob (ok INTEGER NOT NULL CHECK (ok = 1));
+             INSERT INTO attachments_down_refuses_a_shared_blob
+                 SELECT CASE WHEN
+                        EXISTS (SELECT 1 FROM attachments GROUP BY storage_id HAVING COUNT(*) > 1)
+                     OR EXISTS (SELECT 1 FROM sync_artifacts WHERE staged_storage_id IS NOT NULL
+                                 GROUP BY staged_storage_id HAVING COUNT(*) > 1)
+                     OR EXISTS (SELECT 1 FROM attachments a
+                                  JOIN sync_artifacts s ON s.staged_storage_id = a.storage_id)
+                     THEN 0 ELSE 1 END;
+             DROP TABLE attachments_down_refuses_a_shared_blob;
+             DROP INDEX idx_sync_artifacts_staged_storage;
              CREATE UNIQUE INDEX idx_sync_artifacts_staged_storage
                  ON sync_artifacts (staged_storage_id) WHERE staged_storage_id IS NOT NULL;
              CREATE TABLE attachments_v5 (
@@ -2810,7 +2821,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
              ALTER TABLE attachments_v5 RENAME TO attachments;",
         ),
         rebuilds_read_models: false,
-        foreign_keys_off: true,
+        foreign_keys_off: false,
     },
 ];
 
@@ -4866,6 +4877,32 @@ mod tests {
         assert_eq!(version, CURRENT_VERSION, "and the step is not recorded");
         conn.execute("DELETE FROM attachments WHERE id = ?1", [vec![2_u8; 16]])
             .unwrap();
+        // A row and a staged artifact naming one blob refuse too (version 74 assumes the two are
+        // disjoint), and the refusal leaves nothing behind.
+        conn.execute(
+            "INSERT INTO sync_artifacts
+                 (key_epoch, sync_artifact_id, ciphertext_sha256, kind, logical_id,
+                  staged_storage_id, staged_wrapped_content_key, staged_content_key_nonce,
+                  staged_content_nonce, staged_content_alg, staged_plaintext_size)
+             VALUES (1, zeroblob(32), zeroblob(32), 1, zeroblob(16), 'sb', x'aa', x'00', x'01',
+                     'AES-256-GCM', 5)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            migrate_down(&mut conn, 74).is_err(),
+            "a row and a staging share a blob"
+        );
+        assert_eq!(count(&conn), 1);
+        let leftover: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_temp_master WHERE name LIKE 'attachments_down%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leftover, 0, "the refusal leaves no temporary table");
+        conn.execute("DELETE FROM sync_artifacts", []).unwrap();
         assert_eq!(migrate_down(&mut conn, 74).unwrap(), 1);
         assert_eq!(count(&conn), 1);
         let duplicate = conn.execute(

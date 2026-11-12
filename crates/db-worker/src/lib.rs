@@ -3356,14 +3356,24 @@ impl DbWorker {
         if guard.state != WorkerState::Healthy {
             return Err(DbError::WorkerUnavailable(guard.state));
         }
+        let keep = self.blob_keep()?;
+        attachments::sweep_orphans(&dir, &guard.conn, &keep)
+    }
+
+    /// What keeps a blob besides the rows and stagings of this database (see
+    /// [`attachments::BlobKeep`]): a swap or a rebase in progress, and the blobs the base image
+    /// (the rollback target of a rebase, `bxsbz.7`) names. A blob that only the base image names (an
+    /// attachment deleted here after the base was taken) must survive. If the image exists and
+    /// cannot be read, the error stops the removal: it fails closed. The caller holds the writer lock.
+    pub(crate) fn blob_keep(&self) -> Result<attachments::BlobKeep, DbError> {
         if base_image::swap_or_rebase_in_progress(&self.path) {
-            return Ok(0);
+            return Ok(attachments::BlobKeep {
+                hold_all: true,
+                ..attachments::BlobKeep::default()
+            });
         }
-        // The base image is the rollback target of a rebase (`bxsbz.7`): a blob that only it names
-        // (an attachment deleted here after the base was taken) must survive. If the image exists
-        // and cannot be read, nothing is removed: the sweep fails closed.
         let base = base_image::base_image_path(&self.path);
-        let also_named = if base.exists() {
+        let image = if base.exists() {
             let image = self
                 .key
                 .open_image(&base, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -3371,7 +3381,10 @@ impl DbWorker {
         } else {
             std::collections::HashSet::new()
         };
-        attachments::sweep_orphans(&dir, &guard.conn, &also_named)
+        Ok(attachments::BlobKeep {
+            hold_all: false,
+            image,
+        })
     }
 
     /// Link an imported attachment to a domain entity (many-to-many), bumping its
@@ -3498,8 +3511,11 @@ impl DbWorker {
         tx.commit()?;
         // After the row (and its wrapped key) is gone the blob is already
         // undecryptable; unlink the ciphertext best-effort.
+        // The blob goes with the last row or staging that names it (and only if no swap, rebase or
+        // base image keeps it): checked after the commit, under the writer lock.
         if let Some(storage_id) = shredded_storage_id {
-            attachments::remove_blob(&dir, &storage_id)?;
+            let keep = self.blob_keep()?;
+            attachments::remove_if_unnamed(&dir, &guard.conn, &keep, &storage_id)?;
         }
         Ok(())
     }
