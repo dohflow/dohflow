@@ -911,20 +911,21 @@ staged until the whole container has been checked.** The order:
 
 1. **Authenticate from the credential alone** (`Unauthorized`, `DeviceRevoked`, and
    any `Forbidden` the credential itself decides).
-2. **The authorization that needs the vault,** as in section 4.9, step 3:
+2. **Forms.** The body is the empty JSON object (`MalformedRequest`, section 2.2).
+3. **The authorization that needs the vault,** as in section 4.9, step 3:
    `Forbidden`, then **the halt gate** (`ReplicaHalted`).
-3. **The upload exists, or this is a retry.** A snapshot already staged from this
+4. **The upload exists, or this is a retry.** A snapshot already staged from this
    upload answers `200` with its original result; no upload and no such snapshot is
    `UploadNotFound`.
-4. **Writes permitted?** `WritesSuspended`.
-5. **All parts received:** otherwise `UploadIncomplete` with `details.next_part`.
-6. **The container.** The assembled length must equal `size` and its SHA-256 must
+5. **Writes permitted?** `WritesSuspended`.
+6. **All parts received:** otherwise `UploadIncomplete` with `details.next_part`.
+7. **The container.** The assembled length must equal `size` and its SHA-256 must
    equal `sha256`; otherwise `MalformedObject`, and the server **discards the
    upload** (the client begins again): a mismatch means the bytes sent are not the
    container that was declared, and no part of it is kept.
-7. **The epoch.** The header's `key_epoch` is checked again against the epoch in
+8. **The epoch.** The header's `key_epoch` is checked again against the epoch in
    force now, since it can have changed during a long upload: `EpochRejected`.
-8. **Stage** the snapshot, turn the reservation of `size` into stored bytes, and
+9. **Stage** the snapshot, turn the reservation of `size` into stored bytes, and
    answer `201`.
 
 **`abortSnapshotUpload`:** `DELETE /vaults/{vault_id}/snapshots/{snapshot_id}/uploads`.
