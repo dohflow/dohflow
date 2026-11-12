@@ -66,7 +66,8 @@ The key words MUST, MUST NOT, SHOULD and MAY are used as in
 - `{vault_id}`, `{device_id}` and `{snapshot_id}` are UUIDs in lowercase,
   hyphenated text. `{artifact_id}` is a `sync_artifact_id` as 64 lowercase hex
   characters. `{part_number}` is an unsigned decimal in the syntax of section 2.2
-  (`0|[1-9][0-9]*`), from `1` to `10000`.
+  (`0|[1-9][0-9]*`), from `1` to `10000`. Path forms are checked by routing before
+  the credential is read; a malformed path is `MalformedRequest`.
 - Request and response bodies are `application/json` (UTF-8) except where an
   operation says `application/octet-stream`, which carries one container exactly
   as defined in `vault-format.md` (`DFSY` for envelopes and snapshots, `DFSA`
@@ -882,8 +883,9 @@ Parts are sent in order, one at a time. Response `201`, or `200` for a retry:
 
 1. **Authenticate from the credential alone** (`Unauthorized`, `DeviceRevoked`, and
    any `Forbidden` the credential itself decides).
-2. **Forms.** A `{part_number}` that is not a decimal in `1` to `10000` is
-   `MalformedRequest`.
+2. **Forms.** A body that is not `application/octet-stream`, or that declares no
+   length, is `MalformedRequest`. (A `{part_number}` that is not a decimal in `1`
+   to `10000` never gets here: routing refuses it first, section 2.1.)
 3. **The authorization that needs the vault,** as in section 4.9, step 3:
    `Forbidden`, then **the halt gate** (`ReplicaHalted`).
 4. **The upload exists** for this `snapshot_id`: `UploadNotFound` (never begun,
@@ -1466,7 +1468,7 @@ production deploy).
 | 2026-11-06 | `personal-cfo-v98vd` (AC30) | pre-release amendment | Section 2.4's list of operations that accept an account credential before the genesis is installed named `stageSnapshot`, `putArtifact` and `installEpoch` only, though 4.13 already gave the four operations that stage in parts the account credential. The list now names those four and `stageSnapshotClosure`. This corrects 2.4 to agree with 4.13 and with the operation table (`auth` is `account/device` for each); it changes no request, response or code. |
 | 2026-11-06 | `personal-cfo-v98vd` (AC30) | addition | Operations `stageSnapshotClosure` and `getSnapshotClosure` (4.14), which stage and return a snapshot's closure as a binary sidecar of up to 2^20 ids; the halt gate (4.12) also applies to `stageSnapshotClosure`; the response member `artifact_count` of `getLatestSnapshot`. |
 | 2026-11-06 | `personal-cfo-v98vd` (AC30) | pre-release amendment | A snapshot's closure may hold up to 2^20 ids, where 4.4 and 4.9 allowed the 4096 of `max_artifact_manifest_ids`: a closure of more than 4096 ids is staged first and the `publishSnapshot` or `installEpoch` request then carries an empty `artifact_manifest` (a request member's meaning); `getLatestSnapshot` returns `artifact_manifest` as `null` for such a closure; `ArtifactMissing` lists at most the first 4096 missing ids; and section 7.1 gains the rows `max_snapshot_closure_ids` and `max_snapshot_closure_bytes`. |
-| 2026-11-11 | `personal-cfo-v98vd` | pre-release amendment | The decision order of the operations that stage a snapshot (`stageSnapshot` 4.9, `beginSnapshotUpload`, `putSnapshotPart` and `completeSnapshotUpload` 4.13, `stageSnapshotClosure` 4.14), and where the halt gate of 4.12 runs: authenticate from the credential alone, then the checks that need no vault state, then the `Forbidden` that needs the vault and the halt gate, then the rest. 4.13 and 4.14 had put the vault-side `Forbidden` and the halt gate before the checks that need no vault state; 4.9 had no explicit order. No request, response, status or code changed. |
+| 2026-11-11 | `personal-cfo-v98vd` | pre-release amendment | The decision order of the operations that stage a snapshot (`stageSnapshot` 4.9, `beginSnapshotUpload`, `putSnapshotPart` and `completeSnapshotUpload` 4.13, `stageSnapshotClosure` 4.14), and where the halt gate of 4.12 runs: authenticate from the credential alone, then the checks that need no vault state, then the `Forbidden` that needs the vault and the halt gate, then the rest. The common rule of 2.1, that routing checks the path forms before the credential is read, is now stated once and not per operation. 4.13 and 4.14 had put the vault-side `Forbidden` and the halt gate before the checks that need no vault state; 4.9 had no explicit order. No request, response, status or code changed. |
 
 **Why `voids` is a pre-release amendment and not an addition.** A response member
 that a client may ignore is an addition. `voids` cannot be ignored: a void takes a
