@@ -436,6 +436,36 @@ fn an_unlink_keeps_a_blob_the_base_image_names_and_removes_it_otherwise() {
     );
 }
 
+/// A file only the base image names is not an orphan: the fresh path refuses to overwrite it under a
+/// new content key (a local fault, nothing written), and the blob stays as the base's row needs it.
+#[test]
+fn a_file_only_the_base_image_names_is_never_overwritten_by_a_fresh_materialization() {
+    let (service, key) = (FakeService::default(), key_of(1, 0));
+    let vault = Vault::new();
+    let entity = uuid::Uuid::from_bytes([0x44; 16]);
+    let id = vault.worker.import_attachment(PDF, None, None).unwrap();
+    vault
+        .worker
+        .link_attachment(id, "transaction", entity)
+        .unwrap();
+    vault.worker.initialize_base_image(0).unwrap();
+    vault
+        .worker
+        .unlink_attachment(id, "transaction", entity)
+        .unwrap();
+    let before = fs::read(vault.blob_path(PDF)).unwrap();
+    let (artifact, hash, artifact_id) = artifact(&service, &key, 0x51, ATT, PDF);
+    assert!(matches!(
+        vault.worker.materialize_attachment(1, &hash, &artifact),
+        Err(MaterializeError::BlobInBaseImage)
+    ));
+    assert_eq!(fs::read(vault.blob_path(PDF)).unwrap(), before, "untouched");
+    assert_eq!(
+        lookup(&vault.worker.read_connection().unwrap(), 1, &artifact_id).unwrap(),
+        None
+    );
+}
+
 /// R3: a holder whose blob does not decrypt to the bytes, or whose blob is missing, is a local fault:
 /// nothing is written and the blob and the holder are left as they are.
 #[test]

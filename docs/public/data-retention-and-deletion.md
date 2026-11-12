@@ -48,7 +48,7 @@ expiry or cleanup of your records. In particular:
   its own key. Removing the last link to a document destroys its key, which makes
   the stored bytes unreadable (crypto-shredding, ADR 0023). A file attached in
   more than one place, including on another device, keeps its bytes until its
-  last link is removed.
+  last link is removed. A backup made before you removed it still holds it.
 - **Logs.** DohFlow writes no log file. Its redacted log lines go to the
   process's standard output and are never stored by the app. The in-app
   diagnostics card keeps a short in-memory record that is dropped when you lock
@@ -69,12 +69,14 @@ Removing something in DohFlow does one of a few different things:
 | A bill or income source | You choose **Archive** (kept and restorable from the Archived list) or **Remove** (behind its own confirmation). A removed item disappears everywhere in DohFlow at once and its forecast effect stops. DohFlow offers **Undo** for about ten seconds afterward; after that there is no screen for bringing it back. It is hidden, not erased: the record stays inside the vault file and in every backup made from it. |
 | A recurring transfer | **Remove** works the same way: it disappears everywhere in DohFlow, future projections stop, and transfers already posted are untouched. Undo is offered for about ten seconds, and the record stays inside the vault file and your backups. |
 | A scenario | **Delete** (behind its own confirmation) takes the scenario and its changes out of every view in DohFlow, with no screen for bringing it back. A scenario you never applied does not touch your real forecast. If you had applied it, its changes stay in your forecast, and it stays listed under “Deleted, but still applied” with an Undo until you take them out. A deleted scenario is hidden, not erased: it stays inside the vault file and in every backup made from it. **Archive** keeps a scenario you want to set aside, and you can restore it. |
-| A document attached to a transaction | Removing the last link crypto-shreds it (above). |
+| A document attached to a transaction | Removing the last link crypto-shreds it (above), except in backups made before you removed it. |
 | An entire vault | **Permanent.** It wipes the vault's files from disk, including everything that was hidden inside it. The only way back is restoring a backup you made beforehand. |
 
 Taking something out of view is not the same as erasing it. Items you remove or
 delete in the rows above stay inside the vault file, and inside every backup made
-from it, until you delete the whole vault and those backups.
+from it, until you delete the whole vault and those backups. A removed document
+is the exception inside the vault (its key is destroyed, as above), but a backup
+made before you removed it still holds it.
 
 ## Backups on your Mac
 

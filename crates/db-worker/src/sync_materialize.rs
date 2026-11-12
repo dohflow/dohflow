@@ -46,6 +46,12 @@ pub enum MaterializeError {
     /// staging are left as they are.
     #[error("the blob this device already stores for these bytes does not match them")]
     BlobConflict,
+    /// A file with the name these bytes get is named only by the base image (the rollback target of a
+    /// rebase): a row deleted here since the base was taken. It is not an orphan to overwrite under a
+    /// new content key, which would leave the base's row unreadable after a rollback. A local fault,
+    /// nothing is written; reusing it under the base's own crypto fields is 5ymg8.6's to build.
+    #[error("the blob for these bytes is kept for the base image")]
+    BlobInBaseImage,
     /// A row or staging names the blob these bytes get, and the file is not there. A local fault;
     /// nothing is written (a blob is written once, under its holder's key, and never re-encrypted).
     #[error("the blob this device already stores for these bytes is missing")]
@@ -281,6 +287,11 @@ impl DbWorker {
         // above, and this artifact's own was handled), so a file here is an orphan of an attempt
         // that died before its mapping was recorded: it is replaced. (A file only the base image
         // names is not told apart here: that is unreachable until a rebase can restore a row, 5ymg8.6.)
+        if dir.join(storage_id.as_str()).exists()
+            && self.blob_keep()?.image.contains(storage_id.as_str())
+        {
+            return Err(MaterializeError::BlobInBaseImage);
+        }
         attachments::write_blob(&dir, &storage_id, &local.blob.ciphertext)?;
         let staged = StagedAttachment {
             storage_id: storage_id.as_str().to_owned(),
