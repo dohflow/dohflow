@@ -13,7 +13,9 @@
 //! written only where the vault's class-1 state equals the accepted state at that position:
 //!
 //! * [`apply_delta`], by the transaction that applies an accepted envelope, **after** the command's
-//!   writes (the prune must see post-apply state);
+//!   writes (the prune must see post-apply state), and by the push path, which brings the table to
+//!   the accepted head in the transaction that empties the outbox (an own envelope is not applied
+//!   when its push is accepted);
 //! * [`seed`], at bootstrap;
 //! * [`rebuild_for_epoch`], at a key epoch.
 //!
