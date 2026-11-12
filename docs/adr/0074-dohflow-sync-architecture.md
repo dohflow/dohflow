@@ -1395,8 +1395,17 @@ records the migration's safety rule. It changes no decision above. Nothing here 
    - `kind TEXT NOT NULL`: `'skipped'`, `'import_anyway'`, `'provider_revision'`, `'file_row_conflict'`
      or `'restore_question'`.
    - `status TEXT NOT NULL`: `'pending'` or `'resolved'`.
-   - `generation INTEGER NOT NULL DEFAULT 1`, `detail TEXT`, `created_at TEXT NOT NULL`,
-     `decided_at TEXT`.
+   - `generation INTEGER NOT NULL DEFAULT 1`.
+   - `outcome TEXT`: `'restored'`, `'dismissed'` or `'import_anyway'`. It is non-NULL exactly when
+     `kind = 'restore_question'` and `status = 'resolved'`; a `CHECK` ties the three columns together.
+     It records which answer won, because `status = 'resolved'` alone cannot tell a restore from a
+     claim. `kind` is never rewritten, so `disposition_id`, which is derived from the subject and the
+     kind, stays stable.
+   - `claimed_source_batch_id BLOB`: the claimant's batch, as its logical class-1b id. It is non-NULL
+     exactly when `outcome = 'import_anyway'`.
+   - `detail TEXT` is for display and audit only. **Apply never reads it.**
+   - `created_at TEXT NOT NULL` and `decided_at TEXT` are `meta.issued_at`, never the clock (ADR 0013-A
+     section 10(d)).
 
    Neither table references a class-3 row, and no staged id appears in either. A void keeps the identity
    row (Addendum B item 5): it records that the row was imported, not that it is active.
@@ -1456,7 +1465,9 @@ records the migration's safety rule. It changes no decision above. Nothing here 
      each carries the generation it answers: apply does nothing for a stale generation or a question
      that is no longer pending, so a confirm and a dismiss from two devices settle as whichever applies
      first. A later re-upload of a file whose question was dismissed is a fresh, explicit action: the
-     question opens again at the next generation. A device that holds a staged batch of the file has a third answer (item 9).
+     question opens again at the next generation, and reopening clears `outcome`,
+     `claimed_source_batch_id` and `decided_at`. A device that holds a staged batch of the file has a
+     third answer (item 9).
    - **A restore commits fresh copies and leaves the voided originals voided.** The ledger stays
      append-only, and the result is what today's silent restore produces (new ledger rows; the old ones
      stay voided). Confirm's own apply reads only class-1 rows, so it is deterministic on every device,
@@ -1521,10 +1532,13 @@ records the migration's safety rule. It changes no decision above. Nothing here 
      again). Other devices offer confirm and dismiss only. A re-upload while the question is pending
      does not raise the generation.
    - (b) **A claim, then the rows.** The answer is first a **claim** command that resolves the question
-     as `import_anyway` and carries `(question id, generation, source_batch_id)`, with a materialized
-     payload. Each row commit of the re-upload then carries `(question id, generation)` and does
-     nothing unless the question was resolved `import_anyway` for that row's own batch. The generation
-     rule of item 5 settles every race: a restore or dismiss applied between the claim and the rows
+     with `outcome = 'import_anyway'` and sets `claimed_source_batch_id`; it carries
+     `(question id, generation, source_batch_id)`, with a materialized payload. Each row commit of the
+     re-upload then carries `(question id, generation)`, and its **row gate** reads `status`, `outcome`,
+     `generation` and `claimed_source_batch_id` from the one question row. It does nothing unless the
+     question is resolved, the outcome is `import_anyway`, the generation matches and the claimed batch
+     is that row's own batch. A confirm sets `outcome = 'restored'` and a dismiss `'dismissed'`, so a
+     restore win and a claim win are told apart. The generation rule of item 5 settles every race: a restore or dismiss applied between the claim and the rows
      makes the rows no-ops; two devices that both claim commit only the first claimant's batch; a
      restore that wins makes the claim and every row no-ops.
    - (c) **The claimed batch supersedes the identities.** For a row of the claimed batch, apply commits
@@ -1539,7 +1553,8 @@ records the migration's safety rule. It changes no decision above. Nothing here 
      finds active identities, so it is "already imported", with no question. A batch that loses the race
      (a restore or dismiss won, or another device's claim) ends discarded with nothing committed, and its
      device shows that the question was answered elsewhere.
-   - (e) **The audit line and the disposition's `detail` name the winning batch.**
+   - (e) **The audit line and the disposition's `detail` name the winning batch.** The gate reads
+     `claimed_source_batch_id`, never `detail`.
    The wording of the third answer belongs to the design route, like item 5's.
 
 ## Linked beads
