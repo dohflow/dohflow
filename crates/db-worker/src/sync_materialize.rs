@@ -404,8 +404,10 @@ impl core::fmt::Debug for SyncNotice {
     }
 }
 
-fn load_batch(
-    tx: &rusqlite::Transaction<'_>,
+/// The carried columns of the batch `id`, as the receiver compares them and the producer publishes
+/// them (one reader for both: a produced batch and a materialized one are the same rows).
+pub(crate) fn load_batch(
+    tx: &rusqlite::Connection,
     id: &[u8; 16],
 ) -> Result<Option<BatchRow>, MaterializeError> {
     Ok(tx
@@ -433,8 +435,9 @@ fn load_batch(
         .optional()?)
 }
 
-fn load_runs(
-    tx: &rusqlite::Transaction<'_>,
+/// The carried columns of the parser runs of `batch`, ascending by id.
+pub(crate) fn load_runs(
+    tx: &rusqlite::Connection,
     batch: &[u8; 16],
 ) -> Result<Vec<RunRow>, MaterializeError> {
     let mut stmt = tx.prepare(
@@ -459,8 +462,9 @@ fn load_runs(
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-fn load_records(
-    tx: &rusqlite::Transaction<'_>,
+/// The carried columns of the records of `batch`, ascending by id.
+pub(crate) fn load_records(
+    tx: &rusqlite::Connection,
     batch: &[u8; 16],
 ) -> Result<Vec<RecordRow>, MaterializeError> {
     let mut stmt = tx.prepare(

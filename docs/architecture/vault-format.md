@@ -273,6 +273,7 @@ synthetic no-app recovery test before any such public claim.
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
 - `spec-version = 45` (personal-cfo-1cltt.7, slice B; provisional: it settles at merge) replaces the sentence of C.9 "Bounds by object type" that said a client refuses a closure above the service's advertised maximum until the service accepts a closure sidecar of that size: a closure of more than 4096 ids is staged with `stageSnapshotClosure` and the request carries an empty list (sync-service-protocol 4.14), and a bootstrap reads a closure back with `getSnapshotClosure` and checks its commitment itself. No wire layout, write-set rule, vector, engine_version or schema change.
+- `spec-version = 44` (personal-cfo-1cltt.8; provisional: it settles at merge): a replica derives its class-2 state from the class-1 rows it installed, before the base is captured; every cursor and watermark is in the device's own op_seq space; transaction lists order by the sort key, then the creating command id, then the transaction id, then the account id. No wire layout, write-set rule, vector, engine_version or schema change.
 - `spec-version = 43` (personal-cfo-1cltt.5, slice C, schema version 73; provisional: it settles at merge) records, in the device-local `sync_genesis` row, **which snapshot the genesis was and the SHA-256 of the container this device sent for it** (`genesis_snapshot_id` and `genesis_container_sha256`), and adds the device-local `operation_log.issued_at` (the instant a command was issued, Unix microseconds, written by `apply` on every row, Sync on or off; NULL before the column), which the genesis-gap replay reads because a command taken before Sync was armed has no outbox row to hold it. The identity columns are written in the transaction that records the genesis as `Published` and before the saved container is dropped (C.8 "The genesis snapshot's id and a resume"): the saved container is the only other place either lives. A bootstrap that reconciles the genesis gap fetches the genesis snapshot and checks it against these, so it never trusts the service's copy of what this device published. A row recorded by an earlier build has neither (NULL). No wire layout, write-set rule, vector or `engine_version` change.
 - `spec-version = 41` (personal-cfo-bxsbz.5, schema version 72) lets a `Bound` `sync_outbox` row carry no
   result. The accepted-envelope record (C.10) already allows an accepted command with no `result_ref`
@@ -2232,13 +2233,30 @@ ledger is keyed by position in it, not by id). A snapshot may record one id at t
 entry.
 
 **Becoming the vault.** The replica is built at `<vault>.bootstrapping` beside the vault path, under
-the vault's lease: the install, the ledger and the first base image (`sync_base` `Ready` at `root`,
-credentials stripped) all land there. Class-2 tables are never shipped, so a new replica starts with
-them empty. Only then is the file
+the vault's lease: the install, the ledger, the derived class-2 state and the first base image
+(`sync_base` `Ready` at `root`, credentials stripped) all land there. Only then is the file
 synced and renamed to the vault path and the directory synced. A vault that exists therefore always has
 its base, so no command can be taken, unrecorded, between the install and the base. A start that finds
 a `<vault>.bootstrapping` file discards that file (and its journal files) and begins again; it also discards `sync/base.db` when, and only when, no vault exists at the path and that file is the base the abandoned replica recorded (its `Ready` digest equals the file's), and touches no other base image; a vault
 file that already exists is never replaced.
+
+**Class-2 state on a replica** (`personal-cfo-1cltt.8`). Class 2 is never shipped, so the replica
+derives it from the class-1 rows it installed, once, before the base is captured: the transaction
+display read model, the commitments, the recurring instances and the Money Inbox, by the same full
+rebuilds an origin and a rebase run (the forecast tables are written by the forecast itself, from the
+same class-1 inputs). No derivation reads `operation_log` to decide which rows exist, because a
+replica's log holds no row for anything that came in its snapshot. Every cursor and watermark
+(`projection_cursors.last_applied_op_seq`, `transaction_display_rows_read_model.last_projected_op_seq`,
+the commitments and Money Inbox log head, `forecast_input_snapshots.ledger_cutoff_op_seq`) is in the
+device's own `op_seq` space on every device and never a Sync position: a full rebuild sets each cursor it
+maintains to the device's current `MAX(op_seq)` (0 on an empty log), and a forecast input snapshot records
+`MAX(op_seq)` when it is captured; the incremental display path then processes the
+operations the device logs afterwards, which are every envelope it applies and every command it runs. A
+row's `last_projected_op_seq` is the device's own log position for the transaction's creating command,
+0 where it holds none. Transaction lists order by the sort key, then the creating command's id (a
+UUIDv7, so command order), then the transaction id, then the account id (a transfer's two legs are
+on different accounts, so the last key separates them): class-1 data only, so every device orders the same
+rows the same way.
 
 ## C.9 Artifact transport
 
