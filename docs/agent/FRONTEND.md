@@ -502,6 +502,13 @@ on a desktop window, and a test proves each.
   grow about one eighth as fast as the text (4px at the default system size, about 8.5px at the
   largest), because Tailwind's rem spacing would otherwise triple with the type and leave a sliver of a
   column. Do not size anything that must stay a fixed physical size from spacing utilities.
+  The gutters nest (the screen, the card, a callout) and each grows a little with the type, so together
+  they can still leave a sliver of a column at the largest size. On the narrow card they shrink: `main`
+  is the `@container`, the screen's padding sits on an element inside it and drops to
+  `compact:@max-[15rem]:p-1`, and the card's header and content and any callout trim their horizontal
+  padding with `compact:@max-[15rem]:px-2`. A container query styles only the container's descendants,
+  never the container itself, so responsive padding never goes on the `@container` element. A
+  normal-size card and the desktop keep their gutters, and type and copy are never reduced to make room.
 - **Reflow, not clipping.** At the largest text size a row wraps and a control grows; meaning is never
   clipped, truncated to an ellipsis, or hidden. Prefer `min-h-*` and wrapping to a fixed `h-*` on
   anything that holds text (a form field that holds text takes `h-auto min-h-10` at its call site; the shared
