@@ -304,10 +304,11 @@ describe("the shared Dialog (personal-cfo-4d8.6.1)", () => {
   describe("a sheet that does not fit (largest text size, long name; slice B, Studio's review)", () => {
     // jsdom has no layout: report the heights a phone at the largest text size would give. The header and the
     // footer are tall (a nine-line title, two stacked actions); the sheet's cap is 812.
-    function withHeights(heights: { header: number; footer: number }) {
+    function withHeights(heights: { header: number; footer: number; body?: number }) {
       return vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
         if (this.dataset.testid === "header") return heights.header;
         if (this.dataset.testid === "footer") return heights.footer;
+        if (this.dataset.testid === "body") return heights.body ?? 0;
         return 0;
       });
     }
@@ -351,7 +352,8 @@ describe("the shared Dialog (personal-cfo-4d8.6.1)", () => {
     });
 
     it("leaves a sheet that fits exactly as it was: no data-cramped, the body keeps its own scrolling", () => {
-      const spy = withHeights({ header: 60, footer: 80 });
+      // A very tall body must not count against itself: the measure is the OTHER children's heights (04d's survivor).
+      const spy = withHeights({ header: 60, footer: 80, body: 5000 });
       try {
         render(<Sheet />);
         expect(screen.getByRole("dialog")).not.toHaveAttribute("data-cramped");
@@ -360,6 +362,20 @@ describe("the shared Dialog (personal-cfo-4d8.6.1)", () => {
         expect(body).toHaveClass("min-h-0", "flex-1", "overflow-y-auto");
       } finally {
         spy.mockRestore();
+      }
+    });
+
+    it("focuses the safe action without scrolling the sheet, so a cramped sheet opens on its title", () => {
+      const focus = vi.spyOn(HTMLElement.prototype, "focus");
+      try {
+        render(<Harness focusConfirm />);
+        openDialog();
+        const confirm = screen.getByRole("button", { name: "Undo scenario" });
+        const calls = focus.mock.calls.map((args, index) => ({ args, target: focus.mock.contexts[index] }));
+        expect(calls).toContainEqual({ args: [{ preventScroll: true }], target: confirm });
+        expect(document.activeElement).toBe(confirm);
+      } finally {
+        focus.mockRestore();
       }
     });
 
