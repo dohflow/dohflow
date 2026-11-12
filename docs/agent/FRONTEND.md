@@ -520,6 +520,7 @@ on a desktop window, and a test proves each.
   closed value is cut off sideways at that size ("US I"): on a narrow card show the selected label as
   plain text under it (`hidden compact:@max-[15rem]:block`, `aria-hidden`, because the select already
   announces its own value) and keep the native control for choosing; the primitive itself changes with the touch-target slice.
+  On compact, a shared sheet whose title and footer would leave its body less than three lines of text (the largest text size with a long name) scrolls as a whole instead of pinning them (`data-cramped`, `COMPACT_SHEET_CRAMPED` in `src/lib/sheet.ts`), and a Dialog footer's buttons may wrap (`COMPACT_FOOTER_WRAPS`), so nothing in a sheet is clipped. A sheet that fits keeps its pinned title and footer and its scrolling body, and the desktop is unchanged.
 - **Touch targets: a fixed 44 pt floor.** On a compact screen every control a finger can press is at
   least 44 by 44 points. The floor lives in one place, `globals.css`, in the compact media query and
   OUTSIDE every cascade layer: `min-height: 44px` on `button`, `[role="button"]`, `[role="menuitem"]`,
