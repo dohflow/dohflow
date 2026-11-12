@@ -434,6 +434,11 @@ fn a_re_bootstrap_clears_the_apply_semantics_forks_by_evidence_and_never_the_oth
             honored_at: 9,
             offered_at: 12,
         },
+        HaltEvidence::ProtocolFork {
+            command_id: [4; 16],
+            local_digest: Some([1; 32]),
+            other_digest: Some([2; 32]),
+        },
     ] {
         let halted = SyncStatus::Halted(evidence);
         assert!(
@@ -748,4 +753,26 @@ fn whenever_a_stop_accepts_a_snapshot_it_is_a_valid_root() {
         }
     }
     assert!(accepted > 0, "the grid must reach the permit");
+}
+
+// -- a protocol fork halts and keeps both digests ----------------------------------------------------------
+
+#[test]
+fn a_command_identity_bound_to_two_envelopes_halts_with_both_digests_and_the_command() {
+    let mut status = SyncStatus::Healthy;
+    let event = status.observe_protocol_fork([9; 16], Some([1; 32]), Some([2; 32]));
+    let evidence = HaltEvidence::ProtocolFork {
+        command_id: [9; 16],
+        local_digest: Some([1; 32]),
+        other_digest: Some([2; 32]),
+    };
+    assert_eq!(event, Some(SyncEvent::Halted(evidence)));
+    assert_eq!(status, SyncStatus::Halted(evidence));
+    assert!(!status.can_apply(0) && !status.can_push());
+    // A halt absorbs a second report: the first evidence is the one that is kept.
+    assert_eq!(
+        status.observe_protocol_fork([8; 16], None, Some([3; 32])),
+        None
+    );
+    assert_eq!(status, SyncStatus::Halted(evidence));
 }
