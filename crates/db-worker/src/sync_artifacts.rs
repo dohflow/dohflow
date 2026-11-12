@@ -391,8 +391,10 @@ pub enum CreateAttachmentError {
 
 /// Create the class-4 `attachments` row for `attachment_id` from the crypto fields staged for
 /// `(key_epoch, artifact_id)` and clear the staging, **in the caller's transaction** (the attach
-/// command's `apply`): afterwards the `attachments` row is the only long-lived copy of the key
-/// material (C.9, B.2 `sync_artifacts`). `created_at` is the caller's, so a replay is deterministic.
+/// command's `apply`): afterwards the `attachments` row holds the key material (C.9, B.2
+/// `sync_artifacts`); a row may share its blob with another, each holding a copy of the same wrapped
+/// key (spec 48), so there is no check that another row names the blob. `created_at` is the caller's,
+/// so a replay is deterministic.
 ///
 /// # Errors
 /// [`CreateAttachmentError`]; the caller rolls the transaction back, which leaves the staging.

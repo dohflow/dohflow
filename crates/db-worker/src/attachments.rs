@@ -8,9 +8,11 @@
 //! **No plaintext attachment bytes ever leave the vault.** Import encrypts in
 //! memory and writes ciphertext via a `.tmp` sibling *inside* `blobs/` followed
 //! by an atomic rename — the OS temp dir is never used. Deletion is a
-//! crypto-shred: dropping the metadata row removes the only wrapped copy of the
-//! content key, so the blob ciphertext is permanently undecryptable whether or
-//! not the file is reclaimed.
+//! crypto-shred: dropping the metadata row removes that row's wrapped copy of the
+//! content key. Two attachments may share one blob (the same bytes attached on two
+//! devices, AC9), each row holding a wrapped copy of the one content key, so the
+//! blob stays readable while any row or staging names it and is permanently
+//! undecryptable, and its file removed, with the last.
 //!
 //! This module holds the SQL + filesystem helpers; the `DbWorker` methods that
 //! orchestrate them (supplying the DEK, the writer lock, and the vault path) live
@@ -372,9 +374,9 @@ pub(crate) fn delete_link(
     Ok(removed)
 }
 
-/// Crypto-shred: delete the metadata row (dropping the only wrapped content key)
-/// and return its `storage_id` so the caller can unlink the now-undecryptable
-/// blob. Returns `None` if the row was already gone.
+/// Crypto-shred: delete the metadata row (dropping its wrapped content key) and return its
+/// `storage_id`, so the caller can remove the blob if nothing else names it
+/// ([`remove_if_unnamed`]). Returns `None` if the row was already gone.
 pub(crate) fn take_storage_id_and_delete(
     conn: &Connection,
     id: AttachmentId,

@@ -3483,9 +3483,10 @@ impl DbWorker {
     }
 
     /// Remove one link from a domain entity to an attachment. When the **last**
-    /// link is removed the attachment is crypto-shredded: the metadata row (the
-    /// only wrapped content key) is deleted — making the blob permanently
-    /// undecryptable — and the file is then unlinked.
+    /// link is removed the attachment is crypto-shredded: the metadata row (its
+    /// wrapped content key) is deleted, and the file is unlinked once no other row or
+    /// staging, no base image and no swap or rebase still names it (two attachments
+    /// may share one blob, AC9: it is unreadable only when the last name is gone).
     ///
     /// # Errors
     /// [`DbError`] if the worker is unavailable or a write fails.

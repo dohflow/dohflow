@@ -46,7 +46,9 @@ expiry or cleanup of your records. In particular:
   applied keeps its changes in your forecast until you undo them.
 - **Attachments.** A document attached to a transaction is stored encrypted under
   its own key. Removing the last link to a document destroys its key, which makes
-  the stored bytes unreadable (crypto-shredding, ADR 0023).
+  the stored bytes unreadable (crypto-shredding, ADR 0023). A file attached in
+  more than one place, including on another device, keeps its bytes until its
+  last link is removed.
 - **Logs.** DohFlow writes no log file. Its redacted log lines go to the
   process's standard output and are never stored by the app. The in-app
   diagnostics card keeps a short in-memory record that is dropped when you lock

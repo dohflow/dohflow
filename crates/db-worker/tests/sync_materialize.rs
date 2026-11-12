@@ -479,20 +479,6 @@ fn a_damaged_or_missing_holder_blob_is_a_local_fault_that_writes_nothing() {
     fs::write(&path, &original).unwrap();
 }
 
-/// Two attachments with the same bytes published under two addresses.
-fn artifact_pair(
-    service: &FakeService,
-    key: &vault_crypto::sync_envelope::EpochKey,
-    address: u8,
-    attachment: [u8; 16],
-) -> (
-    vault_crypto::sync_artifact::OpenedArtifact,
-    [u8; 32],
-    [u8; 32],
-) {
-    artifact(service, key, address, attachment, PDF)
-}
-
 #[test]
 fn a_failed_record_removes_the_blob_it_wrote_and_leaves_no_mapping() {
     let vault = Vault::new();

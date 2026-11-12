@@ -2504,8 +2504,9 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     //   crypto fields (storage id, wrapped content key and nonces, algorithm, size, MIME type)
     //   from the moment the bytes are materialized until the attach command's `apply` creates the
     //   class-4 `attachments` row from them. The same transaction then sets them to NULL, so the
-    //   `attachments` row is the only long-lived copy of the key material. While staged they are
-    //   re-wrapped and re-addressed by a key rotation, like an `attachments` row (ADR 0083).
+    //   `attachments` row is the only long-lived copy of the key material of that artifact (several
+    //   rows may hold or stage one blob, each with a copy of its key material: spec 48). While staged
+    //   they are re-wrapped and re-addressed by a key rotation, like an `attachments` row (ADR 0083).
     //   The CHECKs tie them to an attachment, all present or all absent.
     Migration {
         version: 70,
