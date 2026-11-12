@@ -24,6 +24,7 @@ import {
 } from "./balanceSign";
 import { BALANCE_OUTCOME_UNKNOWN, BALANCE_SAVED_UNCONFIRMED } from "./balanceMessages";
 import { NewLoanDialog } from "./NewLoanDialog";
+import { COMPACT_DRAWER_CLEARS_CHROME } from "@/lib/sheet";
 
 /// The account-type (cashflow-role) options, in the DTO enum the create command takes.
 const ACCOUNT_TYPES: { value: CreateAccountInput["cashflow_role"]; label: string }[] = [
@@ -472,7 +473,7 @@ export function AccountEditorDrawer({
     <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true"
       aria-label={exists ? `Edit ${base.name}` : "New account"}>
       <div className="absolute inset-0 bg-foreground/40" aria-hidden onClick={requestClose} />
-      <div className="relative flex h-full w-full max-w-2xl flex-col border-l bg-background shadow-xl">
+      <div className={`relative flex h-full w-full max-w-2xl flex-col border-l bg-background shadow-xl ${COMPACT_DRAWER_CLEARS_CHROME}`}>
         <div className="flex items-center justify-between border-b px-5 py-4">
           <h2 className="font-semibold">{exists ? "Edit account" : "New account"}</h2>
           <button

@@ -13,6 +13,14 @@ import STYLESHEETS from "virtual:tailwind-sheets";
 
 import { COMPACT_QUERY } from "@/lib/compact";
 import { SAFE_AREA_PADDING } from "@/lib/safeArea";
+import {
+  COMPACT_BODY_CRAMPED,
+  COMPACT_DRAWER_CLEARS_CHROME,
+  COMPACT_DRAWER_PADDED_6,
+  COMPACT_FOOTER_WRAPS,
+  COMPACT_SHEET,
+  COMPACT_SHEET_CRAMPED,
+} from "@/lib/sheet";
 
 async function compiled(candidates: string[]): Promise<string> {
   const compiler = await compile(globalsCss, {
@@ -30,6 +38,25 @@ async function compiled(candidates: string[]): Promise<string> {
 /// The text of every `@supports (-webkit-touch-callout: none) { … }` block, and the CSS with them removed.
 function splitIosBlocks(css: string): { blocks: string[]; rest: string } {
   const opener = "@supports (-webkit-touch-callout: none) {";
+  const blocks: string[] = [];
+  let rest = css;
+  for (let start = rest.indexOf(opener); start !== -1; start = rest.indexOf(opener)) {
+    let depth = 0;
+    let end = start + opener.length - 1;
+    for (; end < rest.length; end += 1) {
+      if (rest[end] === "{") depth += 1;
+      if (rest[end] === "}" && --depth === 0) break;
+    }
+    blocks.push(rest.slice(start, end + 1));
+    rest = rest.slice(0, start) + rest.slice(end + 1);
+  }
+  return { blocks, rest };
+}
+
+
+/// The text of every `@media <COMPACT_QUERY> { … }` block, and the CSS with them removed.
+function splitCompactBlocks(css: string): { blocks: string[]; rest: string } {
+  const opener = `@media ${COMPACT_QUERY} {`;
   const blocks: string[] = [];
   let rest = css;
   for (let start = rest.indexOf(opener); start !== -1; start = rest.indexOf(opener)) {
@@ -133,4 +160,138 @@ describe("compact layout seams as compiled (personal-cfo-i93n3.25)", () => {
       .map((file) => file.path);
     expect(offenders).toEqual([]);
   });
+  describe("touch targets (slice B)", () => {
+    it("the 44px floor is declared once, inside the compact query, in px", async () => {
+      const css = await compiled(["p-4"]);
+      const { blocks, rest } = splitCompactBlocks(css);
+      // The `compact:` variant also compiles to this query, but only for candidates; here none use it.
+      const floor = blocks.filter((block) => block.includes("min-height: 44px"));
+      expect(floor).toHaveLength(1);
+      expect(floor[0]).toMatch(/min-width:\s*44px/);
+      // A fixed floor, never spacing utilities: --spacing is below 4px at the smaller system text sizes.
+      expect(floor[0]).not.toContain("--spacing");
+      expect(floor[0]).not.toMatch(/min-(height|width):\s*(calc|var)\(/);
+      // Nothing outside the compact query raises a control to 44px, so a desktop window is unchanged.
+      expect(rest).not.toMatch(/min-(height|width):\s*44px/);
+      expect(rest).not.toMatch(/input\[type="checkbox"\]/);
+    });
+
+    it("the floor covers every kind of control a finger can press", async () => {
+      const css = await compiled(["p-4"]);
+      const block = splitCompactBlocks(css).blocks.find((b) => b.includes("min-height: 44px")) ?? "";
+      for (const selector of ["button", '[role="button"]', '[role="menuitem"]', "summary", "select", "textarea"]) {
+        expect(block, selector).toContain(selector);
+      }
+      // The width floor covers the same set, text-like inputs included: measured on a simulator, amount
+      // fields laid out 33pt wide and a color input 40pt.
+      const widthAt = block.indexOf("min-width: 44px");
+      const widthSelectors = block.slice(block.lastIndexOf(":where(", widthAt), widthAt);
+      for (const selector of ["button", "select", "textarea", "input:not("]) {
+        expect(widthSelectors, selector).toContain(selector);
+      }
+      // Text-like inputs get the height; checkboxes, radios, hidden and range inputs are excluded from
+      // THAT rule (the first two have their own below, the others are not pressed).
+      expect(block).toMatch(/input:not\(\[type="hidden"\],\s*\[type="checkbox"\],\s*\[type="radio"\],\s*\[type="range"\]\)/);
+    });
+
+    it("a native select takes an explicit height, because iOS WebKit ignores its min-height", async () => {
+      const css = await compiled(["p-4"]);
+      const block = splitCompactBlocks(css).blocks.find((b) => b.includes("min-height: 44px")) ?? "";
+      // WebKit's menulist keeps its own `min-height: 30px` (a `min-h-10` select laid out at 41pt on a
+      // simulator), but honors `height`. The height is the larger of the floor and one line of text
+      // plus padding, so a large system text size grows the control instead of clipping it.
+      expect(block).toMatch(/select\s*\{[^}]*height:\s*max\(44px,\s*calc\(1lh \+ 20px\)\)/);
+      expect(block).not.toMatch(/select\s*\{[^}]*height:\s*44px/);
+    });
+
+    it("a checkbox and a radio are drawn as a 44px hit region holding a smaller box", async () => {
+      const css = await compiled(["p-4"]);
+      const block = splitCompactBlocks(css).blocks.find((b) => b.includes("min-height: 44px")) ?? "";
+      const checkbox = /input\[type="checkbox"\],\s*input\[type="radio"\]\s*\{([^}]*)\}/.exec(block)?.[1] ?? "";
+      expect(checkbox).toMatch(/width:\s*44px/);
+      expect(checkbox).toMatch(/height:\s*44px/);
+      expect(checkbox).toMatch(/appearance:\s*none/);
+      // The visible box is the padding box inside a transparent border: 44 - 2 * 12 = 20px.
+      expect(checkbox).toMatch(/border:\s*12px solid transparent/);
+      expect(checkbox).toMatch(/background:\s*var\(--card\)\s+padding-box/);
+      // The mark is a pseudo-element, drawn in the theme's own tokens (no image, no raw colour).
+      expect(block).toMatch(/input\[type="checkbox"\]:checked::before/);
+      expect(block).toMatch(/input\[type="radio"\]:checked::before/);
+      expect(block).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    });
+
+    it("the floor is outside every cascade layer, so a call site's h-8, min-h-0 or min-h-10 cannot lower it", async () => {
+      // Tailwind utilities live in `@layer utilities`; unlayered CSS beats any layer whatever the
+      // specificity. So the media block that holds the floor must sit at brace depth 0.
+      const css = await compiled(["h-8", "min-h-0", "min-h-10"]);
+      const opener = `@media ${COMPACT_QUERY} {`;
+      let depthAtFloor: number | null = null;
+      for (let at = css.indexOf(opener); at !== -1; at = css.indexOf(opener, at + 1)) {
+        let depth = 0;
+        let end = at + opener.length - 1;
+        for (; end < css.length; end += 1) {
+          if (css[end] === "{") depth += 1;
+          if (css[end] === "}" && --depth === 0) break;
+        }
+        if (css.slice(at, end).includes("min-height: 44px")) {
+          let outer = 0;
+          for (const ch of css.slice(0, at)) {
+            if (ch === "{") outer += 1;
+            if (ch === "}") outer -= 1;
+          }
+          depthAtFloor = outer;
+        }
+      }
+      expect(depthAtFloor).toBe(0);
+      expect(css).toMatch(/@layer utilities\s*\{/);
+    });
+  });
+
+  describe("sheets (slice B)", () => {
+    const sheetClasses = [
+      ...COMPACT_SHEET.split(" "),
+      ...COMPACT_DRAWER_PADDED_6.split(" "),
+      ...COMPACT_DRAWER_CLEARS_CHROME.split(" "),
+      ...COMPACT_SHEET_CRAMPED.split(" "),
+      ...COMPACT_BODY_CRAMPED.split(" "),
+      ...COMPACT_FOOTER_WRAPS.split(" "),
+    ];
+
+    it("every sheet and drawer class is behind `compact:`, so a desktop window renders as before", async () => {
+      expect(sheetClasses.every((name) => name.startsWith("compact:"))).toBe(true);
+      const css = await compiled(sheetClasses);
+      const { blocks, rest } = splitCompactBlocks(css);
+      expect(blocks.length).toBeGreaterThan(0);
+      // Tailwind nests the query inside each class (`.compact\\:x { @media (...) { ... } }`), so once the
+      // compact blocks are removed only EMPTY shells may be left: no declaration applies outside it.
+      const stray = rest.replace(/\.compact\\:[^{]+\{\s*\}/g, "");
+      expect(stray).not.toContain("compact\\:");
+      // They do compile (a typo would silently compile to nothing).
+      const inCompact = blocks.join("\n");
+      for (const declaration of [
+        /bottom:\s*calc\(var\(--spacing\) \* 0\)|bottom:\s*0/,
+        /max-height:\s*calc\(100dvh - var\(--safe-area-top\)\)/,
+        /padding-bottom:\s*max\(var\(--safe-area-bottom\),\s*var\(--keyboard-inset\)\)/,
+        /padding-top:\s*calc\(1\.5rem \+ var\(--safe-area-top\)\)/,
+        /border-top-left-radius/,
+        // the reflow for a sheet that does not fit (largest text size, long name): the sheet scrolls as a whole,
+        // the body stops being its own tiny region, footer buttons may wrap
+        /overflow-y:\s*auto/,
+        /overflow:\s*visible/,
+        /white-space:\s*normal/,
+        /overflow-wrap:\s*anywhere/,
+        /height:\s*auto/,
+      ]) {
+        expect(inCompact).toMatch(declaration);
+      }
+    });
+
+    it("the bottom edge takes the larger of the home indicator and the keyboard, never their sum", async () => {
+      for (const name of sheetClasses.filter((n) => n.includes("pb-"))) {
+        expect(name).toContain("max(var(--safe-area-bottom),var(--keyboard-inset))");
+        expect(name).not.toMatch(/safe-area-bottom\)\s*\+\s*var\(--keyboard/);
+      }
+    });
+  });
+
 });

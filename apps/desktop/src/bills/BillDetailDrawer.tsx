@@ -25,6 +25,7 @@ import { EMPTY_FILTERS } from "@/transactions/filters";
 import { usePagedTransactions } from "@/transactions/usePagedTransactions";
 import { frequencyLabel } from "@/lib/frequency";
 import { BillLoanLinkSection } from "./BillLoanLinkSection";
+import { COMPACT_DRAWER_PADDED_6 } from "@/lib/sheet";
 import {
   BILL_TYPE_LABELS,
   BillForm,
@@ -70,7 +71,7 @@ export function BillDetailDrawer({
       <div
         role="dialog"
         aria-label="Bill detail"
-        className="relative flex h-full w-full max-w-md flex-col gap-4 overflow-y-auto border-l bg-background p-6 shadow-xl"
+        className={`relative flex h-full w-full max-w-md flex-col gap-4 overflow-y-auto border-l bg-background p-6 shadow-xl ${COMPACT_DRAWER_PADDED_6}`}
       >
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
