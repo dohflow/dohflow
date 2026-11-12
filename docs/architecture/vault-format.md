@@ -2239,7 +2239,10 @@ links; a row with no artifact, or an artifact with no row, is a defect of the sn
 closure (B.2 `sync_live_closure`) is seeded from what was fetched. Foreign keys are then turned on,
 `foreign_key_check` over the whole database must return nothing (a row naming a row that is not there
 is a defect of the snapshot), and the installed state is exported again and must equal the snapshot
-table by table, as the installer's proof does. **A failure is one of three kinds**: deterministic (the
+table by table, as the installer's proof does, except that it runs at this build's schema and
+does not compare the schema version (the columns were checked equal when the snapshot was installed).
+A snapshot with no closure keeps foreign keys on throughout, so the install's commit-time check
+stands. **A failure is one of three kinds**: deterministic (the
 snapshot is bad at every replica: an object that hashes to the bound value but does not authenticate
 or validate, a wrong closure, a row and an artifact that disagree, a dangling row; its root is never
 picked again, and a materialize error caused by an artifact's content is deterministic exactly as the

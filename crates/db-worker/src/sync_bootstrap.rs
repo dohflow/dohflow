@@ -262,6 +262,8 @@ pub enum Step {
 
 #[cfg(test)]
 thread_local! {
+    /// What `PRAGMA foreign_keys` held on the build connection when the base image was captured.
+    static FOREIGN_KEYS_AT_CAPTURE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     static CUT_AFTER: std::cell::Cell<Option<Step>> = const { std::cell::Cell::new(None) };
 }
 
@@ -461,7 +463,9 @@ pub fn bootstrap_replica(
     migrations::run_migrations_to(&mut conn, snapshot_schema)?;
     #[cfg(test)]
     reached(Step::Created)?;
-    conn.pragma_update(None, "foreign_keys", false)?;
+    // Only a snapshot with a closure is installed with foreign keys off. Any other keeps them on, so
+    // the install's deferred check (C.8's commit-time check) still binds.
+    conn.pragma_update(None, "foreign_keys", !needs_artifacts)?;
     // A snapshot with no closure and no attachment row is installed and proved whole, at its own
     // schema, as before.
     let (installed, snapshot_attachments) = if needs_artifacts {
@@ -478,7 +482,7 @@ pub fn bootstrap_replica(
     // 2. This build's schema over the installed rows; the ledger and the cursor, together.
     migrations::run_migrations(&mut conn)?;
     write_ledger(&mut conn, &ledger, source.root)?;
-    conn.pragma_update(None, "foreign_keys", false)?;
+    conn.pragma_update(None, "foreign_keys", !needs_artifacts)?;
     #[cfg(test)]
     reached(Step::Ledger)?;
 
@@ -496,6 +500,15 @@ pub fn bootstrap_replica(
     // The spool is verified ciphertext waiting for siblings: gone whatever the outcome.
     spool.remove();
     closure_result?;
+    #[cfg(test)]
+    FOREIGN_KEYS_AT_CAPTURE.with(|seen| {
+        let on: i64 = worker
+            .lock()
+            .conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap_or(-1);
+        seen.set(Some(on == 1));
+    });
     let base = worker.initialize_base_image(root)?;
     #[cfg(test)]
     reached(Step::BaseImage)?;
@@ -561,13 +574,9 @@ fn complete_the_build(
         finish(worker, closure.key.key_epoch(), attachments, &materialized)?;
     }
     let guard = worker.lock();
-    if source.closure.is_none() {
-        // Nothing was installed with foreign keys off: the install proved the state whole.
-        return Ok(());
-    }
-    // Foreign keys are on for everything from here: the proof, the class-2 rebuild, the base
-    // capture and every later open. A row that names a row that is not there, once the closure is
-    // materialized, is a defect of the snapshot at every replica.
+    // Foreign keys are on for everything from here, on both paths: the proof, the class-2 rebuild,
+    // the base capture and every later open. A row that names a row that is not there, once the
+    // closure is materialized, is a defect of the snapshot at every replica.
     guard.conn.pragma_update(None, "foreign_keys", true)?;
     let dangling = {
         let mut stmt = guard.conn.prepare("PRAGMA foreign_key_check")?;
@@ -577,8 +586,17 @@ fn complete_the_build(
     if dangling {
         return Err(InvalidSnapshot::DanglingReference.into());
     }
-    prove_installed(&guard.conn, source.snapshot)?;
+    if source.closure.is_some() {
+        // A snapshot with no closure was proved whole inside its install.
+        prove_installed(&guard.conn, source.snapshot)?;
+    }
     Ok(())
+}
+
+/// Whether foreign keys were on when the last bootstrap on this thread captured its base image.
+#[cfg(test)]
+pub(crate) fn foreign_keys_at_capture() -> Option<bool> {
+    FOREIGN_KEYS_AT_CAPTURE.with(std::cell::Cell::get)
 }
 
 /// The suffix of the directory verified ciphertext waits in while a closure is materialized.
