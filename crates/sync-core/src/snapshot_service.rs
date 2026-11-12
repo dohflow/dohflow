@@ -2,7 +2,7 @@
 //! (`docs/architecture/sync-service-protocol.md` 4.4 `installEpoch`, 4.9 `stageSnapshot`,
 //! `publishSnapshot` and `getLatestSnapshot`; personal-cfo-1cltt.4, part B).
 //!
-//! [`SnapshotService`] is those four operations as the client calls them. **There is no production
+//! [`SnapshotService`] is those operations as the client calls them (the four above and `getSnapshot`). **There is no production
 //! implementor in this tree**: the service is `personal-cfo-v98vd` and the client engine that owns
 //! the network is `personal-cfo-elciw`. The only implementor is the in-memory fake in the
 //! vault-crypto tests, which runs the server's decision procedure (so a test exercises the real
@@ -14,6 +14,9 @@
 //! call uses is the transport's concern, and the service's refusal of the wrong one is
 //! [`ServiceError::Forbidden`].
 
+use std::io::{Read, Write};
+
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::artifact::ArtifactId;
@@ -199,6 +202,99 @@ pub trait SnapshotService {
         &self,
         vault_id: &[u8; 16],
     ) -> Result<Option<PublishedSnapshot>, ServiceError>;
+
+    /// `getStatus` (protocol 4.2), the part a snapshot client needs: the log head (the position of
+    /// the last sequenced envelope, `0` for a vault that holds only its genesis). A client that
+    /// reconciles its genesis gap (`personal-cfo-1cltt.5`) needs it to know that nothing was
+    /// sequenced after the genesis it published.
+    ///
+    /// # Errors
+    /// A [`ServiceError`].
+    fn log_head(&self, vault_id: &[u8; 16]) -> Result<u64, ServiceError>;
+
+    /// `getSnapshot` (protocol 4.9): the container bytes of a **retained, published** snapshot, as
+    /// a stream. A snapshot is up to `max_snapshot_container_bytes` (about 1 GiB), so it is never
+    /// returned as one buffer: the caller drains the reader into a file with
+    /// [`copy_snapshot_container`], which bounds and hashes it as it goes. A snapshot that was
+    /// never published, or is no longer retained, is [`ServiceError::SnapshotNotFound`]; the
+    /// service does not vouch for the bytes (the client verifies the AEAD and the sidecar
+    /// commitment itself).
+    ///
+    /// # Errors
+    /// A [`ServiceError`].
+    fn get_snapshot<'a>(
+        &'a self,
+        vault_id: &[u8; 16],
+        snapshot_id: &[u8; 16],
+    ) -> Result<Box<dyn Read + 'a>, ServiceError>;
+}
+
+/// What [`copy_snapshot_container`] measured while it copied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopiedContainer {
+    /// The bytes copied.
+    pub len: u64,
+    /// The SHA-256 of the bytes copied.
+    pub sha256: [u8; 32],
+}
+
+/// Why a fetched container was not accepted.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum CopyError {
+    /// The stream is longer than the bound: the copy stopped at the first read that would pass it
+    /// and had written at most `max_bytes` bytes, so a service cannot make the client write without
+    /// limit.
+    #[error("the container is longer than {max_bytes} bytes")]
+    TooLarge {
+        /// The bound.
+        max_bytes: u64,
+    },
+    /// The bytes are not the ones the client recorded (their SHA-256 differs).
+    #[error("the container is not the one that was recorded")]
+    DigestMismatch,
+    /// The stream or the destination failed (an early end of the stream included).
+    #[error("the container could not be copied: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// Drain `source` into `sink`, at most `max_bytes`, hashing as it goes; when `expected_sha256` is
+/// given, the digest must equal it. Nothing is held in memory beyond one buffer, so a container of
+/// any permitted size streams to a file. On any error the caller discards what was written: this
+/// function neither creates nor removes a file, and a partial `sink` is never a result.
+///
+/// # Errors
+/// [`CopyError::TooLarge`], [`CopyError::DigestMismatch`] or [`CopyError::Io`].
+pub fn copy_snapshot_container(
+    source: &mut dyn Read,
+    sink: &mut dyn Write,
+    max_bytes: u64,
+    expected_sha256: Option<&[u8; 32]>,
+) -> Result<CopiedContainer, CopyError> {
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut len = 0_u64;
+    loop {
+        let read = match source.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let next = len + read as u64;
+        if next > max_bytes {
+            return Err(CopyError::TooLarge { max_bytes });
+        }
+        sink.write_all(&buffer[..read])?;
+        hasher.update(&buffer[..read]);
+        len = next;
+    }
+    sink.flush()?;
+    let sha256: [u8; 32] = hasher.finalize().into();
+    if expected_sha256.is_some_and(|expected| expected != &sha256) {
+        return Err(CopyError::DigestMismatch);
+    }
+    Ok(CopiedContainer { len, sha256 })
 }
 
 /// Where a snapshot's plaintext was read from (personal-cfo-1cltt.4 AC4).
