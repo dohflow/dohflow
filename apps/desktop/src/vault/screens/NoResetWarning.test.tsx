@@ -70,6 +70,13 @@ describe("NoResetWarning", () => {
     expect(label).toHaveClass("compact:@max-[15rem]:flex-col");
     for (const element of [warning, acknowledgement]) {
       expect(element).toHaveClass("compact:@max-[15rem]:hyphens-auto");
+      // A word breaks at a hyphen only with at least eight letters on each side of it, so the words
+      // the copy depends on ("password", "unrecoverable", "understand") are never cut (Studio F3).
+      // The prefixed pair is what WebKit honors; the standard `hyphenate-limit-chars` is ignored there.
+      expect(element).toHaveClass(
+        "compact:@max-[15rem]:[-webkit-hyphenate-limit-before:8]",
+        "compact:@max-[15rem]:[-webkit-hyphenate-limit-after:8]",
+      );
     }
     // The copy is untouched.
     expect(warning.textContent).toBe(CANONICAL);
@@ -86,6 +93,8 @@ describe("NoResetWarning", () => {
       "@container",
       "compact:@max-[15rem]:flex-col",
       "compact:@max-[15rem]:hyphens-auto",
+      "compact:@max-[15rem]:[-webkit-hyphenate-limit-before:8]",
+      "compact:@max-[15rem]:[-webkit-hyphenate-limit-after:8]",
       "[overflow-wrap:anywhere]",
     ]);
     expect(css).toContain("container-type: inline-size");
@@ -93,6 +102,8 @@ describe("NoResetWarning", () => {
     expect(css).toMatch(/flex-direction: column/);
     expect(css).toContain(`@media ${COMPACT_QUERY}`);
     expect(css).toMatch(/@container \(width < 15rem\) \{[^}]*hyphens: auto/);
+    expect(css).toMatch(/@container \(width < 15rem\) \{[^}]*-webkit-hyphenate-limit-before: 8/);
+    expect(css).toMatch(/@container \(width < 15rem\) \{[^}]*-webkit-hyphenate-limit-after: 8/);
     expect(css).toContain("overflow-wrap: anywhere");
   });
 });

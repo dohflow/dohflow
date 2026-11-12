@@ -30,7 +30,7 @@ export function NoResetWarning({
         {warning && (
           <p
             data-testid="no-reset-warning"
-            className="min-w-0 text-xs text-foreground [overflow-wrap:anywhere] compact:@max-[15rem]:hyphens-auto"
+            className="min-w-0 text-xs text-foreground [overflow-wrap:anywhere] compact:@max-[15rem]:hyphens-auto compact:@max-[15rem]:[-webkit-hyphenate-limit-before:8] compact:@max-[15rem]:[-webkit-hyphenate-limit-after:8]"
           >
             {warning}
           </p>
@@ -43,7 +43,7 @@ export function NoResetWarning({
           onChange={(event) => onAcknowledgedChange(event.target.checked)}
           className="mt-0.5 size-3.5 shrink-0"
         />
-        <span className="min-w-0 [overflow-wrap:anywhere] compact:@max-[15rem]:hyphens-auto">
+        <span className="min-w-0 [overflow-wrap:anywhere] compact:@max-[15rem]:hyphens-auto compact:@max-[15rem]:[-webkit-hyphenate-limit-before:8] compact:@max-[15rem]:[-webkit-hyphenate-limit-after:8]">
           I understand and have saved my password somewhere safe.
         </span>
       </label>
