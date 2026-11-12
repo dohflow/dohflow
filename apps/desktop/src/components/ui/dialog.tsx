@@ -2,7 +2,13 @@ import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 
 import { cn } from "@/lib/utils";
-import { COMPACT_SHEET } from "@/lib/sheet";
+import {
+  bodyIsStarved,
+  COMPACT_BODY_CRAMPED,
+  COMPACT_FOOTER_WRAPS,
+  COMPACT_SHEET,
+  COMPACT_SHEET_CRAMPED,
+} from "@/lib/sheet";
 
 /// The shared modal dialog (personal-cfo-4d8.6.1; docs/design-system/recipes.md section 3).
 ///
@@ -49,6 +55,9 @@ const DialogOverlay = React.forwardRef<
 ));
 DialogOverlay.displayName = "DialogOverlay";
 
+/// How the body tells its sheet that the title and footer leave it too little room (see `bodyIsStarved`).
+const DialogCrampedContext = React.createContext<((cramped: boolean) => void) | null>(null);
+
 function focusable(element: HTMLElement | null | undefined): element is HTMLElement {
   return (
     element !== null &&
@@ -89,6 +98,7 @@ const DialogContent = React.forwardRef<
     ref,
   ) => {
     const opener = React.useRef<HTMLElement | null>(null);
+    const [cramped, setCramped] = React.useState(false);
     return (
       <DialogPortal>
         <DialogOverlay />
@@ -101,7 +111,9 @@ const DialogContent = React.forwardRef<
             onOpenAutoFocus?.(event);
             if (!event.defaultPrevented && initialFocusRef?.current) {
               event.preventDefault();
-              initialFocusRef.current.focus();
+              // Without scrolling: a sheet that scrolls as a whole (a cramped one) must open at its top, on
+              // the title, not scrolled down to the safe action.
+              initialFocusRef.current.focus({ preventScroll: true });
             }
           }}
           onCloseAutoFocus={(event) => {
@@ -120,11 +132,13 @@ const DialogContent = React.forwardRef<
           className={cn(
             "fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-3rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg focus-visible:outline-none",
             COMPACT_SHEET,
+            COMPACT_SHEET_CRAMPED,
             className,
           )}
+          data-cramped={cramped ? "" : undefined}
           {...props}
         >
-          {children}
+          <DialogCrampedContext.Provider value={setCramped}>{children}</DialogCrampedContext.Provider>
         </DialogPrimitive.Content>
       </DialogPortal>
     );
@@ -168,16 +182,49 @@ const DialogBody = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDiv
   ({ className, ...props }, forwarded) => {
     const own = React.useRef<HTMLDivElement | null>(null);
     const [overflows, setOverflows] = React.useState(false);
+    const [cramped, setCramped] = React.useState(false);
+    const reportCramped = React.useContext(DialogCrampedContext);
     React.useLayoutEffect(() => {
       const node = own.current;
       if (node === null) return;
-      const measure = () => setOverflows(node.scrollHeight > node.clientHeight + 1);
+      const sheet = node.parentElement;
+      const measure = () => {
+        setOverflows(node.scrollHeight > node.clientHeight + 1);
+        if (sheet === null) return;
+        // Measured from the OTHER children's heights, never the body's own, so switching the sheet to
+        // scroll as a whole cannot flip the answer back.
+        const style = getComputedStyle(sheet);
+        const number = (value: string) => (Number.isFinite(parseFloat(value)) ? parseFloat(value) : 0);
+        const cap = parseFloat(style.maxHeight);
+        let others = 0;
+        for (const child of Array.from(sheet.children)) {
+          if (child !== node && child instanceof HTMLElement) others += child.offsetHeight;
+        }
+        const lineHeight = parseFloat(getComputedStyle(node).lineHeight);
+        const starved = bodyIsStarved({
+          limit: Number.isFinite(cap) ? cap : window.innerHeight,
+          chrome:
+            number(style.paddingTop) +
+            number(style.paddingBottom) +
+            number(style.borderTopWidth) +
+            number(style.borderBottomWidth),
+          others,
+          lineHeight: Number.isFinite(lineHeight) ? lineHeight : 1.5 * number(getComputedStyle(node).fontSize),
+        });
+        setCramped(starved);
+        reportCramped?.(starved);
+      };
       measure();
-      if (typeof ResizeObserver === "undefined") return;
+      window.addEventListener("resize", measure);
+      if (typeof ResizeObserver === "undefined") return () => window.removeEventListener("resize", measure);
       const observer = new ResizeObserver(measure);
       observer.observe(node);
-      return () => observer.disconnect();
-    }, []);
+      if (sheet !== null) for (const child of Array.from(sheet.children)) observer.observe(child);
+      return () => {
+        window.removeEventListener("resize", measure);
+        observer.disconnect();
+      };
+    }, [reportCramped]);
     return (
       <div
         ref={(node) => {
@@ -188,6 +235,7 @@ const DialogBody = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDiv
         tabIndex={overflows ? 0 : undefined}
         className={cn(
           "min-h-0 flex-1 overflow-y-auto px-5 py-3 text-sm [overflow-wrap:anywhere] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          cramped && COMPACT_BODY_CRAMPED,
           className,
         )}
         {...props}
@@ -222,7 +270,7 @@ DialogError.displayName = "DialogError";
 
 const DialogFooter = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
-    className={cn("flex shrink-0 flex-wrap justify-end gap-2 px-5 pb-5 pt-3", className)}
+    className={cn("flex shrink-0 flex-wrap justify-end gap-2 px-5 pb-5 pt-3", COMPACT_FOOTER_WRAPS, className)}
     {...props}
   />
 );

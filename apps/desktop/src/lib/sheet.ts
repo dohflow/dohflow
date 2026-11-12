@@ -47,3 +47,43 @@ export const COMPACT_DRAWER_CLEARS_CHROME = [
   "compact:pr-(--safe-area-right)",
   "compact:pb-[max(var(--safe-area-bottom),var(--keyboard-inset))]",
 ].join(" ");
+
+/// Reflow for a sheet that does not fit (personal-cfo-i93n3.25 slice B, Studio's review: at the largest text
+/// size a maximum-length scenario name wrapped the title to about nine lines, the pinned title and footer left
+/// the body a 51pt window, the title's first lines sat above the sheet's top edge and the destructive label was
+/// cut off). Three behind-`compact:` rules, none of which changes a desktop window or a sheet that fits:
+///
+/// - **Cramped sheets scroll as a whole.** When the title, the footer and the error slot leave the body fewer
+///   than `CRAMPED_BODY_LINES` lines of height (`bodyIsStarved`, measured by `DialogBody`), the sheet sets
+///   `data-cramped`: the sheet itself scrolls (`COMPACT_SHEET_CRAMPED`) and the body stops being its own tiny
+///   scroll region (`COMPACT_BODY_CRAMPED`), so the title, the description and the actions all read in full and
+///   are reached by scrolling, as an iOS alert does at accessibility sizes. A sheet that fits keeps its pinned
+///   footer and its own scrolling body, exactly as before.
+/// - **Footer buttons may wrap** (`COMPACT_FOOTER_WRAPS`): the shared `Button` is `h-10 whitespace-nowrap`, which
+///   cut "Delete scenario" off at both edges. Inside a footer a button takes `h-auto min-h-10 whitespace-normal
+///   [overflow-wrap:anywhere]` (FRONTEND.md section 7.6, "Reflow, not clipping"); a label that fits renders the same.
+export const COMPACT_SHEET_CRAMPED = "compact:data-[cramped]:overflow-y-auto";
+
+export const COMPACT_BODY_CRAMPED = "compact:flex-none compact:overflow-visible";
+
+export const COMPACT_FOOTER_WRAPS = [
+  "compact:[&_button]:h-auto",
+  "compact:[&_button]:min-h-10",
+  "compact:[&_button]:whitespace-normal",
+  "compact:[&_button]:[overflow-wrap:anywhere]",
+].join(" ");
+
+/// How many lines of body text a sheet must leave visible before the body is a usable scroll region.
+export const CRAMPED_BODY_LINES = 3;
+
+/// True when what is left for the body (the sheet's height cap, less its padding and border, less every other
+/// child's height) is under `CRAMPED_BODY_LINES` lines of text. Pure, so a test can pin the threshold.
+export function bodyIsStarved(input: {
+  limit: number;
+  chrome: number;
+  others: number;
+  lineHeight: number;
+}): boolean {
+  const available = input.limit - input.chrome - input.others;
+  return available < CRAMPED_BODY_LINES * input.lineHeight;
+}
