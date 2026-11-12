@@ -356,7 +356,7 @@ fn a_snapshot_of_an_older_schema_installs_through_the_migrations() {
         // table set, not the snapshot's schema, so an older snapshot is refused as a deterministic
         // MissingTable. Nothing is written. When the installer learns which schema introduced each
         // table, this branch goes and the property below is asserted again.
-        let err = attempt.err().expect("refused while a table is missing");
+        let err = attempt.expect_err("refused while a table is missing");
         assert!(
             matches!(
                 &err,
