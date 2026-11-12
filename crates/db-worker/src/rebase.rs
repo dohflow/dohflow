@@ -600,6 +600,21 @@ impl Scratch<'_> {
             self.head_seq =
                 i64::try_from(seq).map_err(|_| RebaseError::OutOfOrder { expected, got: seq })?;
         }
+        self.advance_applied_cursor()?;
+        Ok(())
+    }
+
+    /// Move the scratch vault's applied cursor (`sync_position.next_to_apply`) past the envelopes
+    /// applied so far, forward only: a vault with no cursor (Sync was armed without one) has none to
+    /// move, and a cursor already past the head (a void honored beyond it) is left alone. The
+    /// swapped-in vault then records what the rebase applied (ADR 0074 Addendum D).
+    fn advance_applied_cursor(&self) -> Result<(), RebaseError> {
+        let guard = self.worker.lock();
+        guard.conn.execute(
+            "UPDATE sync_position SET next_to_apply = ?1
+              WHERE singleton = 1 AND next_to_apply < ?1",
+            [self.head_seq + 1],
+        )?;
         Ok(())
     }
 
@@ -651,6 +666,7 @@ pub fn is_command_refusal(error: &DbError) -> bool {
         | E::ReplicatedKeyTooLong { .. }
         | E::SettingScope => true,
         E::CipherUnavailable
+        | E::WalHeaderMismatch { .. }
         | E::CheckpointBusy
         | E::VaultInUse
         | E::NewerSchema { .. }

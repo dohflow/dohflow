@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 pub mod register;
+pub mod snapshot_service;
 
 use sync_core::header::Fingerprint;
 use sync_core::membership::{Action, MembershipBody, Reason, SignedRecord, KEM_ID, SUITE_ID};
@@ -225,9 +226,18 @@ pub fn refs(records: &[Vec<u8>]) -> Vec<&[u8]> {
     records.iter().map(Vec::as_slice).collect()
 }
 
+/// The artifact `id` bound to a hash derived from it, as the snapshot tests bind their closures.
+pub fn bound(id: [u8; 32]) -> sync_core::envelope::BoundArtifact {
+    sync_core::envelope::BoundArtifact {
+        id,
+        ciphertext_sha256: [id[0] ^ 0xff; 32],
+    }
+}
+
 /// A valid snapshot plaintext (C.8) with one small table whose file carries `marker`, and the
 /// closure `artifacts` (strictly ascending). Distinct markers give distinct plaintexts.
 pub fn snapshot_plaintext(artifacts: &[[u8; 32]], marker: &str) -> Vec<u8> {
+    let artifacts: Vec<_> = artifacts.iter().map(|id| bound(*id)).collect();
     use sync_core::snapshot::{build, ColumnEntry, Header, TableFile};
     let file = TableFile {
         name: "notes".to_owned(),
@@ -245,7 +255,7 @@ pub fn snapshot_plaintext(artifacts: &[[u8; 32]], marker: &str) -> Vec<u8> {
             vault_created_at: "2026-01-01T00:00:00Z",
             inventory_version: "1",
             voids: &[],
-            artifacts,
+            artifacts: &artifacts,
         },
         vec![file],
     )

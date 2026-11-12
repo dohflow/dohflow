@@ -248,6 +248,44 @@ pub struct SnapshotFacts<'a> {
     pub held_voids: &'a [(u64, u64)],
 }
 
+/// Whether `snapshot` may be the root a replica builds on at all, whatever the replica's state: a
+/// first bootstrap and every exit from a stop ask this first (`personal-cfo-1cltt.5`; one rule
+/// set, so a first bootstrap can never accept what a re-bootstrap would refuse):
+///
+/// * the snapshot is of this build's `engine_version` (any other is update-required itself);
+/// * the root is not inside a void range this replica holds (the snapshot was built on poisoned
+///   state, C.10 rule 4); and
+/// * every void the snapshot records lies **below** the root and the records ascend without
+///   overlap (C.8): a recorded range reaching the root would make the ledger a bootstrapped
+///   replica seeds from it skip positions in the tail that every other replica applies, a silent
+///   divergence that comes from the snapshot's producer alone.
+///
+/// A fresh device holds no voids, so the second rule is vacuous for it unless the caller passes the
+/// ranges of the void records positioned after the root (the tail it must pull anyway) as
+/// `held_voids`; the engine does so before it installs anything.
+#[must_use]
+pub fn snapshot_is_valid_root(snapshot: &SnapshotFacts<'_>) -> bool {
+    if *snapshot.engine_version != *snapshot.own_engine_version
+        || snapshot
+            .held_voids
+            .iter()
+            .any(|(first, last)| *first <= snapshot.root && snapshot.root <= *last)
+    {
+        return false;
+    }
+    let mut previous_last: Option<u64> = None;
+    for recorded in snapshot.recorded_voids {
+        if recorded.first > recorded.last
+            || recorded.last >= snapshot.root
+            || previous_last.is_some_and(|last| recorded.first <= last)
+        {
+            return false;
+        }
+        previous_last = Some(recorded.last);
+    }
+    true
+}
+
 /// Proof that a snapshot is a valid way out of the replica's CURRENT stop. Only
 /// [`SyncStatus::rebootstrap_permit`] can build one, and [`SyncStatus::observe_rebootstrapped`]
 /// accepts nothing else, so a stop cannot be cleared with an unverified snapshot.
@@ -689,15 +727,8 @@ impl SyncStatus {
     ///   is key quarantine and re-enrollment, never a snapshot.
     #[must_use]
     pub fn rebootstrap_permit(&self, snapshot: &SnapshotFacts<'_>) -> Option<RebootstrapPermit> {
-        // For EVERY kind of stop: the snapshot is of this build's version (any other would be
-        // update-required itself) and is not rooted inside a void range this replica holds (it
-        // was built on poisoned state).
-        if *snapshot.engine_version != *snapshot.own_engine_version
-            || snapshot
-                .held_voids
-                .iter()
-                .any(|(first, last)| *first <= snapshot.root && snapshot.root <= *last)
-        {
+        // For EVERY kind of stop, and for a first bootstrap: the one rule set (AC5).
+        if !snapshot_is_valid_root(snapshot) {
             return None;
         }
         let (stop, ok) = match self {

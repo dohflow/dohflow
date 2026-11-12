@@ -100,6 +100,11 @@ digest_newtype!(
     ManifestCommitment
 );
 digest_newtype!(
+    /// The commitment to the ciphertext SHA-256 of each artifact of a manifest, in the manifest's id
+    /// order (C.3, header field 18): present exactly when the manifest commitment is.
+    BindingCommitment
+);
+digest_newtype!(
     /// The fingerprint of a device's key (C.2).
     Fingerprint
 );
@@ -158,11 +163,17 @@ pub enum ObjectKind {
         immutable_metadata_commitment: MetadataCommitment,
         /// The commitment to the delta manifest, present only when that manifest is non-empty.
         artifact_manifest_commitment: Option<ManifestCommitment>,
+        /// The commitment to the delta's ciphertext hashes (field 18): present exactly when
+        /// `artifact_manifest_commitment` is.
+        artifact_binding_commitment: Option<BindingCommitment>,
     },
     /// A genesis or bootstrap snapshot (`object_type` 2). `object_id` is the snapshot id.
     Snapshot {
         /// The commitment to the snapshot's full closure, always present (even for an empty one).
         artifact_manifest_commitment: ManifestCommitment,
+        /// The commitment to the closure's ciphertext hashes (field 18), always present (the
+        /// commitment of the empty list when the closure is empty).
+        artifact_binding_commitment: BindingCommitment,
     },
 }
 
@@ -223,19 +234,34 @@ impl ClearHeader {
             .u64(self.key_epoch)
             .u8(self.object_type())
             .fixed(&self.object_id);
-        let (tag, commitment, manifest) = match &self.object {
+        let (tag, commitment, manifest, binding) = match &self.object {
             ObjectKind::Envelope {
                 idempotency_key_tag,
                 immutable_metadata_commitment,
                 artifact_manifest_commitment,
-            } => (
-                Some(idempotency_key_tag.0),
-                Some(immutable_metadata_commitment.0),
-                artifact_manifest_commitment.map(|m| m.0),
-            ),
+                artifact_binding_commitment,
+            } => {
+                // Fields 17 and 18 are present together or absent together: a header that has one
+                // without the other has no canonical encoding.
+                if artifact_manifest_commitment.is_some() != artifact_binding_commitment.is_some() {
+                    return Err(WireError::BindingFieldsMismatch);
+                }
+                (
+                    Some(idempotency_key_tag.0),
+                    Some(immutable_metadata_commitment.0),
+                    artifact_manifest_commitment.map(|m| m.0),
+                    artifact_binding_commitment.map(|b| b.0),
+                )
+            }
             ObjectKind::Snapshot {
                 artifact_manifest_commitment,
-            } => (None, None, Some(artifact_manifest_commitment.0)),
+                artifact_binding_commitment,
+            } => (
+                None,
+                None,
+                Some(artifact_manifest_commitment.0),
+                Some(artifact_binding_commitment.0),
+            ),
         };
         w.opt(tag.as_ref(), |w, v| {
             w.fixed(v);
@@ -252,6 +278,9 @@ impl ClearHeader {
         .text(MAX_ENGINE_VERSION, &self.engine_version)?
         .u32(self.schema_version)
         .opt(manifest.as_ref(), |w, v| {
+            w.fixed(v);
+        })
+        .opt(binding.as_ref(), |w, v| {
             w.fixed(v);
         });
         Ok(w.finish())
@@ -286,21 +315,34 @@ impl ClearHeader {
         let engine_version = r.text(MAX_ENGINE_VERSION)?.to_owned();
         let schema_version = r.u32()?;
         let manifest = r.opt(|r| r.fixed::<32>())?;
+        let binding = r.opt(|r| r.fixed::<32>())?;
         r.finish()?;
 
-        let object = match (object_type, tag, commitment, manifest) {
-            (OBJECT_ENVELOPE, Some(tag), Some(commitment), manifest) => ObjectKind::Envelope {
-                idempotency_key_tag: IdempotencyKeyTag(tag),
-                immutable_metadata_commitment: MetadataCommitment(commitment),
-                artifact_manifest_commitment: manifest.map(ManifestCommitment),
-            },
-            (OBJECT_ENVELOPE, _, _, _)
-            | (OBJECT_SNAPSHOT, Some(_), _, _)
-            | (OBJECT_SNAPSHOT, _, Some(_), _) => return Err(WireError::ObjectFieldsMismatch),
-            (OBJECT_SNAPSHOT, None, None, Some(manifest)) => ObjectKind::Snapshot {
+        let object = match (object_type, tag, commitment, manifest, binding) {
+            (OBJECT_ENVELOPE, Some(tag), Some(commitment), manifest, binding) => {
+                if manifest.is_some() != binding.is_some() {
+                    return Err(WireError::BindingFieldsMismatch);
+                }
+                ObjectKind::Envelope {
+                    idempotency_key_tag: IdempotencyKeyTag(tag),
+                    immutable_metadata_commitment: MetadataCommitment(commitment),
+                    artifact_manifest_commitment: manifest.map(ManifestCommitment),
+                    artifact_binding_commitment: binding.map(BindingCommitment),
+                }
+            }
+            (OBJECT_ENVELOPE, ..)
+            | (OBJECT_SNAPSHOT, Some(_), ..)
+            | (OBJECT_SNAPSHOT, _, Some(_), ..) => return Err(WireError::ObjectFieldsMismatch),
+            (OBJECT_SNAPSHOT, None, None, None, _) => {
+                return Err(WireError::SnapshotWithoutManifest)
+            }
+            (OBJECT_SNAPSHOT, None, None, Some(_), None) => {
+                return Err(WireError::SnapshotWithoutBinding)
+            }
+            (OBJECT_SNAPSHOT, None, None, Some(manifest), Some(binding)) => ObjectKind::Snapshot {
                 artifact_manifest_commitment: ManifestCommitment(manifest),
+                artifact_binding_commitment: BindingCommitment(binding),
             },
-            (OBJECT_SNAPSHOT, None, None, None) => return Err(WireError::SnapshotWithoutManifest),
             _ => return Err(WireError::UnknownObjectType),
         };
         if invocation_counter > MAX_INVOCATION_COUNTER {
@@ -380,10 +422,12 @@ pub fn parse_container(bytes: &[u8]) -> Result<ParsedContainer<'_>, WireError> {
 
 /// The most a command envelope's container can hold: the header (labels, ids, digests and a
 /// 64-byte engine version come to well under 512 bytes), the plaintext's payload bound of 2^24,
-/// its delta manifest of at most 4096 digests, its metadata (a 256-byte actor id and the fixed
-/// fields, under 1 KiB), the length fields, and the 16-byte GCM tag, rounded up to 4 KiB of
-/// slack. A transport reads at most this many bytes of an envelope before it parses anything.
-pub const MAX_ENVELOPE_CONTAINER_LEN: usize = (1 << 24) + 4096 * 32 + 4096;
+/// its delta manifest of at most 4096 items of 64 bytes (an id and the ciphertext hash bound to it),
+/// its metadata (a 256-byte actor id and the fixed fields, under 1 KiB), the length fields, and the
+/// 16-byte GCM tag, rounded up to 8 KiB of slack (the exact maximum, 17040163 bytes, is the
+/// protocol's `max_envelope_container_bytes`). A transport reads at most this many bytes of an
+/// envelope before it parses anything.
+pub const MAX_ENVELOPE_CONTAINER_LEN: usize = (1 << 24) + 4096 * 64 + 8192;
 
 /// [`parse_container`] for an object with a known size cap (every command envelope): a container
 /// longer than `max_len` is refused before any of it is parsed. This bounds the parser's work on

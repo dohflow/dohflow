@@ -86,9 +86,9 @@
       "included_connections": 2,
       "extra_connection_cost_minor_units": 1000,
       "extra_connection_period": "Annual",
-      "cost_reviewed_at": "2026-09-27",
+      "cost_reviewed_at": "2026-11-06",
       "terms_url": "https://www.lunchflow.app/terms",
-      "terms_reviewed_at": "2026-09-18",
+      "terms_reviewed_at": "2026-11-06",
       "history_depth_expectation": "Varies by bank and by LunchFlow's own data provider."
     },
     "disclosure": {
@@ -115,6 +115,6 @@
       "url": "https://www.lunchflow.app/?atp=dohflow",
       "disclosure": "DohFlow may earn a commission if you sign up for LunchFlow through the link above — this does not affect what LunchFlow charges you, and DohFlow works the same whether or not you use it."
     },
-    "enabled": false
+    "enabled": true
   }
 ]

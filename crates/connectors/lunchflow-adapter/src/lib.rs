@@ -82,22 +82,31 @@ static LUNCHFLOW: LunchFlowAdapter = LunchFlowAdapter::new(UreqTransport::new(),
 
 /// LunchFlow's registry entry (ADR 0015 + its 2026-09-27 addendum; ADR 0076).
 ///
-/// **Disabled** until the v0.3.0 release bead (personal-cfo-p3f7r) flips it
-/// once ADR 0076 decision 3's ship conditions hold.
+/// **Enabled** by the v0.4.0 release (personal-cfo-p3f7r), which flipped it once
+/// ADR 0076 decision 3's ship conditions held. A new adapter ships disabled; a
+/// release bead flips it.
 ///
 /// Cost: the Individual plan's **annual** option — $34.99/year, 2 connections
 /// included, $10.00 per extra connection per year — checked live on
 /// lunchflow.app on the cost review date and matching
 /// docs/research/lunchflow-feasibility.md §d. The schema holds one plan; the
 /// monthly option ($5.49/month, 4 included, $1.00/month per extra,
-/// owner-verified 2026-09-18, same doc) is recorded here only. Terms: read in
-/// full by the owner on 2026-09-18 (§b; the pages render client-side).
+/// owner-verified 2026-09-18, same doc) is recorded here only. The cost was
+/// checked against the live page on 2026-11-06 (it renders client-side).
+/// Terms: read in full by the owner on 2026-09-18 (§b). LunchFlow updated the
+/// terms, acceptable-use and privacy pages on 2026-10-23, and the owner
+/// delegated the re-read: on 2026-11-06 the current text was read in full (the
+/// decisions session, personal-cfo-p3f7r's note "TERMS REVIEW 2026-11-06,
+/// DELEGATED BY THE OWNER") and the four disclosure points were found to hold.
+/// The affiliate-program terms (D15) are still unread (they need the owner's
+/// login), which the in-app referral wording does not depend on.
 ///
 /// Regions: the countries LunchFlow's coverage docs name individually for
 /// bank accounts (lunchflow.app/docs/guides/connections, read 2026-09-27).
 /// Its docs also cover "Europe" (GoCardless) and "Pacific Asia" (Finverse)
-/// without naming countries, so those are not listed; re-check before the
-/// enable flip.
+/// without naming countries, so those are not listed. Re-checked for the enable
+/// flip on 2026-11-06: the coverage page still names no countries for them
+/// ("40+ countries"), so the list stands.
 ///
 /// Disclosure: LunchFlow's own wording. DohFlow has a referral relationship
 /// with LunchFlow (ADR 0076 §5, D15), so unlike SimpleFIN it is **not**
@@ -119,9 +128,9 @@ pub const LUNCHFLOW_METADATA: ConnectorMetadata = ConnectorMetadata {
         included_connections: Some(2),
         extra_connection_cost_minor_units: Some(1000),
         extra_connection_period: Some(BillingPeriod::Annual),
-        cost_reviewed_at: review_date(2026, 9, 27),
+        cost_reviewed_at: review_date(2026, 11, 6),
         terms_url: Some("https://www.lunchflow.app/terms"),
-        terms_reviewed_at: review_date(2026, 9, 18),
+        terms_reviewed_at: review_date(2026, 11, 6),
         history_depth_expectation: "Varies by bank and by LunchFlow's own data provider.",
     },
     disclosure: DisclosureText {
@@ -162,7 +171,7 @@ pub const LUNCHFLOW_METADATA: ConnectorMetadata = ConnectorMetadata {
                      link above \u{2014} this does not affect what LunchFlow charges you, and \
                      DohFlow works the same whether or not you use it.",
     }),
-    enabled: false,
+    enabled: true,
     suggested_refresh: RefreshCadence::EveryOpen,
 };
 

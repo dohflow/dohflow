@@ -4,7 +4,24 @@ import type { TouchIdStatusDto } from "@/bindings";
 
 import { UnlockScreen } from "./UnlockScreen";
 
+// v0.4.1 ships with the Touch ID controls off (`vault/touchIdEnabled.ts`); the cases here are about the controls themselves, so
+// they run with the flag on, and the "flag off" cases below turn it off. `vault/touchIdEnabled.test.ts` pins the shipped value.
+const flag = vi.hoisted(() => ({ on: true }));
+vi.mock("@/vault/touchIdEnabled", () => ({
+  get TOUCH_ID_ENABLED() {
+    return flag.on;
+  },
+}));
+
 // personal-cfo-xuu (4 of 4): the unlock screen's Touch ID button and what it says for each rule.
+
+// A status the hook reports whatever the host says, for the cases that must prove the SCREEN's own checks of the flag: with
+// the hook itself returning "on and offered", only the screen's gates stand between that status and the button.
+const hook = vi.hoisted(() => ({ forced: null as null | { status: unknown; loaded: boolean; refresh: () => Promise<unknown>; setStatus: () => void } }));
+vi.mock("@/vault/useTouchIdStatus", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/vault/useTouchIdStatus")>();
+  return { ...real, useTouchIdStatus: () => hook.forced ?? real.useTouchIdStatus() };
+});
 
 const mocks = vi.hoisted(() => ({
   touchIdStatus: vi.fn(),
@@ -45,6 +62,68 @@ beforeEach(() => {
   mocks.unlockVault.mockReset();
   mocks.unlockWithTouchId.mockReset();
   mocks.refresh.mockReset();
+});
+
+describe("Touch ID switched off (v0.4.1)", () => {
+  afterEach(() => {
+    flag.on = true;
+    hook.forced = null;
+  });
+
+  it("the screen's own checks hide the button and the rule text even when the status hook reports Touch ID on and offered", async () => {
+    flag.on = false;
+    hook.forced = { status: status({}), loaded: true, refresh: async () => status({}), setStatus: () => undefined };
+    render(<UnlockScreen />);
+    expect(await screen.findByLabelText(/master password/i)).toBeInTheDocument();
+    expect(touchButton()).not.toBeInTheDocument();
+    expect(screen.queryByText(/touch id/i)).not.toBeInTheDocument();
+    hook.forced = { status: status({ offered: false, reason: "after_restart" }), loaded: true, refresh: async () => undefined, setStatus: () => undefined };
+    render(<UnlockScreen />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("the same forced status shows the button with the flag on (so the case above proves the gates, not a broken setup)", async () => {
+    flag.on = true;
+    hook.forced = { status: status({}), loaded: true, refresh: async () => status({}), setStatus: () => undefined };
+    render(<UnlockScreen />);
+    expect(await screen.findByRole("button", { name: /unlock with touch id/i })).toBeEnabled();
+  });
+
+  it("shows no Touch ID button and says nothing about Touch ID, even if the host would offer it", async () => {
+    flag.on = false;
+    mocks.touchIdStatus.mockResolvedValue(status({}));
+    render(<UnlockScreen />);
+    expect(await screen.findByLabelText(/master password/i)).toBeInTheDocument();
+    expect(touchButton()).not.toBeInTheDocument();
+    expect(screen.queryByText(/touch id/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("does not even ask the host for the Touch ID status, and never prompts", async () => {
+    flag.on = false;
+    mocks.touchIdStatus.mockResolvedValue(status({}));
+    render(<UnlockScreen />);
+    await screen.findByLabelText(/master password/i);
+    expect(mocks.touchIdStatus).not.toHaveBeenCalled();
+    expect(mocks.unlockWithTouchId).not.toHaveBeenCalled();
+  });
+
+  it("shows no rule explanation either (a restart, three misses, 30 days): there is no Touch ID to explain", async () => {
+    flag.on = false;
+    mocks.touchIdStatus.mockResolvedValue(status({ offered: false, reason: "after_restart" }));
+    render(<UnlockScreen />);
+    await screen.findByLabelText(/master password/i);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("still unlocks with the master password", async () => {
+    flag.on = false;
+    mocks.unlockVault.mockResolvedValue(null);
+    render(<UnlockScreen />);
+    fireEvent.change(await screen.findByLabelText(/master password/i), { target: { value: "synthetic-password" } });
+    fireEvent.click(screen.getByRole("button", { name: /^unlock$/i }));
+    await waitFor(() => expect(mocks.unlockVault).toHaveBeenCalledWith("synthetic-password"));
+  });
 });
 
 describe("Touch ID on the unlock screen", () => {

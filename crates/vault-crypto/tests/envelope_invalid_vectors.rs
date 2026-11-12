@@ -22,7 +22,7 @@
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use sync_core::envelope::{ArtifactManifest, EnvelopePlaintext, IdempotencyKey, ImmutableMeta};
+use sync_core::envelope::{EnvelopePlaintext, IdempotencyKey, ImmutableMeta};
 use sync_core::header::{
     encode_container, parse_container, ClearHeader, Fingerprint, IdempotencyKeyTag, NonceDomain,
     ObjectKind, OBJECT_ENVELOPE,
@@ -255,6 +255,7 @@ fn parts(dev: &Dev, command: u8, key_epoch: u64) -> (ClearHeader, EnvelopePlaint
             idempotency_key_tag: IdempotencyKeyTag::from_derived(tagger(&meta.idempotency_key)),
             immutable_metadata_commitment: meta.commitment().unwrap(),
             artifact_manifest_commitment: None,
+            artifact_binding_commitment: None,
         },
         object_id: meta.command_id,
         device_id: dev.device_id,
@@ -269,7 +270,7 @@ fn parts(dev: &Dev, command: u8, key_epoch: u64) -> (ClearHeader, EnvelopePlaint
     let plaintext = EnvelopePlaintext {
         meta,
         write_set_hash: [0x44; 32],
-        delta_manifest: ArtifactManifest::new(vec![]).unwrap(),
+        delta_manifest: sync_core::envelope::BoundManifest::empty(),
         payload: b"{}".to_vec(),
     };
     (header, plaintext)
@@ -446,6 +447,9 @@ fn all_cases() -> Vec<Case> {
         let mut header = parsed.header.clone();
         header.object = ObjectKind::Snapshot {
             artifact_manifest_commitment: sync_core::header::ManifestCommitment::from_derived(
+                [1; 32],
+            ),
+            artifact_binding_commitment: sync_core::header::BindingCommitment::from_derived(
                 [1; 32],
             ),
         };

@@ -65,9 +65,33 @@ expect "the exception expires" 1 -- --exceptions-file "$EXC" --json-file "$WORK/
 expect "an exception that matches nothing fails, so it gets removed" 1 -- --exceptions-file "$EXC" --json-file "$WORK/clean.json" --json-file "$WORK/clean.json" --today 2026-11-01
 expect "unreadable audit output is an error, not a pass" 2 -- --exceptions-file "$EXC" --json-file "$WORK/garbage.json" --today 2026-11-01
 
-# With the real (empty) list nothing is excepted: the shim finding fails like any other.
-expect "with no exceptions the same finding fails" 1 -- --json-file "$WORK/shim.json" --today 2026-11-01
-expect "with no exceptions a clean report passes" 0 -- --json-file "$WORK/clean.json" --json-file "$WORK/clean.json" --today 2026-11-01
+# The real list holds one exception: RUSTSEC-2026-0459 on libsqlite3-sys 0.38.2 until 2026-12-10
+# (personal-cfo-5vto5), matched by advisory + crate + version like any other.
+SQLITE=RUSTSEC-2026-0459
+report "$WORK/sqlite.json" $SQLITE libsqlite3-sys 0.38.2
+report "$WORK/sqlite-newer.json" $SQLITE libsqlite3-sys 0.39.0
+report "$WORK/sqlite-other-crate.json" $SQLITE rusqlite 0.38.2
+expect "the real list allows the SQLite finding in both lockfiles" 0 -- --json-file "$WORK/sqlite.json" --json-file "$WORK/sqlite.json" --today 2026-11-10
+expect "the real list allows it on its last day" 0 -- --json-file "$WORK/sqlite.json" --json-file "$WORK/sqlite.json" --today 2026-12-10
+expect "the real exception expires" 1 -- --json-file "$WORK/sqlite.json" --json-file "$WORK/sqlite.json" --today 2026-12-11
+expect "a fixed libsqlite3-sys release is not excepted" 1 -- --json-file "$WORK/sqlite-newer.json" --json-file "$WORK/sqlite-newer.json" --today 2026-11-10
+expect "the same advisory on another crate is not excepted" 1 -- --json-file "$WORK/sqlite-other-crate.json" --json-file "$WORK/sqlite-other-crate.json" --today 2026-11-10
+expect "the real list does not allow the old webpki finding" 1 -- --json-file "$WORK/shim.json" --today 2026-11-10
+expect "a clean report fails: the exception matches nothing and must be removed" 1 -- --json-file "$WORK/clean.json" --json-file "$WORK/clean.json" --today 2026-11-10
+
+CASES=$((CASES + 1))
+python3 -I - "$SCRIPT" <<'PY' || { echo "    FAIL — the real exception is incomplete" >&2; exit 1; }
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("cargo_audit", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+(entry,) = module.EXCEPTIONS
+assert (entry["id"], entry["crate"], entry["version"]) == ("RUSTSEC-2026-0459", "libsqlite3-sys", "0.38.2"), entry
+assert entry["expires"] == "2026-12-10" and entry["removed_by"] == "personal-cfo-5vto5", entry
+assert "Yes, approve" in entry["decision"] and "2026-11-10" in entry["decision"], entry
+assert entry["reason"].strip(), entry
+PY
+echo "    ok   — the real exception carries its id, crate, version, expiry, bead, the owner's words and a reason"
 
 CASES=$((CASES + 1))
 if grep -q "RUSTSEC-2026-0381" "$REPO_ROOT/.github/workflows/ci.yml"; then

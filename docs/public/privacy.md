@@ -37,6 +37,22 @@ its own.
   DohFlow refreshes it from the Bridge automatically each time you unlock
   your vault, plus whenever you trigger a manual sync — always using your
   own token, never through us.
+- **A second bank connection, only if you set one up.** DohFlow can also link
+  accounts through [LunchFlow](https://www.lunchflow.app). Your actual bank
+  login credentials go to LunchFlow, at LunchFlow's own site — never to
+  DohFlow. You create an API key in your own LunchFlow dashboard and paste it
+  into the app; the app talks to LunchFlow directly, sending that key with each
+  request, and stores it inside your encrypted vault. LunchFlow is a separate
+  company — you contract and pay them directly for it, not us — and DohFlow
+  never sits in the middle of that connection or sees anything beyond what
+  LunchFlow returns for your own accounts. DohFlow does have a referral
+  arrangement with LunchFlow: it may earn a commission if you sign up through
+  the link in the app, which does not change what LunchFlow charges you, and
+  the app says so wherever it shows that link. Nothing is ever synced unless
+  you complete that setup; manual entry and CSV import work fully without it.
+  Once you've linked a connection, DohFlow refreshes it from LunchFlow
+  automatically each time you unlock your vault, plus whenever you trigger a
+  manual sync — always using your own key, never through us.
 - **A version check.** DohFlow checks whether a newer release is available
   each time you launch or unlock it, and any time you check manually from
   Settings. That check is a single request for a public file on GitHub
