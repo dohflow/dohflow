@@ -599,7 +599,8 @@ is two steps, to keep a large upload out of the compare-and-swap:
    epoch in force, its sidecar matches the header's commitment, every id in
    the closure has a durable receipt and a recorded pin, and the binding
    commitment of those receipts' `ciphertext_sha256` values in the ids' order is
-   the header's `artifact_binding_commitment` (`ArtifactBindingMismatch`), all in one transaction
+   the header's `artifact_binding_commitment` (field 18, present exactly when
+   field 17 is, and always for a snapshot: `ArtifactBindingMismatch`), all in one transaction
    (ADR 0074 decision 1). Otherwise it changes nothing. Publication is idempotent
    by the immutable `snapshot_id`: publishing an already published snapshot
    returns the original result. Response `200`:
@@ -1050,13 +1051,18 @@ step answers:
    the header's `artifact_manifest_commitment` (absent if and only if the sidecar
    is empty), and every id MUST have a durable receipt at the envelope's
    `key_epoch`. Otherwise `MalformedObject` (commitment or order) or
-   `ArtifactMissing` (receipt). **Once every receipt is present,** the binding
-   commitment (`vault-format.md` C.3) of the receipts' `ciphertext_sha256` values,
-   in the strictly ascending order of the ids, MUST equal the header's
-   `artifact_binding_commitment` (field 18, absent if and only if the sidecar is
-   empty): otherwise `ArtifactBindingMismatch`. The check is made here and not at
-   the sidecar's own commitment because it needs the receipts, which a client may
-   not have uploaded yet when it stages a closure.
+   `ArtifactMissing` (receipt). **Once every id of every unknown envelope in the
+   request has a receipt** (so any `ArtifactMissing` is answered before any
+   `ArtifactBindingMismatch`), the binding commitment (`vault-format.md` C.3) of
+   each envelope's receipts' `ciphertext_sha256` values, in the strictly ascending
+   order of the ids, MUST equal that envelope's header `artifact_binding_commitment`
+   (field 18, absent if and only if the sidecar is empty): otherwise
+   `ArtifactBindingMismatch`. The check is made here and not at the sidecar's own
+   commitment because it needs the receipts, which a client may not have uploaded
+   yet when it stages a closure. The recomputation is pinned by the public vectors of
+   `vault-format.md`: the binding cases of `vectors/check-envelope-v1.json`, and the
+   closure artifact's ciphertext hash in `vectors/snapshot-v1.json`'s manifest, so a
+   server and a client compute one value.
 8. **Nonce backstop** (section 5.4): `NonceTupleReused`.
 9. **Compare and swap.** If the request's `base_seq` equals the current head,
    append all unknown envelopes in order and assign `seq = head + 1`,
@@ -1159,7 +1165,8 @@ failure answers:
    ids, and `ArtifactMissing` lists at most the first 4096 missing ids (section 4.4).
    **Once every receipt is present,** the binding commitment of the receipts'
    `ciphertext_sha256` values in the ids' order MUST equal the header's
-   `artifact_binding_commitment` (field 18): otherwise `ArtifactBindingMismatch`.
+   `artifact_binding_commitment` (field 18, present exactly when field 17 is, and
+   always for a snapshot): otherwise `ArtifactBindingMismatch`.
 9. **Writes and quota.** `WritesSuspended`, `QuotaExceeded`.
 
 Then the transaction commits atomically (section 4.4).
@@ -1341,7 +1348,7 @@ server can produce the failure. C.11 failures that only a client can detect
 | `NonceTupleReused` | 409 | The same nonce tuple arrived with different bytes. Never retried unchanged. |
 | `ObjectConflict` | 409 | Different bytes for an existing artifact address or snapshot id. |
 | `ArtifactMissing` | 409 | A manifest names an object with no durable receipt. `details.missing` lists the ids: all of them when there are at most 4096, otherwise the first 4096 in ascending order (a closure can hold 2^20 ids, section 4.14). Upload those, then retry; if more are missing the answer lists the next 4096. |
-| `ArtifactBindingMismatch` | 409 | The service holds every receipt the object names, and the commitment to those receipts' `ciphertext_sha256` values in the order of the ids (`vault-format.md` C.3, header field 18) is not the header's. Nothing was stored for the request. A client that sealed the object from hashes it had verified never meets this; it means the object names a hash other than the one the service holds for an id. Sections 4.4, 4.9 and 5 name the steps. |
+| `ArtifactBindingMismatch` | 409 | The service holds every receipt the object names, and the commitment to those receipts' `ciphertext_sha256` values in the order of the ids (`vault-format.md` C.3, header field 18) is not the header's. Nothing was stored for the request. A client that sealed the object from hashes it had verified never meets this; it means the object names a hash other than the one the service holds for an id. The service cannot name the id: a client finds it by comparing the `ciphertext_sha256` that `getArtifactStatus` returns for the ids with the hashes it bound. Sections 4.4, 4.9 and 5 name the steps. |
 | `AckBeyondHead` | 409 | The acked `seq` is above the head. |
 | `PartOutOfSequence` | 409 | A snapshot part other than the next one expected. `details.next_part` is the one to send. |
 | `UploadIncomplete` | 409 | A snapshot upload was completed before every part arrived. `details.next_part` is the first missing one. |
@@ -1482,7 +1489,9 @@ production deploy).
 | 2026-11-06 | `personal-cfo-v98vd` (AC30) | addition | Operations `stageSnapshotClosure` and `getSnapshotClosure` (4.14), which stage and return a snapshot's closure as a binary sidecar of up to 2^20 ids; the halt gate (4.12) also applies to `stageSnapshotClosure`; the response member `artifact_count` of `getLatestSnapshot`. |
 | 2026-11-06 | `personal-cfo-v98vd` (AC30) | pre-release amendment | A snapshot's closure may hold up to 2^20 ids, where 4.4 and 4.9 allowed the 4096 of `max_artifact_manifest_ids`: a closure of more than 4096 ids is staged first and the `publishSnapshot` or `installEpoch` request then carries an empty `artifact_manifest` (a request member's meaning); `getLatestSnapshot` returns `artifact_manifest` as `null` for such a closure; `ArtifactMissing` lists at most the first 4096 missing ids; and section 7.1 gains the rows `max_snapshot_closure_ids` and `max_snapshot_closure_bytes`. |
 | 2026-11-11 | `personal-cfo-v98vd` | pre-release amendment | The decision order of the operations that stage a snapshot (`stageSnapshot` 4.9, `beginSnapshotUpload`, `putSnapshotPart` and `completeSnapshotUpload` 4.13, `stageSnapshotClosure` 4.14), and where the halt gate of 4.12 runs: authenticate from the credential alone, then the checks that need no vault state, then the `Forbidden` that needs the vault and the halt gate, then the rest. The common rule of 2.1, that routing checks the path forms before the credential is read, is now stated once and not per operation. 4.13 and 4.14 had put the vault-side `Forbidden` and the halt gate before the checks that need no vault state; 4.9 had no explicit order. No request, response, status or code changed. |
-| 2026-11-12 | `personal-cfo-v98vd` (AC31) | addition | The error `ArtifactBindingMismatch` (409, section 8.1) and the check that returns it: where every receipt is already required (`pushEnvelopes` step 7 after the receipt check, `publishSnapshot` and `installEpoch` step 8 after `ArtifactMissing`), the binding commitment of the receipts' `ciphertext_sha256` values in the ids' order must equal the object's header field 18 (`vault-format.md` C.3, C.11). The header field, the delta manifest's 64-byte items and the new 7.1 container maxima landed with `vault-format.md` spec-version 40; the sidecar the service stores stays ids only. |
+| 2026-11-11 | `personal-cfo-0g528.2` | pre-release amendment | Two numbers of section 7.1 changed: `max_envelope_container_bytes` from 16909058 to 17040163 and `max_snapshot_container_bytes` from 1073742104 to 1073742137. Why: an envelope's delta-manifest item grew from 32 to 64 bytes (an id and the ciphertext hash bound to it, 4096 × 32 = 131072 more) and every header gained field 18, `artifact_binding_commitment` (33 more bytes, `vault-format.md` spec-version 40). The change landed with the header field, and is recorded here under 11.1. |
+| 2026-11-11 | `personal-cfo-v98vd` (AC31) | addition | The error `ArtifactBindingMismatch` (409, section 8.1) and its place in the error lists of `pushEnvelopes`, `publishSnapshot` and `installEpoch`. |
+| 2026-11-11 | `personal-cfo-v98vd` (AC31) | pre-release amendment | A refusal added inside three steps that existed: where every receipt is already required (`pushEnvelopes` step 7 after the receipt check, `installEpoch` step 8 after `ArtifactMissing`, the closure step of `publishSnapshot`), the binding commitment of the receipts' `ciphertext_sha256` values in the ids' order must equal the object's header field 18 (`vault-format.md` C.3, C.11): otherwise `ArtifactBindingMismatch`. Each of those steps gains a refusal, which changes the decision order of sections 5 and 6 and adds a refusal to `publishSnapshot`. |
 
 **Why `voids` is a pre-release amendment and not an addition.** A response member
 that a client may ignore is an addition. `voids` cannot be ignored: a void takes a
@@ -1568,15 +1577,20 @@ The reason is that a request that can be refused without the vault should not re
 stateless refusal costs no vault object and cannot bind a `vault_id` to an account (section
 2.4), and the vault-side `Forbidden` is the first thing that needs the vault.
 
-For `personal-cfo-v98vd` AC31 (the 2026-11-12 row), against the same five things. The row is an
-addition, and the two container maxima of 7.1 it relies on were raised before the first release by the
-change that added header field 18 (`vault-format.md` spec-version 40), so that number change is a
-pre-release amendment, valid only before the first production deploy. It changes no request, no member
-of any response and no existing status code: a client that seals every object from hashes it verified
-never meets the new refusal, and a request that meets it was accepted by no earlier server because the
-header field it checks did not exist. `ArtifactBindingMismatch` is made inside steps that already
-exist (`pushEnvelopes` step 7, `installEpoch` step 8, the closure step of `publishSnapshot`), after the
-receipt check, so neither decision order of sections 5 and 6 gains, loses or reorders a step.
+For `personal-cfo-0g528.2` and `personal-cfo-v98vd` AC31 (the three 2026-11-11 rows), against the same five
+things. The two **pre-release amendments** are valid only before the first production deploy (11.1's
+pre-release bullet; `personal-cfo-2bxkg.21`), and the addition is the error code. **Item 5, a number in 7.1:**
+changed, by the first amendment row, for the two container maxima. **Item 4, the decision order of sections 5
+and 6:** changed, by the second amendment row: the lists of steps keep their numbers, but push step 7 and
+`installEpoch` step 8 each gain a refusal after their receipt check, and so does the closure step of
+`publishSnapshot`; 11.1 forbids that within a version, which is why the row is an amendment and not an
+addition. **Items 1 to 3:** no request, no member of any response and no existing status code changes; a
+client that seals every object from hashes it verified never meets the new refusal, and a request that meets
+it was accepted by no earlier server, because the header field it checks did not exist.
+
+The reason for the check is that a member acting alone must not be able to make every replica halt on bytes
+the service stored for an id: header field 18 fixes the ciphertext a replica must accept, and the service
+refuses an object whose field 18 is not what the service holds, at the first step that holds every receipt.
 
 **Why not a larger JSON limit, and why not chunks.** A JSON closure of 2^20 ids is about
 70 MB and a server would parse it whole before checking a byte of it. Raw ids are half the
