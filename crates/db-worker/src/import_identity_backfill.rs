@@ -835,10 +835,50 @@ mod tests {
              VALUES (zeroblob(16), zeroblob(16), 'skipped', 'done', 't')",
             "INSERT INTO import_dispositions (disposition_id, subject_id, kind, status, generation, created_at)
              VALUES (zeroblob(16), zeroblob(16), 'skipped', 'pending', 0, 't')",
+            // An outcome on a question that is not resolved, on another kind, or one that is unknown.
+            "INSERT INTO import_dispositions (disposition_id, subject_id, kind, status, outcome, created_at)
+             VALUES (zeroblob(16), zeroblob(16), 'restore_question', 'pending', 'restored', 't')",
+            "INSERT INTO import_dispositions (disposition_id, subject_id, kind, status, outcome, created_at)
+             VALUES (zeroblob(16), zeroblob(16), 'skipped', 'resolved', 'restored', 't')",
+            "INSERT INTO import_dispositions (disposition_id, subject_id, kind, status, outcome, created_at)
+             VALUES (zeroblob(16), zeroblob(16), 'restore_question', 'resolved', 'nope', 't')",
+            // A resolved question without an outcome.
+            "INSERT INTO import_dispositions (disposition_id, subject_id, kind, status, created_at)
+             VALUES (zeroblob(16), zeroblob(16), 'restore_question', 'resolved', 't')",
+            // A claimed batch exactly when the outcome is import_anyway.
+            "INSERT INTO import_dispositions (disposition_id, subject_id, kind, status, outcome, created_at)
+             VALUES (zeroblob(16), zeroblob(16), 'restore_question', 'resolved', 'import_anyway', 't')",
+            "INSERT INTO import_dispositions (disposition_id, subject_id, kind, status, outcome,
+                 claimed_source_batch_id, created_at)
+             VALUES (zeroblob(16), zeroblob(16), 'restore_question', 'resolved', 'restored', zeroblob(16), 't')",
+            "INSERT INTO import_dispositions (disposition_id, subject_id, kind, status, outcome,
+                 claimed_source_batch_id, created_at)
+             VALUES (zeroblob(16), zeroblob(16), 'restore_question', 'resolved', 'import_anyway', zeroblob(15), 't')",
         ];
         for sql in bad {
             assert!(conn.execute(sql, []).is_err(), "{sql}");
         }
+        // The three good shapes of a question are accepted.
+        for (outcome, batch) in [
+            ("restored", None),
+            ("dismissed", None),
+            ("import_anyway", Some(16)),
+        ] {
+            let sql = match batch {
+                Some(n) => format!(
+                    "INSERT INTO import_dispositions (disposition_id, subject_id, kind, status, outcome,
+                         claimed_source_batch_id, created_at)
+                     VALUES (randomblob(16), zeroblob(16), 'restore_question', 'resolved', '{outcome}',
+                         zeroblob({n}), 't')"
+                ),
+                None => format!(
+                    "INSERT INTO import_dispositions (disposition_id, subject_id, kind, status, outcome, created_at)
+                     VALUES (randomblob(16), zeroblob(16), 'restore_question', 'resolved', '{outcome}', 't')"
+                ),
+            };
+            conn.execute(&sql, []).unwrap();
+        }
+        conn.execute("DELETE FROM import_dispositions", []).unwrap();
         // The down drops the empty tables, and refuses (changing nothing) while either holds a row.
         conn.execute(
             "INSERT INTO import_dispositions (disposition_id, subject_id, kind, status, created_at)

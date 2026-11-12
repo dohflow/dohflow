@@ -260,7 +260,7 @@ name = "import_dispositions"
 class = "1"
 write_set = "full"
 primary_key = ["disposition_id"]
-columns = ["disposition_id:uuid", "subject_id:uuid", "kind:text", "status:text", "generation:int", "detail:text", "created_at:text", "decided_at:text"]
+columns = ["disposition_id:uuid", "subject_id:uuid", "kind:text", "status:text", "generation:int", "outcome:text", "claimed_source_batch_id:uuid", "detail:text", "created_at:text", "decided_at:text"]
 
 [[table]]
 name = "import_identities"

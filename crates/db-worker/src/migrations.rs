@@ -2873,9 +2873,13 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                      'restore_question')),
                  status         TEXT    NOT NULL CHECK (status IN ('pending', 'resolved')),
                  generation     INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
+                 outcome        TEXT    CHECK (outcome IN ('restored', 'dismissed', 'import_anyway')),
+                 claimed_source_batch_id BLOB CHECK (length(claimed_source_batch_id) = 16),
                  detail         TEXT,
                  created_at     TEXT    NOT NULL,
-                 decided_at     TEXT
+                 decided_at     TEXT,
+                 CHECK ((outcome IS NOT NULL) = (kind = 'restore_question' AND status = 'resolved')),
+                 CHECK ((claimed_source_batch_id IS NOT NULL) = (outcome IS 'import_anyway'))
              );
              CREATE INDEX idx_import_dispositions_subject ON import_dispositions (subject_id);",
         down: Some(
