@@ -29,8 +29,8 @@ use sync_core::artifact_transport::{ArtifactStatus, ArtifactTransport, Transport
 use sync_core::envelope::BoundArtifact;
 use sync_core::snapshot::{verify, Verified};
 use sync_core::status::EngineVersion;
+use vault_crypto::generate_dek;
 use vault_crypto::sync_envelope::EpochKey;
-use vault_crypto::{derive_kek, generate_dek, generate_salt, unwrap_dek, wrap_dek, Dek, Profile};
 
 const PDF: &[u8] = b"%PDF-1.4\nthe first attachment\n%%EOF\n";
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\nthe second attachment";
@@ -326,7 +326,8 @@ fn a_replica_is_built_with_every_artifact_of_the_closure_materialized() {
 
     // Every attachment: its row has the SNAPSHOT's columns (the edited media type is not an error),
     // its bytes read back, and `ref_count` is rebuilt from the links.
-    let attachments: Vec<(Vec<u8>, i64, Option<String>, Option<String>, i64)> = replica
+    type AttachmentRow = (Vec<u8>, i64, Option<String>, Option<String>, i64);
+    let attachments: Vec<AttachmentRow> = replica
         .read_connection()
         .unwrap()
         .prepare("SELECT id, plaintext_size, mime_type, original_filename, ref_count FROM attachments ORDER BY id")
@@ -345,10 +346,8 @@ fn a_replica_is_built_with_every_artifact_of_the_closure_materialized() {
     assert_eq!(first.2.as_deref(), Some("application/x-edited"));
     assert_eq!(first.3.as_deref(), Some("a.pdf"));
     assert_eq!(first.4, 1, "ref_count is the count of the links");
-    for (id, bytes) in [(origin.attachment, PDF)] {
-        let id = core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes(id));
-        assert_eq!(replica.read_attachment_bytes(id).unwrap(), bytes);
-    }
+    let id = core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes(origin.attachment));
+    assert_eq!(replica.read_attachment_bytes(id).unwrap(), PDF);
     // Every batch, to the same rows.
     assert_eq!(batch_rows(replica), batch_rows(&origin.worker));
     assert_eq!(count(replica, "SELECT COUNT(*) FROM source_batches"), 4);
