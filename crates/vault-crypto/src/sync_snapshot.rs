@@ -641,6 +641,23 @@ impl<S: RegisterStore, W: RollbackWitness> SnapshotSealer<'_, S, W> {
         self.saved_container(&saved, next)
     }
 
+    /// The record of the saved container of `object_id`, without reading the file: its id, length
+    /// and SHA-256, as they were written when it was sealed. `Ok(None)` when nothing is saved for
+    /// that id. The genesis records its container's id and digest from this before it drops the
+    /// saved file (`personal-cfo-1cltt.5`), so a later bootstrap can check what it fetches against
+    /// what this device sent.
+    ///
+    /// # Errors
+    /// A [`SnapshotError`].
+    pub fn saved_record(&self, object_id: &[u8; 16]) -> Result<Option<SavedSealed>, SnapshotError> {
+        let context = self.context();
+        Ok(self
+            .register
+            .store()
+            .saved(&context)?
+            .filter(|saved| &saved.object_id == object_id))
+    }
+
     /// Seal `plaintext` for publication, or hand back the saved container of the same publish.
     ///
     /// The order for a new seal: reserve the counter (register, then witness), seal, open the

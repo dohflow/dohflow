@@ -309,10 +309,28 @@ fn queue_planned(
 /// The queued command's envelope as it will be sealed if the person keeps it: the canonical
 /// plaintext of its complete original metadata, write-set hash and payload.
 fn preserved_envelope(command: &LocalCommand, node: Uuid) -> Result<Vec<u8>, RebaseError> {
-    let unsealable = || RebaseError::UnsealableLocalCommand {
+    command_envelope(
+        &command.meta,
+        command.write_set_hash,
+        command.payload.clone(),
+        node,
+    )
+    .ok_or(RebaseError::UnsealableLocalCommand {
         command_id: command.meta.command_id,
-    };
-    let actor_type = match command.meta.actor_type {
+    })
+}
+
+/// The canonical envelope plaintext of a command: its complete original metadata, write-set hash
+/// and payload, issued by the device `node`. `None` when it cannot be sealed (an idempotency key
+/// the envelope refuses, an `actor_id` over its bound, a payload over its bound). Shared by the
+/// rebase's queue and the genesis-gap reconciliation, so both refuse exactly what a seal would.
+pub(crate) fn command_envelope(
+    meta: &CommandMeta,
+    write_set_hash: [u8; 32],
+    payload: Vec<u8>,
+    node: Uuid,
+) -> Option<Vec<u8>> {
+    let actor_type = match meta.actor_type {
         ActorType::User => 1,
         ActorType::System => 2,
         ActorType::Importer => 3,
@@ -320,21 +338,20 @@ fn preserved_envelope(command: &LocalCommand, node: Uuid) -> Result<Vec<u8>, Reb
     };
     let plaintext = EnvelopePlaintext {
         meta: ImmutableMeta {
-            command_id: *command.meta.command_id.as_bytes(),
-            correlation_id: *command.meta.correlation_id.as_bytes(),
-            causation_id: command.meta.causation_id.map(|id| *id.as_bytes()),
+            command_id: *meta.command_id.as_bytes(),
+            correlation_id: *meta.correlation_id.as_bytes(),
+            causation_id: meta.causation_id.map(|id| *id.as_bytes()),
             actor_type,
-            actor_id: command.meta.actor_id.clone(),
-            idempotency_key: IdempotencyKey::parse(&command.meta.idempotency_key)
-                .map_err(|_| unsealable())?,
-            issued_at: command.meta.issued_at.as_unix_micros(),
+            actor_id: meta.actor_id.clone(),
+            idempotency_key: IdempotencyKey::parse(&meta.idempotency_key).ok()?,
+            issued_at: meta.issued_at.as_unix_micros(),
             device_id: *node.as_bytes(),
         },
-        write_set_hash: command.write_set_hash,
+        write_set_hash,
         delta_manifest: sync_core::envelope::BoundManifest::empty(),
-        payload: command.payload.clone(),
+        payload,
     };
-    plaintext.encode().map_err(|_| unsealable())
+    plaintext.encode().ok()
 }
 
 /// Rebuild class 2 once, after the replay, through the existing full-rebuild entry points. No

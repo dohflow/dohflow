@@ -7087,8 +7087,9 @@ fn operation_log_v2_adds_four_nullable_columns() {
         ],
         "v2 columns are appended and nullable, so pre-v2 rows stay valid",
     );
-    // The pre-v2 columns are unchanged (v65 adds two device-local columns after the v2 ones).
-    assert_eq!(columns.len(), 20);
+    // The pre-v2 columns are unchanged (v65 adds two device-local columns after the v2 ones, and v72
+    // the issue time).
+    assert_eq!(columns.len(), 21);
     assert_eq!(columns[0].0, "op_seq");
     assert_eq!(columns[13].0, "created_at");
 }
@@ -7263,7 +7264,7 @@ fn operation_log_v2_rolls_back_to_55_and_forward_again() {
         .unwrap();
     assert!(rows >= 1, "history survives the rollback");
     migrations::run_migrations(&mut conn).unwrap();
-    assert_eq!(operation_log_columns(&conn).len(), 20);
+    assert_eq!(operation_log_columns(&conn).len(), 21);
     let integrity: String = conn
         .query_row("PRAGMA integrity_check", [], |r| r.get(0))
         .unwrap();

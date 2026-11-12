@@ -701,3 +701,62 @@ fn a_retried_persist_reports_how_far_enabling_got_and_different_records_conflict
         "a refused genesis stays refused"
     );
 }
+
+fn record_snapshot(worker: &DbWorker, id: u8, digest: u8) -> Result<(), GenesisStoreError> {
+    worker.write_sync_state(|tx| {
+        sync_genesis::record_genesis_snapshot(tx, &[id; 16], &[digest; 32], NOW)
+    })
+}
+
+#[test]
+fn the_genesis_snapshot_identity_is_recorded_once_survives_a_restart_and_never_differs() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v.db");
+    {
+        let worker = open(&path);
+        // Nothing to record against before a genesis exists.
+        assert_eq!(
+            record_snapshot(&worker, 1, 2),
+            Err(GenesisStoreError::NotPersisted)
+        );
+        persist(&worker, &genesis_records()).unwrap();
+        // A genesis that has not been installed has no snapshot of its own yet.
+        assert!(matches!(
+            record_snapshot(&worker, 1, 2),
+            Err(GenesisStoreError::BadTransition { .. })
+        ));
+        advance(&worker, GenesisState::Installed).unwrap();
+        advance(&worker, GenesisState::Published).unwrap();
+        assert_eq!(record_snapshot(&worker, 1, 2), Ok(()));
+        assert_eq!(
+            record_snapshot(&worker, 1, 2),
+            Ok(()),
+            "the same values again"
+        );
+        assert_eq!(
+            record_snapshot(&worker, 1, 3),
+            Err(GenesisStoreError::Conflict),
+            "a vault has one genesis snapshot"
+        );
+        assert_eq!(
+            record_snapshot(&worker, 9, 2),
+            Err(GenesisStoreError::Conflict)
+        );
+    }
+    let held = load(&open(&path)).unwrap();
+    assert_eq!(held.genesis_snapshot_id, Some([1; 16]));
+    assert_eq!(held.genesis_container_sha256, Some([2; 32]));
+}
+
+#[test]
+fn a_genesis_that_ended_any_other_way_records_no_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let worker = open(&dir.path().join("v.db"));
+    persist(&worker, &genesis_records()).unwrap();
+    advance(&worker, GenesisState::VaultKnown).unwrap();
+    assert!(matches!(
+        record_snapshot(&worker, 1, 2),
+        Err(GenesisStoreError::BadTransition { .. })
+    ));
+    assert_eq!(load(&worker).unwrap().genesis_snapshot_id, None);
+}

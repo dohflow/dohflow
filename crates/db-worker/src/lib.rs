@@ -100,6 +100,7 @@ pub mod sync_artifacts;
 pub mod sync_bootstrap;
 pub mod sync_enable;
 pub mod sync_genesis;
+pub mod sync_genesis_gap;
 pub mod sync_materialize;
 pub mod sync_receive;
 pub mod sync_references;
@@ -3498,6 +3499,15 @@ impl DbWorker {
             attachments::remove_blob(&dir, &storage_id)?;
         }
         Ok(())
+    }
+
+    /// The raw DEK as a shared handle, for building another vault keyed like this one (the genesis
+    /// reconciliation's throwaway replica), or fail if the vault was opened in passphrase mode.
+    pub(crate) fn raw_dek(&self) -> Result<std::sync::Arc<Dek>, DbError> {
+        match &self.key {
+            KeyMaterial::Raw(dek) => Ok(std::sync::Arc::clone(dek)),
+            KeyMaterial::Passphrase(_) => Err(DbError::KeyUnavailable),
+        }
     }
 
     /// Borrow the raw DEK, or fail if the vault was opened in passphrase mode —
@@ -8599,9 +8609,9 @@ fn apply_command(
             idempotency_key, operation_type, affected_entities, metadata, node_id,
             vault_schema_version, hlc_timestamp, created_at,
             payload, payload_schema_version, write_set_hash, engine_version, applied_base_seq,
-            rebased_from
+            rebased_from, issued_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                  ?19)",
+                  ?19, ?20)",
         params![
             meta.command_id,
             meta.correlation_id,
@@ -8622,6 +8632,7 @@ fn apply_command(
             ENGINE_VERSION,
             sync_applied_base_seq,
             rebased_from,
+            meta.issued_at.as_unix_micros(),
         ],
     )?;
     let op_seq = tx.last_insert_rowid();

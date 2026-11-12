@@ -106,6 +106,13 @@ pub struct PersistedGenesis {
     /// snapshot (`None` until an export is made). A log that has grown past it once the genesis is
     /// published holds local commands the genesis does not carry.
     pub export_high_water: Option<u64>,
+    /// The id of the genesis snapshot this device published, recorded when the genesis was
+    /// recorded as published (`None` before that, for a genesis that ended any other way, and for a
+    /// vault that enabled Sync under a build that did not record it).
+    pub genesis_snapshot_id: Option<[u8; 16]>,
+    /// The SHA-256 of the container this device sent for it; `Some` exactly when
+    /// [`Self::genesis_snapshot_id`] is.
+    pub genesis_container_sha256: Option<[u8; 32]>,
 }
 
 impl core::fmt::Debug for PersistedGenesis {
@@ -159,8 +166,17 @@ fn unavailable(_: rusqlite::Error) -> GenesisStoreError {
     GenesisStoreError::Unavailable
 }
 
-/// `vault_id`, `membership_record`, `epoch_record` and `state` as the table stores them.
-type GenesisRow = (Vec<u8>, Vec<u8>, Vec<u8>, String, Option<i64>);
+/// `vault_id`, `membership_record`, `epoch_record`, `state`, `export_high_water`,
+/// `genesis_snapshot_id` and `genesis_container_sha256` as the table stores them.
+type GenesisRow = (
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    String,
+    Option<i64>,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+);
 
 /// The persisted genesis, if any.
 ///
@@ -169,15 +185,26 @@ type GenesisRow = (Vec<u8>, Vec<u8>, Vec<u8>, String, Option<i64>);
 pub fn load(conn: &Connection) -> Result<Option<PersistedGenesis>, GenesisStoreError> {
     let row: Option<GenesisRow> = conn
         .query_row(
-            "SELECT vault_id, membership_record, epoch_record, state, export_high_water
+            "SELECT vault_id, membership_record, epoch_record, state, export_high_water,
+                    genesis_snapshot_id, genesis_container_sha256
              FROM sync_genesis WHERE singleton = 1",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
         )
         .optional()
         .map_err(unavailable)?;
     row.map(
-        |(vault_id, membership_record, epoch_record, state, high_water)| {
+        |(vault_id, membership_record, epoch_record, state, high_water, snapshot_id, digest)| {
             Ok(PersistedGenesis {
                 vault_id: vault_id
                     .try_into()
@@ -187,6 +214,12 @@ pub fn load(conn: &Connection) -> Result<Option<PersistedGenesis>, GenesisStoreE
                 state: GenesisState::parse(&state).ok_or(GenesisStoreError::Corrupt)?,
                 export_high_water: high_water
                     .map(|mark| u64::try_from(mark).map_err(|_| GenesisStoreError::Corrupt))
+                    .transpose()?,
+                genesis_snapshot_id: snapshot_id
+                    .map(|id| id.try_into().map_err(|_| GenesisStoreError::Corrupt))
+                    .transpose()?,
+                genesis_container_sha256: digest
+                    .map(|d| d.try_into().map_err(|_| GenesisStoreError::Corrupt))
                     .transpose()?,
             })
         },
@@ -264,6 +297,49 @@ pub fn record_export_mark(
     conn.execute(
         "UPDATE sync_genesis SET export_high_water = ?1, updated_at = ?2 WHERE singleton = 1",
         params![mark, now],
+    )
+    .map_err(unavailable)?;
+    Ok(())
+}
+
+/// Record which snapshot the genesis was and the SHA-256 of the container this device sent for
+/// it (`personal-cfo-1cltt.5`). Call it in the transaction that records the genesis as
+/// `Published`, **before** the saved container is dropped: the saved container is the only other
+/// place either value lives. The same values again change nothing; other values for a genesis that
+/// already has them are [`GenesisStoreError::Conflict`], because a vault has one genesis snapshot.
+///
+/// # Errors
+/// [`GenesisStoreError::NotPersisted`], [`GenesisStoreError::BadTransition`] for a genesis that
+/// is not `Published` or `Installed` (a refused or lost genesis has no snapshot of its own to
+/// record), or [`GenesisStoreError::Conflict`].
+pub fn record_genesis_snapshot(
+    conn: &Connection,
+    snapshot_id: &[u8; 16],
+    container_sha256: &[u8; 32],
+    now: &str,
+) -> Result<(), GenesisStoreError> {
+    let held = load(conn)?.ok_or(GenesisStoreError::NotPersisted)?;
+    if !matches!(
+        held.state,
+        GenesisState::Installed | GenesisState::Published
+    ) {
+        return Err(GenesisStoreError::BadTransition {
+            from: held.state,
+            to: held.state,
+        });
+    }
+    if let (Some(id), Some(digest)) = (held.genesis_snapshot_id, held.genesis_container_sha256) {
+        return if &id == snapshot_id && &digest == container_sha256 {
+            Ok(())
+        } else {
+            Err(GenesisStoreError::Conflict)
+        };
+    }
+    conn.execute(
+        "UPDATE sync_genesis
+         SET genesis_snapshot_id = ?1, genesis_container_sha256 = ?2, updated_at = ?3
+         WHERE singleton = 1",
+        params![snapshot_id, container_sha256, now],
     )
     .map_err(unavailable)?;
     Ok(())
