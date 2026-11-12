@@ -647,6 +647,7 @@ pub fn is_command_refusal(error: &DbError) -> bool {
         | E::VaultInUse
         | E::NewerSchema { .. }
         | E::UnsupportedSchema
+        | E::MigrationRefusedSyncArmed { .. }
         | E::WorkerUnavailable(_)
         | E::WriterPanicked
         | E::SelfTestFailed(_)

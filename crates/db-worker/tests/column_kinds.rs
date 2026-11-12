@@ -856,6 +856,10 @@ const UNEXERCISED: &[(&str, &[&str])] = &[
     ("forecast_assumption_events", &["bd"]),
     ("household_members", &["bd"]),
     ("households", &["bi", "bd"]),
+    // No command writes the two import tables yet (personal-cfo-0g528.3, S3b part 1: the schema and
+    // the backfill); the commit rule of part 2 exercises them, and these rows shrink then.
+    ("import_dispositions", &["bi", "bu", "bd"]),
+    ("import_identities", &["bi", "bu", "bd"]),
     // The map is insert-only: a command meets a (role, currency) pair no seed created (a euro
     // account with an opening balance) and inserts it; nothing updates or deletes a row.
     ("system_ledger_accounts", &["bu", "bd"]),

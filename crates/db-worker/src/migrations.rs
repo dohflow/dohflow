@@ -2824,13 +2824,92 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Version 76 (personal-cfo-0g528.3, S3b part 1; provisional: it moves if another migration lands
+    // first). The class-1 tables of ADR 0074 Addendum J: `import_identities` maps a committed row's
+    // cross-device identity (a provider transaction's derived id, or a file row's) to the transaction
+    // committed for it, with a snapshot to compare against; `import_dispositions` holds the decisions
+    // about an identity or a file (skip, import anyway, a provider revision, the restore question).
+    // Neither names a class-3 row. The migration REFUSES, before it writes anything, on a vault where
+    // Sync is armed (a `sync_base` or `sync_genesis` row): the backfill below writes class-1 rows
+    // outside a command, which no other device would receive. Its post-step backfills the identities of
+    // what the vault imported before (`import_identity_backfill`). Down refuses while either table
+    // holds a row, so it never drops one.
+    Migration {
+        version: 76,
+        name: "import_identities_and_dispositions",
+        up: "CREATE TABLE import_identities (
+                 identity_id          BLOB    PRIMARY KEY CHECK (length(identity_id) = 16),
+                 kind                 TEXT    NOT NULL CHECK (kind IN ('provider', 'file')),
+                 connection_id        BLOB    CHECK (connection_id IS NULL OR length(connection_id) = 16),
+                 provider_account_key TEXT,
+                 provider_txn_id      TEXT,
+                 file_fingerprint     BLOB    CHECK (file_fingerprint IS NULL OR length(file_fingerprint) = 32),
+                 row_ordinal          INTEGER CHECK (row_ordinal IS NULL OR row_ordinal >= 1),
+                 transaction_id       BLOB    NOT NULL REFERENCES ledger_transactions(id),
+                 account_id           BLOB    NOT NULL,
+                 amount_minor         INTEGER NOT NULL,
+                 currency             TEXT    NOT NULL,
+                 posted_date          TEXT    NOT NULL,
+                 provider_description TEXT,
+                 created_at           TEXT    NOT NULL,
+                 CHECK (
+                     (kind = 'provider'
+                        AND connection_id IS NOT NULL AND provider_account_key IS NOT NULL
+                        AND provider_txn_id IS NOT NULL
+                        AND file_fingerprint IS NULL AND row_ordinal IS NULL)
+                  OR (kind = 'file'
+                        AND file_fingerprint IS NOT NULL AND row_ordinal IS NOT NULL
+                        AND connection_id IS NULL AND provider_account_key IS NULL
+                        AND provider_txn_id IS NULL AND provider_description IS NULL)),
+                 UNIQUE (connection_id, provider_account_key, provider_txn_id),
+                 UNIQUE (file_fingerprint, row_ordinal)
+             );
+             CREATE INDEX idx_import_identities_transaction ON import_identities (transaction_id);
+             CREATE TABLE import_dispositions (
+                 disposition_id BLOB    PRIMARY KEY CHECK (length(disposition_id) = 16),
+                 subject_id     BLOB    NOT NULL CHECK (length(subject_id) = 16),
+                 kind           TEXT    NOT NULL CHECK (kind IN (
+                     'skipped', 'import_anyway', 'provider_revision', 'file_row_conflict',
+                     'restore_question')),
+                 status         TEXT    NOT NULL CHECK (status IN ('pending', 'resolved')),
+                 generation     INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
+                 detail         TEXT,
+                 created_at     TEXT    NOT NULL,
+                 decided_at     TEXT
+             );
+             CREATE INDEX idx_import_dispositions_subject ON import_dispositions (subject_id);",
+        down: Some(
+            "CREATE TEMP TABLE import_identities_down_refuses_a_row (ok INTEGER NOT NULL CHECK (ok = 1));
+             INSERT INTO import_identities_down_refuses_a_row
+                 SELECT CASE WHEN EXISTS (SELECT 1 FROM import_identities)
+                              OR EXISTS (SELECT 1 FROM import_dispositions)
+                        THEN 0 ELSE 1 END;
+             DROP TABLE import_identities_down_refuses_a_row;
+             DROP TABLE import_dispositions;
+             DROP TABLE import_identities;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
+
+/// Rust steps that run in the same transaction as a migration's SQL, BEFORE it, so a step that refuses
+/// leaves nothing written. Keyed by migration version. They run only on the way up.
+type PreUp = fn(&rusqlite::Connection) -> Result<(), DbError>;
+
+const PRE_UP: &[(i64, PreUp)] = &[(
+    76,
+    crate::import_identity_backfill::refuse_on_an_armed_vault,
+)];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
 /// cannot do (hashing). Keyed by migration version. They run only on the way up.
 type PostUp = fn(&rusqlite::Connection) -> rusqlite::Result<()>;
 
-const POST_UP: &[(i64, PostUp)] = &[(61, crate::households::migrate_up)];
+const POST_UP: &[(i64, PostUp)] = &[
+    (61, crate::households::migrate_up),
+    (76, crate::import_identity_backfill::migrate_up),
+];
 
 const fn max_version() -> i64 {
     let mut max = 0;
@@ -3013,7 +3092,11 @@ fn apply_to(conn: &mut Connection, migrations: &[Migration], stamp: i64) -> Resu
         if applied.iter().any(|(v, _)| *v == m.version) {
             continue;
         }
-        run_step(conn, m, m.up, |tx| {
+        let pre = PRE_UP
+            .iter()
+            .find(|(version, _)| *version == m.version)
+            .map(|(_, step)| *step);
+        run_step(conn, m, m.up, pre, |tx| {
             for (version, step) in POST_UP {
                 if *version == m.version {
                     step(tx)?;
@@ -3071,6 +3154,7 @@ fn run_step(
     conn: &mut Connection,
     m: &Migration,
     sql: &str,
+    pre: Option<PreUp>,
     track: impl FnOnce(&rusqlite::Transaction<'_>) -> rusqlite::Result<usize>,
 ) -> Result<(), DbError> {
     let (restore_foreign_keys, violations_before) = if m.foreign_keys_off {
@@ -3083,6 +3167,9 @@ fn run_step(
     };
     let result = (|| -> Result<(), DbError> {
         let tx = conn.transaction()?;
+        if let Some(pre) = pre {
+            pre(&tx)?;
+        }
         tx.execute_batch(sql)?;
         if m.foreign_keys_off {
             let introduced = foreign_key_violations(&tx)?
@@ -3127,7 +3214,7 @@ pub(crate) fn migrate_down(conn: &mut Connection, to_version: i64) -> Result<u64
                 m.version, m.name
             ))
         })?;
-        run_step(conn, m, down, |tx| {
+        run_step(conn, m, down, None, |tx| {
             tx.execute(
                 "DELETE FROM schema_migrations WHERE version = ?1",
                 [m.version],
@@ -4366,8 +4453,8 @@ mod tests {
         );
         assert!(origin.is_ok(), "an unchanged cursor is not a move back");
 
-        // 70 to 75 sit above 69: stepping to 68 reverts all seven.
-        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 7);
+        // 70 to 76 sit above 69: stepping to 68 reverts all eight.
+        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 8);
         assert!(
             objects(&conn).is_empty(),
             "down drops both tables and every trigger"
@@ -4406,8 +4493,8 @@ mod tests {
                 "sync_artifacts"
             ]
         );
-        // 71 to 75 sit above 70: stepping to 69 reverts all six.
-        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 6);
+        // 71 to 76 sit above 70: stepping to 69 reverts all seven.
+        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 7);
         assert!(objects(&conn).is_empty());
         apply(&mut conn, MIGRATIONS).unwrap();
         let rows: i64 = conn
@@ -4533,8 +4620,8 @@ mod tests {
         assert!(insert("something_else", 16, 3).is_err());
         assert!(insert("import_discarded", 15, 3).is_err());
         assert!(insert("import_discarded", 16, -1).is_err());
-        // 72, 73, 74 and 75 sit above 71: stepping to 70 reverts all five.
-        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 5);
+        // 72 to 76 sit above 71: stepping to 70 reverts all six.
+        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 6);
         let left: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%sync_notices%'",
@@ -4612,9 +4699,9 @@ mod tests {
         outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "zeroblob(2)").unwrap();
         outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
 
-        // 73 (the genesis identity), 74 (the live closure) and 75 (shared blobs) sit above 72: step
-        // past them first.
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 3);
+        // 73 (the genesis identity), 74 (the live closure), 75 (shared blobs) and 76 (import
+        // identities) sit above 72: step past them first.
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 4);
         assert_eq!(migrate_down(&mut conn, 71).unwrap(), 1);
 
         let rows: i64 = conn
@@ -4663,7 +4750,7 @@ mod tests {
         outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "NULL").unwrap();
         outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
 
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 3);
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 4);
         assert!(migrate_down(&mut conn, 71).is_err());
 
         let applied: i64 = conn
@@ -4725,7 +4812,8 @@ mod tests {
             [],
         )
         .unwrap();
-        apply(&mut conn, MIGRATIONS).unwrap();
+        // Through 75: version 76 refuses a vault where Sync is armed, and this one has a genesis row.
+        apply(&mut conn, &MIGRATIONS[..75]).unwrap();
         let identity = |conn: &Connection| -> (Option<Vec<u8>>, Option<Vec<u8>>) {
             conn.query_row(
                 "SELECT genesis_snapshot_id, genesis_container_sha256 FROM sync_genesis",
@@ -4776,7 +4864,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sync_genesis", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 1, "and keeps the row");
-        apply(&mut conn, MIGRATIONS).unwrap();
+        apply(&mut conn, &MIGRATIONS[..75]).unwrap();
         assert_eq!(identity(&conn), (None, None));
     }
 
@@ -4786,7 +4874,7 @@ mod tests {
     fn v75_lets_rows_share_a_blob_and_carries_every_row_over() {
         let mut conn = Connection::open_in_memory().unwrap();
         // Up to 74: the unique constraint is still there.
-        apply(&mut conn, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        apply(&mut conn, &MIGRATIONS[..MIGRATIONS.len() - 2]).unwrap();
         let attach = |conn: &Connection, id: u8, sid: &str| {
             conn.execute(
                 "INSERT INTO attachments (id, storage_id, wrapped_content_key, content_key_nonce,
@@ -4875,7 +4963,8 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(version, CURRENT_VERSION, "and the step is not recorded");
+        // Version 76 stepped down first (its tables are empty); 75 refused and stays recorded.
+        assert_eq!(version, 75, "and the step is not recorded");
         conn.execute("DELETE FROM attachments WHERE id = ?1", [vec![2_u8; 16]])
             .unwrap();
         // A row and a staged artifact naming one blob refuse too (version 74 assumes the two are
@@ -5014,7 +5103,7 @@ mod tests {
             .unwrap();
         assert_eq!(index, 1);
 
-        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 2);
+        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 3);
         let tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'sync_live_closure%'",

@@ -256,6 +256,20 @@ primary_key = ["id"]
 columns = ["id:uuid", "name:text", "household_timezone:text", "platform_household_id:text", "created_at:text", "updated_at:text"]
 
 [[table]]
+name = "import_dispositions"
+class = "1"
+write_set = "full"
+primary_key = ["disposition_id"]
+columns = ["disposition_id:uuid", "subject_id:uuid", "kind:text", "status:text", "generation:int", "detail:text", "created_at:text", "decided_at:text"]
+
+[[table]]
+name = "import_identities"
+class = "1"
+write_set = "full"
+primary_key = ["identity_id"]
+columns = ["identity_id:uuid", "kind:text", "connection_id:uuid", "provider_account_key:text", "provider_txn_id:text", "file_fingerprint:bytes", "row_ordinal:int", "transaction_id:uuid", "account_id:uuid", "amount_minor:int", "currency:text", "posted_date:text", "provider_description:text", "created_at:text"]
+
+[[table]]
 name = "income_sources"
 class = "1"
 write_set = "full"
