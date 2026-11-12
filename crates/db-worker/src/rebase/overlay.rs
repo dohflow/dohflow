@@ -198,6 +198,41 @@ const OVERLAID: &[Spec] = &[
         kind: Kind::Keyed,
         refs: &[],
     },
+    // The Sync device-local state of 1cltt (the counter register, the genesis, the saved snapshot
+    // record) and of 0g528 (the artifact mapping, the notices): each is "preserve every row byte for
+    // byte" in the manifest, so the live row replaces the base copy. A counter never goes back (a
+    // reused counter under one key is a reused nonce): the live register only ever moved forward
+    // from the base's.
+    Spec {
+        table: "sync_counter_register",
+        filter: None,
+        kind: Kind::Keyed,
+        refs: &[],
+    },
+    Spec {
+        table: "sync_genesis",
+        filter: None,
+        kind: Kind::Keyed,
+        refs: &[],
+    },
+    Spec {
+        table: "sync_saved_snapshot",
+        filter: None,
+        kind: Kind::Keyed,
+        refs: &[],
+    },
+    Spec {
+        table: "sync_artifacts",
+        filter: None,
+        kind: Kind::Keyed,
+        refs: &[],
+    },
+    Spec {
+        table: "sync_notices",
+        filter: None,
+        kind: Kind::Keyed,
+        refs: &[],
+    },
 ];
 
 /// The class-1b rows of an import still in progress (bxsbz.6 AC5): its batch, the batch's records and
@@ -276,6 +311,24 @@ const MIGRATIONS: Spec = Spec {
     refs: &[],
 };
 
+/// The void ledger (personal-cfo-1cltt.5, vault-format B.2): append-only, so it is never dropped
+/// from the scratch vault. The base image's copy is a prefix of the live one, and the swap appends
+/// the live rows the base copy lacks, in ordinal order ([`overlay_voids`]).
+const VOIDS: Spec = Spec {
+    table: "sync_voids",
+    filter: None,
+    kind: Kind::Keyed,
+    refs: &[],
+};
+/// The applied cursor: a singleton that only moves forward. The swapped-in vault keeps the larger
+/// of its own (the rebase applied the pulled envelopes there) and the live one ([`overlay_position`]).
+const POSITION: Spec = Spec {
+    table: "sync_position",
+    filter: None,
+    kind: Kind::Keyed,
+    refs: &[],
+};
+
 /// The audit event types written by a planned command's apply arm: the replay writes them again
 /// under its own plan, so the live row is withheld (ADR 0073 Addendum D). Every other event type is
 /// a stable security or capability acknowledgement, or a token-removal record, and is never
@@ -294,6 +347,8 @@ pub(crate) fn class_three_tables_handled() -> Vec<&'static str> {
             AUDIT.table,
             MEMOS.table,
             MIGRATIONS.table,
+            VOIDS.table,
+            POSITION.table,
             "sync_outbox",
             "projection_cursors",
         ])
@@ -506,6 +561,9 @@ pub struct Preservation {
     audit: TableImage,
     memos: TableImage,
     migrations: TableImage,
+    /// The void ledger and the applied cursor, which the overlay carries by their own rules.
+    voids: TableImage,
+    position: TableImage,
     /// The in-flight import's batch, records and parser runs, in that order.
     sources: Vec<TableImage>,
     digest: [u8; 32],
@@ -576,6 +634,8 @@ impl DbWorker {
         let audit = read_table(&tx, &AUDIT)?;
         let memos = read_table(&tx, &MEMOS)?;
         let migrations = read_table(&tx, &MIGRATIONS)?;
+        let voids = read_table(&tx, &VOIDS)?;
+        let position = read_table(&tx, &POSITION)?;
         let sources = [&SRC_BATCHES, &SRC_RECORDS, &SRC_RUNS]
             .into_iter()
             .map(|spec| read_table(&tx, spec))
@@ -587,7 +647,7 @@ impl DbWorker {
         }
         for table in tables
             .iter()
-            .chain([&audit, &memos, &migrations])
+            .chain([&audit, &memos, &migrations, &voids, &position])
             .chain(&sources)
         {
             hasher.update(table.table.as_bytes());
@@ -606,6 +666,8 @@ impl DbWorker {
             audit,
             memos,
             migrations,
+            voids,
+            position,
             sources,
             digest: hasher.finalize().into(),
         })
@@ -752,11 +814,13 @@ fn overlay_in(
     };
     let tx = conn.unchecked_transaction()?;
 
-    for table in image
-        .tables
-        .iter()
-        .chain([&image.audit, &image.memos, &image.migrations])
-    {
+    for table in image.tables.iter().chain([
+        &image.audit,
+        &image.memos,
+        &image.migrations,
+        &image.voids,
+        &image.position,
+    ]) {
         if columns_of(&tx, table.table)? != table.columns {
             return Err(blocked(table.table, BlockCause::SchemaDiffers));
         }
@@ -800,6 +864,20 @@ fn overlay_in(
     };
     check_memos(&tx, image, &mut memos, &blocked)?;
     report.tables.push(memos);
+
+    let mut voids = OverlayTable {
+        table: VOIDS.table,
+        ..OverlayTable::default()
+    };
+    overlay_voids(&tx, image, &mut voids, &blocked)?;
+    report.tables.push(voids);
+
+    let mut position = OverlayTable {
+        table: POSITION.table,
+        ..OverlayTable::default()
+    };
+    overlay_position(&tx, image, &mut position, &blocked)?;
+    report.tables.push(position);
 
     check_outbox(&tx, &blocked)?;
     check_cursors(&tx, &blocked)?;
@@ -939,6 +1017,133 @@ fn place(
             },
         ))
     }
+}
+
+/// Carry the void ledger: append the live rows the scratch vault lacks, in ordinal order. The ledger
+/// is append-only (its triggers refuse an update or a delete), so the base image's copy is a prefix
+/// of the live one and nothing is dropped; a rebase that restored the ledger as it was at capture
+/// could re-admit a position a void already skipped. A live row whose ordinal the scratch vault
+/// holds with other content, or one the ledger's own triggers refuse (a gap, an overlap), is a
+/// [`BlockCause::KeyCollision`]: the two ledgers are not one history.
+fn overlay_voids(
+    tx: &Connection,
+    image: &Preservation,
+    entry: &mut OverlayTable,
+    blocked: &dyn Fn(&'static str, BlockCause) -> RebaseError,
+) -> Result<(), RebaseError> {
+    let table = &image.voids;
+    let Some(ordinal) = table.column("ordinal") else {
+        return Err(blocked(VOIDS.table, BlockCause::SchemaDiffers));
+    };
+    let mut rows: Vec<&Vec<Value>> = table.rows.iter().collect();
+    rows.sort_by_key(|row| match &row[ordinal] {
+        Value::Integer(n) => *n,
+        _ => i64::MAX,
+    });
+    let columns = table
+        .columns
+        .iter()
+        .map(|c| quote(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let marks = (1..=table.columns.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let insert = format!(
+        "INSERT INTO {} ({columns}) VALUES ({marks})",
+        quote(VOIDS.table)
+    );
+    let mut collisions = Vec::new();
+    for row in rows {
+        match row_by_key(tx, table, &table.key_of(row))? {
+            Some(existing) if existing == *row => entry.unchanged += 1,
+            Some(_) => collisions.push(key_bytes(&table.key_of(row))),
+            None => match tx.execute(&insert, params_from_iter(row.iter())) {
+                Ok(_) => entry.inserted += 1,
+                Err(rusqlite::Error::SqliteFailure(error, _))
+                    if error.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    collisions.push(key_bytes(&table.key_of(row)));
+                }
+                Err(other) => return Err(other.into()),
+            },
+        }
+    }
+    if collisions.is_empty() {
+        Ok(())
+    } else {
+        Err(blocked(
+            VOIDS.table,
+            BlockCause::KeyCollision {
+                rows: Offending::from_keys(&collisions),
+            },
+        ))
+    }
+}
+
+/// Carry the applied cursor forward only. The rebase applied the pulled envelopes in the scratch
+/// vault, so its cursor is normally ahead of the live one and is kept as it is; the live value is
+/// taken only when it is the larger (a void honored after the base moved the cursor past a range the
+/// pull never reached), never an older one over a newer. A live cursor the scratch vault has no row
+/// for is inserted; a different `snapshot_root` is a [`BlockCause::KeyCollision`], because the root
+/// of a replica never changes. A raised or inserted row counts as `inserted`; a scratch value that
+/// was already the larger as `unchanged`.
+fn overlay_position(
+    tx: &Connection,
+    image: &Preservation,
+    entry: &mut OverlayTable,
+    blocked: &dyn Fn(&'static str, BlockCause) -> RebaseError,
+) -> Result<(), RebaseError> {
+    let table = &image.position;
+    let (Some(root), Some(next)) = (table.column("snapshot_root"), table.column("next_to_apply"))
+    else {
+        return Err(blocked(POSITION.table, BlockCause::SchemaDiffers));
+    };
+    let Some(live) = table.rows.first() else {
+        return Ok(());
+    };
+    let scratch: Option<(Value, i64)> = tx
+        .query_row(
+            "SELECT snapshot_root, next_to_apply FROM sync_position WHERE singleton = 1",
+            [],
+            |r| Ok((r.get::<_, Value>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .map(Some)
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    let Value::Integer(live_next) = live[next] else {
+        return Err(blocked(POSITION.table, BlockCause::SchemaDiffers));
+    };
+    match scratch {
+        None => {
+            tx.execute(
+                "INSERT INTO sync_position (singleton, snapshot_root, next_to_apply)
+                 VALUES (1, ?1, ?2)",
+                rusqlite::params![live[root], live_next],
+            )?;
+            entry.inserted += 1;
+        }
+        Some((scratch_root, _)) if scratch_root != live[root] => {
+            return Err(blocked(
+                POSITION.table,
+                BlockCause::KeyCollision {
+                    rows: Offending::from_keys(&[b"singleton".to_vec()]),
+                },
+            ));
+        }
+        Some((_, scratch_next)) if scratch_next >= live_next => entry.unchanged += 1,
+        Some(_) => {
+            tx.execute(
+                "UPDATE sync_position SET next_to_apply = ?1 WHERE singleton = 1",
+                [live_next],
+            )?;
+            entry.inserted += 1;
+        }
+    }
+    Ok(())
 }
 
 /// Carry the class-1b rows of an import still in progress, with its staging rows, as one local unit

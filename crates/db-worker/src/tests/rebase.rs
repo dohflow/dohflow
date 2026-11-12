@@ -2474,6 +2474,12 @@ mod overlay {
     /// A live vault whose base (server seq 5) carries the device-local state of the earlier
     /// session, then moves on: every kind of class-3 row is changed, removed or added after it.
     fn world() -> World {
+        world_with(|_| {})
+    }
+
+    /// [`world`], with `before_base` run on the live vault just before the base image is taken, so
+    /// a test can put device-local state in the base's copy.
+    fn world_with(before_base: impl FnOnce(&DbWorker)) -> World {
         let (dir, live) = worker();
         let account = AccountId::new();
         live.dispatch(meta(), liquid_account_cmd(account, Currency::Usd, 50_000))
@@ -2509,6 +2515,7 @@ mod overlay {
         job(&live, "before-base");
         live.record_audit_event(&meta(), "ack_before_base").unwrap();
         receipt(&live, "2026-10-01T12:00:00Z");
+        before_base(&live);
         live.initialize_base_image(5).unwrap();
         let scratch = dir.path().join("rebase").join("scratch.db");
         World {
@@ -3150,6 +3157,248 @@ mod overlay {
             blocked4.cause,
             BlockCause::OutboxWithoutLog { .. }
         ));
+    }
+
+    /// The Sync void ledger and applied cursor (personal-cfo-1cltt.5): a replica bootstrapped from a
+    /// snapshot rooted at 4 that skips positions 2 to 3, with the base taken at seq 5.
+    fn seed_ledger(live: &DbWorker) {
+        exec(
+            live,
+            "INSERT INTO sync_voids (ordinal, void_id, first, last, origin)
+             VALUES (1, zeroblob(32), 2, 3, 'seeded')",
+            [],
+        );
+        exec(
+            live,
+            "INSERT INTO sync_position (singleton, snapshot_root, next_to_apply) VALUES (1, 4, 6)",
+            [],
+        );
+    }
+
+    fn honor(live: &DbWorker, ordinal: i64, first: i64, last: i64) {
+        exec(
+            live,
+            "INSERT INTO sync_voids (ordinal, void_id, first, last, origin)
+             VALUES (?1, randomblob(32), ?2, ?3, 'honored')",
+            params![ordinal, first, last],
+        );
+    }
+
+    fn ledger(worker: &DbWorker) -> Vec<(i64, i64, i64, String)> {
+        let guard = worker.lock();
+        let mut stmt = guard
+            .conn
+            .prepare("SELECT ordinal, first, last, origin FROM sync_voids ORDER BY ordinal")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn cursor(worker: &DbWorker) -> Option<(Option<i64>, i64)> {
+        worker
+            .lock()
+            .conn
+            .query_row(
+                "SELECT snapshot_root, next_to_apply FROM sync_position WHERE singleton = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+    }
+
+    #[test]
+    fn a_void_honored_after_the_base_survives_the_swap_appended_in_ordinal_order() {
+        let w = world_with(seed_ledger);
+        drift(&w);
+        honor(&w.live, 2, 7, 8);
+        honor(&w.live, 3, 10, 12);
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        assert_eq!(
+            ledger(scratch.worker()).len(),
+            1,
+            "the base's copy holds only what was recorded at capture"
+        );
+
+        let report = scratch.overlay_class3(&image).unwrap();
+
+        let want = vec![
+            (1, 2, 3, "seeded".to_owned()),
+            (2, 7, 8, "honored".to_owned()),
+            (3, 10, 12, "honored".to_owned()),
+        ];
+        assert_eq!(ledger(scratch.worker()), want, "the live ledger, in order");
+        assert_eq!(ledger(&w.live), want, "the live vault is only read");
+        let voids = report.table("sync_voids").unwrap();
+        assert_eq!((voids.inserted, voids.unchanged, voids.removed), (2, 1, 0));
+    }
+
+    #[test]
+    fn the_applied_cursor_moves_forward_with_the_pull_and_is_never_lowered_to_the_live_value() {
+        let w = world_with(seed_ledger);
+        drift(&w);
+        // The live cursor is still the base's (6); the rebase applied envelope 6 in the scratch
+        // vault, so the cursor it swaps in is 7.
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        assert_eq!(cursor(scratch.worker()), Some((Some(4), 7)));
+        let report = scratch.overlay_class3(&image).unwrap();
+        assert_eq!(cursor(scratch.worker()), Some((Some(4), 7)));
+        assert_eq!(cursor(&w.live), Some((Some(4), 6)));
+        let position = report.table("sync_position").unwrap();
+        assert_eq!((position.inserted, position.unchanged), (0, 1));
+    }
+
+    #[test]
+    fn a_live_cursor_ahead_of_the_pull_is_kept_and_the_root_is_not_touched() {
+        let w = world_with(seed_ledger);
+        drift(&w);
+        // A void honored past the pull moved the live cursor beyond the scratch vault's.
+        honor(&w.live, 2, 8, 9);
+        exec(&w.live, "UPDATE sync_position SET next_to_apply = 10", []);
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        assert_eq!(cursor(scratch.worker()), Some((Some(4), 7)));
+        let report = scratch.overlay_class3(&image).unwrap();
+        assert_eq!(cursor(scratch.worker()), Some((Some(4), 10)));
+        let position = report.table("sync_position").unwrap();
+        assert_eq!((position.inserted, position.unchanged), (1, 0));
+    }
+
+    #[test]
+    fn a_ledger_and_cursor_armed_after_the_base_are_inserted_whole() {
+        let w = world();
+        drift(&w);
+        seed_ledger(&w.live);
+        honor(&w.live, 2, 7, 7);
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        assert_eq!(cursor(scratch.worker()), None, "the base had no cursor");
+        scratch.overlay_class3(&image).unwrap();
+        assert_eq!(ledger(scratch.worker()), ledger(&w.live));
+        assert_eq!(cursor(scratch.worker()), Some((Some(4), 6)));
+    }
+
+    #[test]
+    fn a_void_honored_after_the_capture_moves_the_digest_so_the_swap_refuses_it() {
+        let w = world_with(seed_ledger);
+        drift(&w);
+        let first = w.live.capture_preservation().unwrap();
+        honor(&w.live, 2, 7, 8);
+        let second = w.live.capture_preservation().unwrap();
+        assert_ne!(first.digest(), second.digest());
+        let third = w.live.capture_preservation().unwrap();
+        exec(&w.live, "UPDATE sync_position SET next_to_apply = 9", []);
+        assert_ne!(
+            third.digest(),
+            w.live.capture_preservation().unwrap().digest(),
+            "a cursor move is a change too"
+        );
+    }
+
+    #[test]
+    fn two_ledgers_that_are_not_one_history_block_the_rebase_and_overlay_nothing() {
+        let w = world_with(seed_ledger);
+        drift(&w);
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        // The scratch vault's ordinal 1 is not the live one's (a ledger that was rewritten).
+        {
+            let guard = scratch.worker().lock();
+            guard
+                .conn
+                .execute_batch(
+                    "DROP TRIGGER sync_voids_no_update;
+                     UPDATE sync_voids SET first = 1, last = 1;",
+                )
+                .unwrap();
+        }
+        let error = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert_eq!(error.table, "sync_voids");
+        assert!(matches!(error.cause, BlockCause::KeyCollision { rows } if rows.count == 1));
+        assert_eq!(
+            setting(scratch.worker(), "device.after_base"),
+            None,
+            "nothing was overlaid"
+        );
+    }
+
+    #[test]
+    fn a_different_snapshot_root_blocks_the_rebase() {
+        let w = world_with(seed_ledger);
+        drift(&w);
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        {
+            let guard = scratch.worker().lock();
+            guard
+                .conn
+                .execute_batch(
+                    "DROP TRIGGER sync_position_forward;
+                     UPDATE sync_position SET snapshot_root = 3;",
+                )
+                .unwrap();
+        }
+        let error = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert_eq!(error.table, "sync_position");
+        assert!(matches!(error.cause, BlockCause::KeyCollision { .. }));
+    }
+
+    #[test]
+    fn the_counter_register_and_the_notices_are_the_live_rows_never_the_bases_older_copy() {
+        let w = world_with(|live| {
+            exec(
+                live,
+                "INSERT INTO sync_counter_register
+                    (vault_id, key_epoch, fingerprint, object_type, next_counter)
+                 VALUES (zeroblob(16), 1, zeroblob(32), 1, 4)",
+                [],
+            );
+            exec(
+                live,
+                "INSERT INTO sync_notices (kind, batch_id, source_name, discarded_count, created_at)
+                 VALUES ('import_discarded', zeroblob(16), 'before.csv', 2, 't')",
+                [],
+            );
+        });
+        drift(&w);
+        // After the base: the counter advanced twice, a notice was dismissed and another arrived.
+        exec(
+            &w.live,
+            "UPDATE sync_counter_register SET next_counter = 6",
+            [],
+        );
+        exec(
+            &w.live,
+            "UPDATE sync_notices SET dismissed_at = 'later'",
+            [],
+        );
+        exec(
+            &w.live,
+            "INSERT INTO sync_notices (kind, batch_id, source_name, discarded_count, created_at)
+             VALUES ('import_discarded', zeroblob(16), 'after.csv', 1, 't2')",
+            [],
+        );
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        let counter =
+            |worker: &DbWorker| count(worker, "SELECT next_counter FROM sync_counter_register");
+        assert_eq!(counter(scratch.worker()), 4, "the base's older copy");
+        scratch.overlay_class3(&image).unwrap();
+        assert_eq!(counter(scratch.worker()), 6, "a counter is never lowered");
+        assert_eq!(
+            count(scratch.worker(), "SELECT COUNT(*) FROM sync_notices"),
+            2
+        );
+        assert_eq!(
+            count(
+                scratch.worker(),
+                "SELECT COUNT(*) FROM sync_notices WHERE dismissed_at = 'later'"
+            ),
+            1
+        );
     }
 
     #[test]
