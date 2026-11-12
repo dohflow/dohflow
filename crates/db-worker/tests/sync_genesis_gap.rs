@@ -15,7 +15,9 @@ use common::{create_account_cmd, income_cmd, meta};
 use core_money::{Currency, Money};
 use db_worker::sync_enable::{enable_sync, EnableOutcome, EnablingDevice};
 use db_worker::sync_genesis::{self, GenesisState};
-use db_worker::sync_genesis_gap::{gap_dir, reconcile_genesis_gap, Armed, GapError, GenesisProof};
+use db_worker::sync_genesis_gap::{
+    gap_dir, reconcile_genesis_gap_with, Armed, GapError, GenesisProof,
+};
 use db_worker::{DbWorker, WriteCommand};
 use platform_mock::{MockSecretStore, MockWitness};
 use snapshot_service::{Credential, FakeSnapshotService};
@@ -82,6 +84,12 @@ impl Device {
 
     /// Reconcile with the proof the engine would supply from its custody.
     fn reconcile(&self) -> Result<Armed, GapError> {
+        self.reconcile_with(&mut || {})
+    }
+
+    /// As [`Self::reconcile`], running `between` at the moment a command on the live vault would
+    /// race the end-state check.
+    fn reconcile_with(&self, between: &mut dyn FnMut()) -> Result<Armed, GapError> {
         let genesis = self
             .worker
             .write_sync_state(|tx| sync_genesis::load(tx))
@@ -98,7 +106,7 @@ impl Device {
             .unwrap();
         let own = EngineVersion::new(db_worker::ENGINE_VERSION).unwrap();
         self.service.set_credential(Credential::Device);
-        reconcile_genesis_gap(
+        reconcile_genesis_gap_with(
             &self.worker,
             &self.service,
             &GenesisProof {
@@ -106,6 +114,7 @@ impl Device {
                 chain: &chain,
                 own_engine_version: &own,
             },
+            between,
         )
     }
 
@@ -473,4 +482,61 @@ fn a_live_change_the_log_does_not_explain_is_a_state_divergence_naming_the_table
         other => panic!("{other:?}"),
     }
     assert_untouched(&device);
+}
+
+#[test]
+fn a_command_taken_between_the_mark_and_the_export_is_the_log_moving_and_a_re_run_arms() {
+    let (device, _) = device_with_a_gap();
+    // The command lands after the live log's mark was read and before its state was exported: it
+    // must never be reported as a divergence of the replay (which would not be retried).
+    let worker = std::sync::Arc::clone(&device.worker);
+    let error = device
+        .reconcile_with(&mut || {
+            worker.dispatch(meta(), create_account_cmd()).unwrap();
+        })
+        .unwrap_err();
+    assert!(matches!(error, GapError::LogMoved { .. }), "{error:?}");
+    assert!(db_worker::sync_genesis_gap::is_log_moved(&error));
+    assert_untouched(&device);
+    // The retry reads the longer log, replays it, and arms.
+    assert_eq!(device.reconcile().unwrap().commands, 4);
+}
+
+#[test]
+fn stray_files_where_the_base_goes_do_not_stop_an_arming_that_a_crash_left_them_for() {
+    let (device, commands) = device_with_a_gap();
+    // A crash after a placed base and before its record left a file at the base path, and an
+    // earlier attempt a half-written temporary: neither is recorded (no sync_base row).
+    let base = db_worker::base_image::base_image_path(device.worker.db_path());
+    let temp = db_worker::base_image::base_image_temp_path(device.worker.db_path());
+    std::fs::create_dir_all(base.parent().unwrap()).unwrap();
+    std::fs::write(&base, b"a base nobody recorded").unwrap();
+    std::fs::write(&temp, b"half of a copy").unwrap();
+    assert_eq!(device.count("sync_base"), 0);
+
+    let armed = device.reconcile().unwrap();
+    assert_eq!(armed.commands, commands.len());
+    // The record names the new image's digest, and the file in place is that image.
+    let recorded: Vec<u8> = device
+        .worker
+        .read_connection()
+        .unwrap()
+        .query_row(
+            "SELECT base_digest FROM sync_base WHERE singleton = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            recorded,
+            Sha256::digest(std::fs::read(&base).unwrap()).to_vec()
+        );
+    }
+    assert!(matches!(
+        device.worker.base_image_status().unwrap(),
+        db_worker::base_image::BaseImageStatus::Ready { base_seq: 0 }
+    ));
+    assert!(!temp.exists(), "the temporary is gone");
 }

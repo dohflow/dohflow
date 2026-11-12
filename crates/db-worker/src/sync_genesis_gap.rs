@@ -50,7 +50,9 @@ use vault_crypto::sync_snapshot::{SnapshotOpenFailure, SnapshotOpener};
 use crate::base_image::{
     base_image_path, base_image_temp_path, copy_file_synced, fsync_dir, sha256_file, sync_dir,
 };
-use crate::logical_export::{export_genesis_plaintext, ExportError, ExportInput};
+use crate::logical_export::{
+    export_genesis_plaintext, export_genesis_with_mark, ExportError, ExportInput,
+};
 use crate::payload::decode_payload;
 use crate::rebase::{RebaseError, StepContext};
 use crate::sync_bootstrap::{bootstrap_replica, BootstrapError, ReplicaSource};
@@ -386,6 +388,31 @@ pub fn replay_and_prove(
     gap: &[GapCommand],
     expected_high_water: u64,
 ) -> Result<Vec<Vec<u8>>, GapError> {
+    replay_and_prove_with(
+        live,
+        image,
+        scratch_path,
+        gap,
+        expected_high_water,
+        &mut || {},
+    )
+}
+
+/// [`replay_and_prove`], with `between` run after the live log's high-water mark is read and before
+/// the live state is exported: the moment a command taken on the live vault would race the check.
+/// For tests; [`replay_and_prove`] passes a no-op.
+///
+/// # Errors
+/// As [`replay_and_prove`].
+#[doc(hidden)]
+pub fn replay_and_prove_with(
+    live: &DbWorker,
+    image: &Path,
+    scratch_path: &Path,
+    gap: &[GapCommand],
+    expected_high_water: u64,
+    between: &mut dyn FnMut(),
+) -> Result<Vec<Vec<u8>>, GapError> {
     let scratch = live.scratch_from_image(image, 0, scratch_path)?;
     let worker = scratch.worker();
     let mut keys = Vec::with_capacity(gap.len());
@@ -425,35 +452,41 @@ pub fn replay_and_prove(
             |r| r.get::<_, Vec<u8>>(0),
         )?);
     }
-    // The end state: the log's effects are the vault's, class 1, table by table. A vault that took
-    // a command since the gap was read is not the state the log recorded: that is `LogMoved`, not
-    // a divergence of the replay.
-    let live_conn = live.read_connection()?;
-    let found: i64 = live_conn.query_row(
+    // The end state: the log's effects are the vault's, class 1, table by table. The live export
+    // reads the log's high-water mark in the SAME read transaction as the rows
+    // (`export_genesis_with_mark`), so the state compared is exactly the state at that mark. A
+    // command taken since the gap was read is the log having moved (retry), never a divergence of
+    // the replay.
+    let moved = |found: u64| GapError::LogMoved {
+        expected: expected_high_water,
+        found,
+    };
+    between();
+    let (plaintext, found) =
+        export_genesis_with_mark(&live.read_connection()?, &ExportInput::default())?;
+    if found != expected_high_water {
+        return Err(moved(found));
+    }
+    let theirs = verify(&plaintext)?.manifest.tables;
+    let ours = class_one_entries(&worker.read_connection()?)?;
+    let differing = theirs
+        .iter()
+        .zip(&ours)
+        .find(|(a, b)| a != b)
+        .map(|(a, _)| a.name.clone())
+        .or_else(|| (theirs.len() != ours.len()).then(|| "(the set of tables)".to_owned()));
+    // A log that moved while the states were compared is the log moving, whatever the compare saw.
+    let after: i64 = live.read_connection()?.query_row(
         "SELECT COALESCE(MAX(op_seq), 0) FROM operation_log",
         [],
         |r| r.get(0),
     )?;
-    let found = u64::try_from(found).unwrap_or(0);
-    if found != expected_high_water {
-        return Err(GapError::LogMoved {
-            expected: expected_high_water,
-            found,
-        });
+    let after = u64::try_from(after).unwrap_or(0);
+    if after != expected_high_water {
+        return Err(moved(after));
     }
-    let theirs = class_one_entries(&live_conn)?;
-    let ours = class_one_entries(&worker.read_connection()?)?;
-    for (a, b) in theirs.iter().zip(&ours) {
-        if a != b {
-            return Err(GapError::StateDiverged {
-                table: a.name.clone(),
-            });
-        }
-    }
-    if theirs.len() != ours.len() {
-        return Err(GapError::StateDiverged {
-            table: "(the set of tables)".to_owned(),
-        });
+    if let Some(table) = differing {
+        return Err(GapError::StateDiverged { table });
     }
     Ok(keys)
 }
@@ -579,6 +612,21 @@ pub fn reconcile_genesis_gap<S: SnapshotService>(
     service: &S,
     proof: &GenesisProof<'_>,
 ) -> Result<Armed, GapError> {
+    reconcile_genesis_gap_with(worker, service, proof, &mut || {})
+}
+
+/// [`reconcile_genesis_gap`], with `between` run at the moment a command on the live vault would
+/// race the end-state check (see [`replay_and_prove_with`]). For tests.
+///
+/// # Errors
+/// As [`reconcile_genesis_gap`].
+#[doc(hidden)]
+pub fn reconcile_genesis_gap_with<S: SnapshotService>(
+    worker: &DbWorker,
+    service: &S,
+    proof: &GenesisProof<'_>,
+    between: &mut dyn FnMut(),
+) -> Result<Armed, GapError> {
     let vault_id = *worker.vault_id()?.as_bytes();
     let dek = worker.raw_dek()?;
     // 1. The gates.
@@ -648,7 +696,14 @@ pub fn reconcile_genesis_gap<S: SnapshotService>(
             proof.own_engine_version,
         )?;
         // 3. Replay and prove.
-        let keys = replay_and_prove(worker, &image, &work.join("replay.db"), &gap, high_water)?;
+        let keys = replay_and_prove_with(
+            worker,
+            &image,
+            &work.join("replay.db"),
+            &gap,
+            high_water,
+            between,
+        )?;
         // 4. Arm.
         arm(worker, &image, high_water, &gap, &keys)
     })();
