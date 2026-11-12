@@ -90,6 +90,13 @@ impl Device {
     /// As [`Self::reconcile`], running `between` at the moment a command on the live vault would
     /// race the end-state check.
     fn reconcile_with(&self, between: &mut dyn FnMut()) -> Result<Armed, GapError> {
+        self.with_proof(|proof| {
+            reconcile_genesis_gap_with(&self.worker, &self.service, proof, between)
+        })
+    }
+
+    /// Run `f` with the proof the engine would supply from its custody.
+    fn with_proof<R>(&self, f: impl FnOnce(&GenesisProof<'_>) -> R) -> R {
         let genesis = self
             .worker
             .write_sync_state(|tx| sync_genesis::load(tx))
@@ -106,16 +113,11 @@ impl Device {
             .unwrap();
         let own = EngineVersion::new(db_worker::ENGINE_VERSION).unwrap();
         self.service.set_credential(Credential::Device);
-        reconcile_genesis_gap_with(
-            &self.worker,
-            &self.service,
-            &GenesisProof {
-                epoch_key: &key,
-                chain: &chain,
-                own_engine_version: &own,
-            },
-            between,
-        )
+        f(&GenesisProof {
+            epoch_key: &key,
+            chain: &chain,
+            own_engine_version: &own,
+        })
     }
 
     /// The vault file's neighbours that a failed reconcile must not leave behind.
@@ -539,4 +541,350 @@ fn stray_files_where_the_base_goes_do_not_stop_an_arming_that_a_crash_left_them_
         db_worker::base_image::BaseImageStatus::Ready { base_seq: 0 }
     ));
     assert!(!temp.exists(), "the temporary is gone");
+}
+
+// ---- the command must be sendable ---------------------------------------------------------------
+
+#[test]
+fn a_gap_command_that_cannot_become_an_envelope_is_refused_by_name_before_anything_is_written() {
+    let (device, _) = device_with_a_gap();
+    // `dispatch` does not bound the actor id; a seal does (256 bytes). Such a command would be
+    // queued and never sendable, so arming refuses it by name.
+    let victim: Vec<u8> = {
+        let conn = device.worker.read_connection().unwrap();
+        conn.execute_batch("DROP TRIGGER operation_log_no_update;")
+            .unwrap();
+        let victim: Vec<u8> = conn
+            .query_row(
+                "SELECT command_id FROM operation_log ORDER BY op_seq DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "UPDATE operation_log SET actor_id = ?2 WHERE command_id = ?1",
+            rusqlite::params![&victim, "a".repeat(257)],
+        )
+        .unwrap();
+        victim
+    };
+    match device.reconcile().unwrap_err() {
+        GapError::UnsealableCommand { command_id } => {
+            assert_eq!(command_id.as_bytes().as_slice(), victim.as_slice());
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_untouched(&device);
+}
+
+// ---- the service's genesis must be the one this device sent --------------------------------------
+
+#[test]
+fn a_service_snapshot_that_is_not_the_recorded_genesis_is_refused_before_a_byte_is_fetched() {
+    let (device, _) = device_with_a_gap();
+    // The device recorded another snapshot id than the one the service holds.
+    device
+        .worker
+        .read_connection()
+        .unwrap()
+        .execute_batch(
+            "UPDATE sync_genesis SET genesis_snapshot_id = x'ffffffffffffffffffffffffffffffff';",
+        )
+        .unwrap();
+    let calls_before = device.service.calls().len();
+    let error = device.reconcile().unwrap_err();
+    assert!(
+        matches!(error, GapError::ServiceGenesisIsNotOurs),
+        "{error:?}"
+    );
+    assert!(
+        !device.service.calls()[calls_before..].contains(&"get_snapshot"),
+        "nothing was fetched"
+    );
+    assert_untouched(&device);
+}
+
+#[test]
+fn bytes_that_are_not_the_ones_this_device_sent_are_refused_and_the_vault_is_untouched() {
+    let (device, _) = device_with_a_gap();
+    // The service serves other bytes under the genesis id: the recorded digest is not theirs.
+    device
+        .worker
+        .read_connection()
+        .unwrap()
+        .execute_batch("UPDATE sync_genesis SET genesis_container_sha256 = zeroblob(32);")
+        .unwrap();
+    let error = device.reconcile().unwrap_err();
+    assert!(
+        matches!(
+            error,
+            GapError::Fetch(sync_core::snapshot_service::CopyError::DigestMismatch)
+        ),
+        "{error:?}"
+    );
+    assert_untouched(&device);
+}
+
+// ---- what the armed device is, and what another replica makes of it ------------------------------
+
+/// The class-1 table entries of a vault's logical export.
+fn class_one(conn: &rusqlite::Connection) -> Vec<sync_core::snapshot::TableEntry> {
+    let plaintext = db_worker::logical_export::export_genesis_plaintext(
+        conn,
+        &db_worker::logical_export::ExportInput::default(),
+    )
+    .unwrap();
+    sync_core::snapshot::verify(&plaintext)
+        .unwrap()
+        .manifest
+        .tables
+}
+
+/// The genesis as a replica would fetch it: its verified snapshot and engine version.
+fn fetched_genesis(device: &Device) -> (sync_core::snapshot::Verified, EngineVersion) {
+    let genesis = device
+        .worker
+        .write_sync_state(|tx| sync_genesis::load(tx))
+        .unwrap()
+        .unwrap();
+    let dest = device.dir.path().join("fetched.container");
+    device.with_proof(|proof| {
+        db_worker::sync_genesis_gap::fetch_genesis(
+            &device.service,
+            &device.vault_id(),
+            &genesis.genesis_snapshot_id.unwrap(),
+            &genesis.genesis_container_sha256.unwrap(),
+            proof,
+            &dest,
+        )
+        .unwrap()
+    })
+}
+
+#[test]
+fn the_armed_base_is_the_genesis_state_and_a_second_replica_applying_the_outbox_reaches_the_origin()
+{
+    let (device, commands) = device_with_a_gap();
+    device.reconcile().unwrap();
+    let (verified, engine) = fetched_genesis(&device);
+
+    // (2) The base the device armed on holds exactly the genesis snapshot's class-1 state (state,
+    // not file bytes: the keys differ).
+    let base = db_worker::base_image::base_image_path(device.worker.db_path());
+    let scratch_path = device.dir.path().join("inspect.db");
+    let inspected = device
+        .worker
+        .scratch_from_image(&base, 0, &scratch_path)
+        .unwrap();
+    assert_eq!(
+        class_one(&inspected.worker().read_connection().unwrap()),
+        verified.manifest.tables,
+        "the base is the genesis, not the live vault"
+    );
+    drop(inspected);
+
+    // (1) A second replica, keyed independently, is born from the same fetched genesis and applies
+    // the origin's Pending outbox in op_seq order. It reproduces every recorded write-set hash and
+    // ends in the origin's class-1 state.
+    let replica_dek = std::sync::Arc::new(vault_crypto::generate_dek().unwrap());
+    let replica = db_worker::sync_bootstrap::bootstrap_replica(
+        &device.dir.path().join("replica.vault"),
+        &replica_dek,
+        &db_worker::sync_bootstrap::ReplicaSource {
+            vault_id: device.vault_id(),
+            root: 0,
+            snapshot: &verified,
+            engine_version: &engine,
+            own_engine_version: &EngineVersion::new(db_worker::ENGINE_VERSION).unwrap(),
+            held_voids: &[],
+        },
+    )
+    .unwrap();
+    let outbox = device.worker.read_local_commands().unwrap();
+    assert_eq!(outbox.len(), commands.len());
+    assert!(outbox.windows(2).all(|w| w[0].old_op_seq < w[1].old_op_seq));
+    for command in &outbox {
+        replica
+            .worker
+            .dispatch(command.meta.clone(), command.cmd.clone())
+            .unwrap();
+        let produced: Vec<u8> = replica
+            .worker
+            .read_connection()
+            .unwrap()
+            .query_row(
+                "SELECT write_set_hash FROM operation_log WHERE command_id = ?1",
+                [command.meta.command_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            produced.as_slice(),
+            command.write_set_hash.as_slice(),
+            "the replica reproduces the recorded hash"
+        );
+    }
+    assert_eq!(
+        class_one(&replica.worker.read_connection().unwrap()),
+        class_one(&device.worker.read_connection().unwrap()),
+        "the second replica reaches the origin's state"
+    );
+}
+
+// ---- an import in the gap ------------------------------------------------------------------------
+
+/// The three commands of an import (a batch, a record, the commit that references the record),
+/// each with fixed metadata so the same import can be issued on another vault.
+fn import_commands(account: core_ledger::AccountId) -> Vec<(db_worker::CommandMeta, WriteCommand)> {
+    use core_ledger::{SourceBatchId, SourceRecordId, TransactionId};
+    let batch = SourceBatchId::new();
+    let record = SourceRecordId::new();
+    vec![
+        (
+            meta(),
+            WriteCommand::CreateSourceBatch {
+                id: batch,
+                source_type: "csv".to_owned(),
+                source_name: Some("statement.csv".to_owned()),
+                file_fingerprint: None,
+                parser_version: None,
+                connector_connection_id: None,
+            },
+        ),
+        (
+            meta(),
+            WriteCommand::AttachSourceRecord {
+                id: record,
+                batch_id: batch,
+                external_id: None,
+                source_hash: "hash-1".to_owned(),
+                normalized_json: "{\"amount\":-1250}".to_owned(),
+                parse_confidence_bps: None,
+            },
+        ),
+        (
+            meta(),
+            WriteCommand::CommitImportedTransaction {
+                transaction_id: TransactionId::new(),
+                account_id: account,
+                source_record_id: record,
+                occurred_at: chrono::Utc::now(),
+                amount: Money::new(-1_250, Currency::Usd),
+                counterparty: None,
+                memo: None,
+                transaction_date: None,
+                category_id: None,
+                forced: false,
+            },
+        ),
+    ]
+}
+
+/// A device whose vault holds `account` and whose genesis is published.
+fn device_with_account(account: &WriteCommand) -> Device {
+    let device = Device::new();
+    device.worker.dispatch(meta(), account.clone()).unwrap();
+    assert_eq!(device.enable(), EnableOutcome::Enabled);
+    device
+}
+
+/// Each outbox row, in order: command id, state, issue time, write-set keys.
+fn outbox_rows(device: &Device) -> Vec<(Vec<u8>, String, i64, Vec<u8>)> {
+    outbox_rows_of(&device.worker)
+}
+
+fn outbox_rows_of(worker: &DbWorker) -> Vec<(Vec<u8>, String, i64, Vec<u8>)> {
+    let conn = worker.read_connection().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT command_id, state, issued_at, write_set_keys FROM sync_outbox ORDER BY op_seq",
+        )
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn an_import_taken_in_the_gap_arms_as_the_ordinary_pending_import_it_would_have_been() {
+    let account = common::sample_account();
+    let account_id = account.id();
+    let account_cmd = WriteCommand::CreateAccount {
+        account: Box::new(account),
+        opening_balance: None,
+    };
+    let import = import_commands(account_id);
+
+    // The device under test takes the import after its genesis, unarmed (no outbox row), and is
+    // then armed by the reconciliation.
+    let gapped = device_with_account(&account_cmd);
+    for (m, c) in &import {
+        gapped.worker.dispatch(m.clone(), c.clone()).unwrap();
+    }
+    let armed = gapped.reconcile().unwrap();
+    assert_eq!(
+        armed.commands,
+        import.len(),
+        "C2 (hash and class-1 state) passed"
+    );
+
+    // The control takes the SAME import, same metadata, on an armed vault of the SAME vault id (the
+    // ids an import mints derive from the vault id): a replica born from the same genesis, keyed
+    // independently, whose base is recorded (Ready) so its commands are recorded in its outbox.
+    let (verified, engine) = fetched_genesis(&gapped);
+    let control = db_worker::sync_bootstrap::bootstrap_replica(
+        &gapped.dir.path().join("control.vault"),
+        &std::sync::Arc::new(vault_crypto::generate_dek().unwrap()),
+        &db_worker::sync_bootstrap::ReplicaSource {
+            vault_id: gapped.vault_id(),
+            root: 0,
+            snapshot: &verified,
+            engine_version: &engine,
+            own_engine_version: &EngineVersion::new(db_worker::ENGINE_VERSION).unwrap(),
+            held_voids: &[],
+        },
+    )
+    .unwrap();
+    for (m, c) in &import {
+        control.worker.dispatch(m.clone(), c.clone()).unwrap();
+    }
+
+    // The outbox rows match: command id, Pending, the issue time, the write-set keys.
+    let rows = outbox_rows(&gapped);
+    assert_eq!(rows, outbox_rows_of(&control.worker));
+    assert_eq!(rows.len(), import.len());
+    assert!(rows.iter().all(|r| r.1 == "Pending"));
+    for ((m, _), row) in import.iter().zip(&rows) {
+        assert_eq!(row.0.as_slice(), m.command_id.as_bytes().as_slice());
+        assert_eq!(row.2, m.issued_at.as_unix_micros());
+    }
+    // Each row names its own log row (the op_seq mapping).
+    let conn = gapped.worker.read_connection().unwrap();
+    for ((m, _), _) in import.iter().zip(&rows) {
+        let (outbox_seq, log_seq): (i64, i64) = conn
+            .query_row(
+                "SELECT o.op_seq, l.op_seq FROM sync_outbox o
+                   JOIN operation_log l ON l.command_id = o.command_id
+                  WHERE o.command_id = ?1",
+                [m.command_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(outbox_seq, log_seq);
+    }
+    // Arming fabricated no artifact receipt or reference: the device-local artifact mapping is
+    // untouched, and publishing the import's artifacts is the push path's (receipt before
+    // reference), not arming's.
+    assert_eq!(gapped.count("sync_artifacts"), 0);
+    assert_eq!(
+        control
+            .worker
+            .read_connection()
+            .unwrap()
+            .query_row("SELECT count(*) FROM sync_artifacts", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 }

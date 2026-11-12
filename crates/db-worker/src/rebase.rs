@@ -206,6 +206,7 @@ pub struct PulledEnvelope<'a> {
     pub checked: CheckedEnvelope<'a>,
 }
 
+pub(crate) use execute::command_envelope;
 pub use execute::{Executed, LocalCommand, Replayed};
 pub use plan::{
     auto_iff, plan, Disposition, OutboxCommand, Plan, PlannedCommand, QueueCause, QueueReason,

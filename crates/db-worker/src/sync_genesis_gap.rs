@@ -54,7 +54,7 @@ use crate::logical_export::{
     export_genesis_plaintext, export_genesis_with_mark, ExportError, ExportInput,
 };
 use crate::payload::decode_payload;
-use crate::rebase::{RebaseError, StepContext};
+use crate::rebase::{command_envelope, RebaseError, StepContext};
 use crate::sync_bootstrap::{bootstrap_replica, BootstrapError, ReplicaSource};
 use crate::sync_genesis::{self, GenesisState, GenesisStoreError};
 use crate::{
@@ -131,6 +131,14 @@ pub enum GapError {
     /// A command taken after the export has no recorded payload this build can decode.
     #[error("the command {command_id} cannot be read back")]
     UnreadableCommand {
+        /// The command.
+        command_id: Uuid,
+    },
+    /// A command taken after the export cannot become an envelope (an `actor_id`, idempotency key
+    /// or payload the envelope refuses): it would be queued and never sendable, so arming refuses
+    /// by name before anything is written. `dispatch` does not bound these; a seal does.
+    #[error("the command {command_id} cannot be sealed as an envelope")]
+    UnsealableCommand {
         /// The command.
         command_id: Uuid,
     },
@@ -281,6 +289,7 @@ pub fn read_gap(
             return Err(unreadable());
         };
         let cmd = decode_payload(version, &payload).map_err(|_| unreadable())?;
+        let write_set_hash: [u8; 32] = hash.try_into().map_err(|_| unreadable())?;
         let actor_type = match actor.as_str() {
             "user" => ActorType::User,
             "system" => ActorType::System,
@@ -288,19 +297,25 @@ pub fn read_gap(
             "agent" => ActorType::Agent,
             _ => return Err(unreadable()),
         };
+        let meta = CommandMeta {
+            command_id,
+            correlation_id,
+            causation_id,
+            actor_type,
+            actor_id,
+            idempotency_key: key,
+            issued_at: IssuedAt::from_unix_micros(issued),
+        };
+        // The command must be sendable: the same conditions a seal refuses (the device id is not
+        // one of them).
+        if command_envelope(&meta, write_set_hash, payload, Uuid::nil()).is_none() {
+            return Err(GapError::UnsealableCommand { command_id });
+        }
         out.push(GapCommand {
-            meta: CommandMeta {
-                command_id,
-                correlation_id,
-                causation_id,
-                actor_type,
-                actor_id,
-                idempotency_key: key,
-                issued_at: IssuedAt::from_unix_micros(issued),
-            },
+            meta,
             cmd,
             op_seq,
-            write_set_hash: hash.try_into().map_err(|_| unreadable())?,
+            write_set_hash,
         });
     }
     Ok(out)

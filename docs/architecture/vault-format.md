@@ -2159,7 +2159,7 @@ The reconciliation refuses, before it writes anything to the live vault, unless:
 by an earlier build has neither, and the service's copy is not trusted in its place); the device has
 no `sync_base` row and no outbox row; the service's log head is `0` and the snapshot it holds is the
 one recorded; and every `operation_log` row after `export_high_water` has its `issued_at` and a
-payload this build decodes (`operation_log.issued_at`, the instant the command was issued, is the
+payload this build decodes, and can become an envelope (an `actor_id`, idempotency key and payload that a seal accepts: `dispatch` does not bound them, so a command that could never be sent is refused by name here rather than queued) (`operation_log.issued_at`, the instant the command was issued, is the
 only place a command taken before arming keeps it, because it has no outbox row). It then fetches
 the genesis container (streamed to a file under `max_snapshot_container_bytes`, and equal to the
 recorded digest), opens it with `K_1`, installs it into a throwaway replica and takes that replica's
