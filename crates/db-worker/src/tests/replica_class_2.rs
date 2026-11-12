@@ -38,12 +38,32 @@ const COMPARED: &[&str] = &[
     "forecast_input_snapshots",
     "forecast_runs",
     "forecast_rows",
+    "forecast_actuals",
+    "forecast_backtest_results",
+    "forecast_dependency_edges",
+    "forecast_diffs",
+    "forecast_quality_scores",
+    "risk_flags",
+    "forecast_dirty_ranges",
+];
+
+/// The compared tables the fixture leaves empty on both devices. They are NOT counted as equal: they
+/// are untested here, because nothing the bootstrap or a forecast run does writes them (a caller of
+/// the forecast engine does, or no writer exists yet).
+const UNTESTED: &[&str] = &[
+    "money_inbox_read_model",
+    "forecast_dependency_edges",
+    "forecast_diffs",
+    "forecast_quality_scores",
+    "risk_flags",
+    "forecast_dirty_ranges",
 ];
 
 /// Every column the comparison leaves out, by table, each with its reason. A column named in no
-/// row here is compared.
+/// row here is compared, or, where [`REFERENCES`] names it, compared through the natural key of the
+/// row it points at.
 const EXCLUDED: &[(&str, &str, &str)] = &[
-    // Stamped at the rebuild, so they hold the instant each device rebuilt.
+    // Stamped at the rebuild or the capture, so they hold the instant each device ran.
     ("commitments", "created_at", "stamped at rebuild"),
     ("commitments", "updated_at", "stamped at rebuild"),
     (
@@ -54,7 +74,7 @@ const EXCLUDED: &[(&str, &str, &str)] = &[
     (
         "forecast_input_snapshots",
         "created_at",
-        "stamped when the snapshot is captured",
+        "stamped at capture",
     ),
     (
         "forecast_input_snapshots",
@@ -82,49 +102,114 @@ const EXCLUDED: &[(&str, &str, &str)] = &[
         "assumptions_hash",
         "is the input snapshot's content_hash",
     ),
-    // The ids of one forecast run and its rows are minted per run: device-local.
+    // Minted per capture, run and row with `Uuid::now_v7()` (forecast_persist.rs), or derived from
+    // such ids: device-local. Every row is compared through its other columns, and every column that
+    // points at one of these rows is compared through that row's natural key ([`REFERENCES`]).
     ("forecast_input_snapshots", "id", "minted per capture"),
     ("forecast_runs", "id", "minted per run"),
+    ("forecast_rows", "id", "minted per run"),
+    (
+        "forecast_actuals",
+        "id",
+        "derived from the per-run run id and row id (actual_id)",
+    ),
+];
+
+/// Columns that name a row of another compared table whose own id is excluded. The value compared
+/// is the referenced row's natural key (its other columns, with its own references resolved the same
+/// way), so a row attributed to the wrong run or row still fails, and no column is dropped.
+const REFERENCES: &[(&str, &str, &str)] = &[
     (
         "forecast_runs",
         "input_snapshot_id",
-        "names a per-capture id",
+        "forecast_input_snapshots",
     ),
-    ("forecast_rows", "id", "minted per run"),
-    ("forecast_rows", "forecast_run_id", "names a per-run id"),
+    ("forecast_rows", "forecast_run_id", "forecast_runs"),
+    ("forecast_actuals", "forecast_run_id", "forecast_runs"),
+    ("forecast_actuals", "forecast_row_id", "forecast_rows"),
+    (
+        "forecast_dependency_edges",
+        "forecast_run_id",
+        "forecast_runs",
+    ),
+    ("forecast_dependency_edges", "to_row_id", "forecast_rows"),
+    ("forecast_diffs", "forecast_run_id", "forecast_runs"),
+    ("forecast_diffs", "prior_run_id", "forecast_runs"),
+    (
+        "forecast_quality_scores",
+        "forecast_run_id",
+        "forecast_runs",
+    ),
+    ("risk_flags", "forecast_run_id", "forecast_runs"),
 ];
 
 fn engine() -> EngineVersion {
     EngineVersion::new("dohflow-engine-1").unwrap()
 }
 
-/// What a table holds with the excluded columns left out, as sorted text rows.
-fn dump(conn: &Connection, table: &str) -> Vec<String> {
-    let columns: Vec<String> = conn
-        .prepare(&format!("PRAGMA table_info({table})"))
+fn is_excluded(table: &str, column: &str) -> bool {
+    EXCLUDED.iter().any(|(t, c, _)| *t == table && *c == column)
+}
+
+fn columns_of(conn: &Connection, table: &str) -> Vec<String> {
+    conn.prepare(&format!("PRAGMA table_info({table})"))
         .unwrap()
         .query_map([], |r| r.get::<_, String>(1))
         .unwrap()
         .map(Result::unwrap)
-        .filter(|name| {
-            !EXCLUDED
-                .iter()
-                .any(|(t, c, _)| *t == table && *c == name.as_str())
-        })
-        .collect();
-    assert!(!columns.is_empty(), "{table}");
+        .collect()
+}
+
+/// One row as text: every column that is not excluded, a column in [`REFERENCES`] shown as the
+/// natural key of the row it points at.
+fn row_text(conn: &Connection, table: &str, columns: &[String], row: &rusqlite::Row<'_>) -> String {
+    let mut parts = Vec::new();
+    for (i, column) in columns.iter().enumerate() {
+        if is_excluded(table, column) {
+            continue;
+        }
+        let value: Value = row.get(i).unwrap();
+        let reference = REFERENCES
+            .iter()
+            .find(|(t, c, _)| *t == table && c == column);
+        match (reference, &value) {
+            (Some((_, _, target)), v) if *v != Value::Null => {
+                parts.push(format!("{column}=>{}", natural_key(conn, target, v)));
+            }
+            _ => parts.push(format!("{column}={value:?}")),
+        }
+    }
+    parts.join("|")
+}
+
+/// The natural key of the row of `table` whose `id` is `id`: its non-excluded columns.
+fn natural_key(conn: &Connection, table: &str, id: &Value) -> String {
+    let columns = columns_of(conn, table);
+    let sql = format!("SELECT {} FROM {table} WHERE id = ?1", columns.join(", "));
+    let mut stmt = conn.prepare(&sql).unwrap();
+    let mut rows = stmt.query([id]).unwrap();
+    let row = rows.next().unwrap().expect("a referenced row exists");
+    format!("{table}[{}]", row_text(conn, table, &columns, row))
+}
+
+/// What a table holds, as sorted text rows (see [`row_text`]).
+fn dump(conn: &Connection, table: &str) -> Vec<String> {
+    let columns = columns_of(conn, table);
     let sql = format!("SELECT {} FROM {table}", columns.join(", "));
     let mut stmt = conn.prepare(&sql).unwrap();
-    let width = columns.len();
     let mut rows: Vec<String> = stmt
-        .query_map([], |r| {
-            let values: Vec<Value> = (0..width).map(|i| r.get(i)).collect::<Result<_, _>>()?;
-            Ok(format!("{values:?}"))
-        })
+        .query_map([], |r| Ok(row_text(conn, table, &columns, r)))
         .unwrap()
         .map(Result::unwrap)
         .collect();
     rows.sort();
+    // A table whose own id is excluded is matched through its other columns, so those must tell
+    // its rows apart: each row then has exactly one counterpart, and excluding the id drops none.
+    if is_excluded(table, "id") {
+        let mut distinct = rows.clone();
+        distinct.dedup();
+        assert_eq!(distinct.len(), rows.len(), "{table}: rows are not distinct");
+    }
     rows
 }
 
@@ -140,6 +225,30 @@ fn assert_class_2_equal(left: &DbWorker, right: &DbWorker, what: &str) {
     for ((table, a), (_, b)) in dump_all(left).into_iter().zip(dump_all(right)) {
         assert_eq!(a, b, "{what}: {table}");
     }
+}
+
+/// Persist a forecast run at the fixed as-of date, then score it against the instances and backtest
+/// it. Exactly one run exists afterwards, and every forecast row belongs to it, so the rows are
+/// compared within their run.
+fn run_the_forecast(worker: &DbWorker) {
+    worker.persist_daily_forecast_at(as_of(), 90).unwrap();
+    worker.actualize_forecasts().unwrap();
+    worker.backtest_forecasts().unwrap();
+    let conn = worker.read_connection().unwrap();
+    let runs: i64 = conn
+        .query_row("SELECT COUNT(*) FROM forecast_runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(runs, 1, "one run per device");
+    let (rows, in_the_run): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COUNT(*) FILTER (WHERE forecast_run_id = (SELECT id FROM forecast_runs))
+               FROM forecast_rows",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(rows > 0);
+    assert_eq!(rows, in_the_run, "every forecast row belongs to the run");
 }
 
 fn as_of() -> DateTime<Utc> {
@@ -353,20 +462,23 @@ fn a_replica_derives_the_class_2_state_its_origin_holds() {
     // The origin's own derivation, a full rebuild of what it holds, is the reference.
     origin.rebuild_class_2().unwrap();
     for worker in [&origin, &replica] {
-        worker.persist_daily_forecast_at(as_of(), 90).unwrap();
+        run_the_forecast(worker);
     }
     assert_class_2_equal(&origin, &replica, "bootstrap");
-    // The comparison is not vacuous: each table the fixture can fill holds rows.
-    let replica_dump = dump_all(&replica);
-    for table in [
-        "transaction_display_rows_read_model",
-        "commitments",
-        "recurring_event_instances",
-        "forecast_rows",
-    ] {
-        let rows = replica_dump.iter().find(|(t, _)| *t == table).unwrap();
-        assert!(!rows.1.is_empty(), "{table} is empty on the replica");
+    // The comparison is not vacuous: a compared table holds rows on both devices, or it is named
+    // in UNTESTED (and so not counted as equal).
+    let mut empty_on_both = Vec::new();
+    for ((table, o), (_, r)) in dump_all(&origin).into_iter().zip(dump_all(&replica)) {
+        if o.is_empty() && r.is_empty() {
+            empty_on_both.push(table);
+        } else {
+            assert!(!o.is_empty() && !r.is_empty(), "{table}: {o:?} / {r:?}");
+        }
     }
+    assert_eq!(
+        empty_on_both, UNTESTED,
+        "the tables the fixture leaves empty"
+    );
 
     // The live list: every sort mode, row for row and in order.
     for sort in every_sort_mode() {
@@ -486,7 +598,7 @@ fn a_replica_and_its_origin_converge_after_further_commands_including_genesis_ro
     origin.rebuild_class_2().unwrap();
     replica.rebuild_class_2().unwrap();
     for worker in [&origin, &replica] {
-        worker.persist_daily_forecast_at(as_of(), 90).unwrap();
+        run_the_forecast(worker);
     }
     assert_class_2_equal(&origin, &replica, "after further commands");
     for sort in every_sort_mode() {
