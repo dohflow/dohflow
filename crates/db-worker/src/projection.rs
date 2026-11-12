@@ -1,7 +1,8 @@
 //! Transaction-display read model (plan §9.4; beads personal-cfo-9x4 + lxj).
 //!
-//! The read model is **derived**: rebuildable from canonical tables
-//! (`ledger_transactions` + `ledger_postings` + `accounts` + `operation_log`).
+//! The read model is **derived**: rebuildable from canonical class-1 tables
+//! (`ledger_transactions` + `ledger_postings` + `accounts`). The device's own `operation_log` only
+//! supplies the `op_seq` stamp and the cursor, never which rows exist (personal-cfo-1cltt.8).
 //! This module is the *only* place that writes
 //! `transaction_display_rows_read_model` — command code never touches it
 //! (CI-enforced: no writes to that table appear in `lib.rs`).
@@ -159,25 +160,53 @@ pub fn project_transaction_display(
         .collect()
 }
 
-/// Read canonical postings against user accounts as projection inputs, optionally
-/// only those from operations after `since_op_seq`.
+/// The user-account postings, from class-1 tables only.
+const INPUTS_FROM_CLASS_1: &str = "FROM ledger_postings lp
+        JOIN ledger_transactions lt ON lt.id = lp.transaction_id
+        JOIN ledger_accounts la ON la.id = lp.ledger_account_id
+        JOIN accounts a ON a.ledger_account_id = la.id";
+
+/// Class-1 order: the creating command's id (a UUIDv7, so command order), then the ids. It is only
+/// the order rows are written in; the read model is read back sorted by id.
+const INPUTS_ORDER: &str = "ORDER BY lt.operation_id, lt.id, a.id";
+
+/// Read canonical postings against user accounts as projection inputs.
+///
+/// `since_op_seq = None` is the **full** read: every user-account posting there is. Which rows
+/// exist is decided by class-1 tables alone, so a replica, whose log holds no row for a
+/// transaction that arrived in its snapshot, projects exactly the rows its origin does
+/// (personal-cfo-1cltt.8). The log supplies only each row's `op_seq` stamp, a device-local
+/// watermark, and a scalar subquery (not a join) keeps a missing log row from dropping the
+/// posting: the stamp is then 0.
+///
+/// `since_op_seq = Some(cursor)` is the **incremental** read: the postings of the operations this
+/// device logged after `cursor`. That is log-driven by nature, and it holds on a replica because
+/// every envelope it applies and every command it runs writes a local log row.
 fn read_inputs(
     conn: &Connection,
     since_op_seq: Option<i64>,
 ) -> Result<Vec<TransactionDisplayInput>, DbError> {
-    let base = "SELECT lt.id, a.id, lt.occurred_at, lp.minor_units, lp.currency, ol.op_seq
-        FROM ledger_postings lp
-        JOIN ledger_transactions lt ON lt.id = lp.transaction_id
-        JOIN ledger_accounts la ON la.id = lp.ledger_account_id
-        JOIN accounts a ON a.ledger_account_id = la.id
-        JOIN operation_log ol ON ol.command_id = lt.operation_id";
-    let order = " ORDER BY ol.op_seq, lt.id, a.id";
-
     let mut inputs = Vec::new();
-    let cutoff = since_op_seq.unwrap_or(i64::MIN);
-    let sql = format!("{base} WHERE ol.op_seq > ?1{order}");
+    let sql = match since_op_seq {
+        None => format!(
+            "SELECT lt.id, a.id, lt.occurred_at, lp.minor_units, lp.currency,
+                    COALESCE((SELECT ol.op_seq FROM operation_log ol
+                               WHERE ol.command_id = lt.operation_id), 0)
+             {INPUTS_FROM_CLASS_1} {INPUTS_ORDER}"
+        ),
+        Some(_) => format!(
+            "SELECT lt.id, a.id, lt.occurred_at, lp.minor_units, lp.currency, ol.op_seq
+             {INPUTS_FROM_CLASS_1}
+             JOIN operation_log ol ON ol.command_id = lt.operation_id
+             WHERE ol.op_seq > ?1 {INPUTS_ORDER}"
+        ),
+    };
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([cutoff], |r| {
+    let params: &[&dyn rusqlite::ToSql] = match &since_op_seq {
+        None => &[],
+        Some(cutoff) => &[cutoff],
+    };
+    let rows = stmt.query_map(params, |r| {
         Ok((
             r.get::<_, Uuid>(0)?,
             r.get::<_, Uuid>(1)?,
