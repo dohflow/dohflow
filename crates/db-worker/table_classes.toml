@@ -435,6 +435,15 @@ rebase_preservation = "preserve every row byte for byte across the swap, staged 
 reference_validation = "an id with a recorded hash that differs from the bound one and that the live closure does not hold is a cache miss, never a verdict; a staged row names a blob that exists, and its key unwraps under the DEK"
 
 [[table]]
+table = "sync_live_closure"
+class = "3"
+owner_bead = "personal-cfo-1cltt.7"
+note = "Derived: the live closure (C.9) a replica holds for the epoch in force: each sync_artifact_id a snapshot at the vault's ACCEPTED log position would carry, with the ciphertext_sha256 that snapshot binds to it and the attachment or batch it belongs to. The materializer and the stage-9 verdicts judge an envelope's delta against it, never against the sync_artifacts cache. Written only where the vault's class-1 state equals the accepted state: by an accepted envelope's apply (adds, then a prune of every object class-1 reachability no longer holds, the genesis closure's rule), the seed at bootstrap and the rebuild at a key epoch; never by a local command or a local-command replay, because a prune beside an unpushed delete would drop an object the accepted log still holds live. Never replicated, exported or snapshotted."
+rebase_phase = "stable"
+rebase_preservation = "the base image carries the table at the accepted base; the rebase scratch starts from it and every pulled envelope (own envelopes included) applies its delta to it on the scratch; the swap takes the scratch's table, never an overlay of the live vault's; a local command replayed on the scratch never writes it"
+reference_validation = "every row names an attachment row or a batch a provenance link reaches, in the current epoch; an id has one hash; the set equals what a snapshot at the accepted position carries"
+
+[[table]]
 table = "vault_meta"
 class = "3"
 owner_bead = "personal-cfo-bxsbz"
