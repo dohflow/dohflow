@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=41 -->
-<!-- vault-format: schema-version=72 -->
+<!-- vault-format: spec-version=43 -->
+<!-- vault-format: schema-version=73 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -272,7 +272,15 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
-- `spec-version = 41` (personal-cfo-1cltt.5, slice C, schema version 72; provisional: it settles at merge) records, in the device-local `sync_genesis` row, **which snapshot the genesis was and the SHA-256 of the container this device sent for it** (`genesis_snapshot_id` and `genesis_container_sha256`), and adds the device-local `operation_log.issued_at` (the instant a command was issued, Unix microseconds, written by `apply` on every row, Sync on or off; NULL before the column), which the genesis-gap replay reads because a command taken before Sync was armed has no outbox row to hold it. The identity columns are written in the transaction that records the genesis as `Published` and before the saved container is dropped (C.8 "The genesis snapshot's id and a resume"): the saved container is the only other place either lives. A bootstrap that reconciles the genesis gap fetches the genesis snapshot and checks it against these, so it never trusts the service's copy of what this device published. A row recorded by an earlier build has neither (NULL). No wire layout, write-set rule, vector or `engine_version` change.
+- `spec-version = 43` (personal-cfo-1cltt.5, slice C, schema version 73; provisional: it settles at merge) records, in the device-local `sync_genesis` row, **which snapshot the genesis was and the SHA-256 of the container this device sent for it** (`genesis_snapshot_id` and `genesis_container_sha256`), and adds the device-local `operation_log.issued_at` (the instant a command was issued, Unix microseconds, written by `apply` on every row, Sync on or off; NULL before the column), which the genesis-gap replay reads because a command taken before Sync was armed has no outbox row to hold it. The identity columns are written in the transaction that records the genesis as `Published` and before the saved container is dropped (C.8 "The genesis snapshot's id and a resume"): the saved container is the only other place either lives. A bootstrap that reconciles the genesis gap fetches the genesis snapshot and checks it against these, so it never trusts the service's copy of what this device published. A row recorded by an earlier build has neither (NULL). No wire layout, write-set rule, vector or `engine_version` change.
+- `spec-version = 41` (personal-cfo-bxsbz.5, schema version 72) lets a `Bound` `sync_outbox` row carry no
+  result. The accepted-envelope record (C.10) already allows an accepted command with no `result_ref`
+  and says a present one is 1 to 64 bytes, because an empty one would be a second encoding of an absent
+  one; migration 66 had required the column non-null on a `Bound` row. The `Bound` arm of the table's
+  check is now `bound_seq IS NOT NULL AND (result_ref IS NULL OR length(result_ref) BETWEEN 1 AND 64)`;
+  `Pending` and `Approved` still require NULL. The table is rebuilt in the migration transaction, and
+  the down migration fails closed rather than inventing a result. No wire layout, write-set rule,
+  vector or `engine_version` changes.
 - `spec-version = 40` (personal-cfo-0g528.2, part S2c part 2, first commit: the spec before any code; provisional, it settles at merge)
   closes the cases in which one member, alone, could stop every replica at a position, and settles
   what a receiver may judge. (1) **The ciphertext binding (T5).** A new header field 18,
@@ -690,7 +698,7 @@ therefore requires reviewing this inventory.
 | `durable_jobs` | 3 | exclude | exclude | Device-local state. |
 | `backup_history` | 3 | exclude | exclude | Device-local state. |
 | `sync_base` | 3 | exclude | exclude | Device-local state: whether Sync is enabled here, the server seq of the base image, the digest of `sync/base.db` and the base state. |
-| `sync_outbox` | 3 | exclude | exclude | Device-local state: the unpushed local commands with their write-set row keys, original `issued_at` and sealed containers. A command's envelope is what travels, never this row. |
+| `sync_outbox` | 3 | exclude | exclude | Device-local state: the unpushed local commands with their write-set row keys, original `issued_at` and sealed containers; a `Bound` row's `result_ref` is NULL (the service gave none) or 1 to 64 bytes, as in C.10. A command's envelope is what travels, never this row. |
 | `outbox_queue` | 3 | exclude | exclude | Device-local state: the commands a rebase queued for the user, with their reason, envelope and audit evidence. |
 | `sync_counter_register` | 3 | exclude | exclude | Device-local state: the durable `next_counter` of each `(vault_id, key_epoch, fingerprint, object_type)` context (C.4). A row is never 0. Written under the writer lock, so a restore rolls it back and the independent witness detects it. |
 | `sync_saved_snapshot` | 3 | exclude | exclude | Device-local state: the sealed snapshot saved beside the register for an exact-byte retransmission, with the hashes of what it was sealed from. |

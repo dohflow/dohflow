@@ -246,7 +246,12 @@ fn the_outbox_states_carry_exactly_the_columns_they_need() {
     assert!(insert("Pending", "zeroblob(4)", "NULL", "NULL").is_err());
     assert!(insert("Approved", "NULL", "NULL", "NULL").is_err());
     assert!(insert("Approved", "zeroblob(4)", "9", "NULL").is_err());
-    assert!(insert("Bound", "zeroblob(4)", "9", "NULL").is_err());
+    // An accepted command may have no result (bxsbz.5, migration 72), and a present one is 1 to 64
+    // bytes.
+    assert!(insert("Bound", "zeroblob(4)", "9", "NULL").is_ok());
+    assert!(insert("Bound", "zeroblob(4)", "9", "zeroblob(0)").is_err());
+    assert!(insert("Bound", "zeroblob(4)", "9", "zeroblob(65)").is_err());
+    assert!(insert("Bound", "zeroblob(4)", "NULL", "NULL").is_err());
     assert!(insert("Bound", "NULL", "9", "zeroblob(1)").is_err());
     assert!(insert("Done", "NULL", "NULL", "NULL").is_err());
 }
@@ -493,7 +498,7 @@ fn a_command_replayed_from_its_recorded_issue_time_mints_the_same_ids_and_stamps
     }
 }
 
-// ---- the issue time on the log row (personal-cfo-1cltt.5, migration 72) ------------------------
+// ---- the issue time on the log row (personal-cfo-1cltt.5, migration 73) ------------------------
 
 /// `apply` records the command's `issued_at` on every operation-log row, Sync on or off: a command
 /// taken before Sync is armed has no outbox row, and the log row is then the only place the instant

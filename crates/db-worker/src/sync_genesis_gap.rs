@@ -9,7 +9,7 @@
 //! server's log and the device agree:
 //!
 //! 1. **Gates, before anything is written.** The genesis is `Published` and its snapshot identity
-//!    is recorded (`sync_genesis`, migration 72); the device is not armed; the service's log head is
+//!    is recorded (`sync_genesis`, migration 73); the device is not armed; the service's log head is
 //!    still `0` and the snapshot it holds is the one this device published (C5); every command in
 //!    the gap has its recorded issue time and its payload (C3).
 //! 2. **The base is the genesis, fetched, never the live vault** (C1, R-b). The genesis container is

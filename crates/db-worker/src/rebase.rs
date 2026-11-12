@@ -21,13 +21,22 @@
 //! stops, the live vault is untouched, and [`ForkEvidence`] carries what the replica's
 //! `SyncStatus` needs to show it.
 //!
+//! **Already-accepted commands.** An unpushed command the service already accepted (the response
+//! was lost) must not be applied or queued again: [`reconcile`] matches every local outbox entry
+//! with every pulled envelope and the probe results before anything is applied, binds the exact
+//! matches to their accepted position, and halts on a `ProtocolFork`. The re-seal rule: only a
+//! command whose evidence says the service knows neither of its identities is replayed, and it is
+//! written back `Pending` with its new row keys and no container. There is no decrypting, sealing
+//! or key material anywhere in the rebase.
+//!
 //! **Rolling back reaches the base and no further.** [`DbWorker::rollback_to`] accepts only the
 //! recorded `base_seq`; any other target is a typed error, never a partial rollback.
 
 mod execute;
 mod plan;
+mod reconcile;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -144,6 +153,56 @@ pub enum RebaseError {
         /// The position the image records.
         recorded: i64,
     },
+    /// One command identity is bound to two different envelopes (C.10 `ProtocolFork`). Both are
+    /// kept in the evidence; the caller feeds it to the replica's `SyncStatus` and the vault stops.
+    /// Nothing was applied to the scratch vault when this is returned from `reconcile`.
+    #[error("{}", .0.describe())]
+    ProtocolFork(Box<ProtocolForkEvidence>),
+    /// An `Approved` entry the tail does not settle has no probe result: whether the service
+    /// accepted it is unknown, and the rebase will not guess (a replay of an accepted command is a
+    /// fork, and so is a queue that is later kept).
+    #[error("the sealed command {command_id} has no accepted-index probe result")]
+    ProbeRequired {
+        /// The command.
+        command_id: Uuid,
+    },
+    /// The tail and the probe, or the outbox and the tail, disagree about one accepted command.
+    /// That is a fork-consistency failure of the service, not a bind: nothing is bound.
+    #[error("the evidence about the accepted command {command_id} disagrees")]
+    EvidenceDisagrees {
+        /// The command.
+        command_id: Uuid,
+        /// How.
+        found: Disagreement,
+    },
+    /// The evidence says the service accepted the command at `seq`, but the scratch vault holds no
+    /// such command: the pulled tail does not reach it, and the base does not contain it.
+    #[error("the accepted command {command_id} (seq {seq}) is not in the scratch vault")]
+    AcceptedButAbsent {
+        /// The command.
+        command_id: Uuid,
+        /// The sequence number the evidence gives it.
+        seq: u64,
+    },
+    /// The entry was handed to the replay without its reconciliation: a `Bound` entry is never
+    /// replayed, and an `Approved` one only once the evidence said the service does not know it.
+    #[error("the command {command_id} was not reconciled before the replay")]
+    NotReconciled {
+        /// The command.
+        command_id: Uuid,
+    },
+    /// A pulled entry's container is not the envelope that was checked.
+    #[error("the container at seq {seq} is not the checked envelope")]
+    PulledContainerMismatch {
+        /// The envelope's server seq.
+        seq: u64,
+    },
+    /// An outbox entry's retained sealed container cannot be read back as that command's envelope.
+    #[error("the retained envelope of the command {command_id} cannot be read")]
+    UnreadableSealed {
+        /// The command.
+        command_id: Uuid,
+    },
     /// The database or the filesystem failed.
     #[error(transparent)]
     Db(#[from] DbError),
@@ -207,9 +266,13 @@ pub struct PulledEnvelope<'a> {
 }
 
 pub(crate) use execute::command_envelope;
-pub use execute::{Executed, LocalCommand, Replayed};
+pub use execute::{Executed, LocalCommand, OutboxEntryState, Replayed};
 pub use plan::{
     auto_iff, plan, Disposition, OutboxCommand, Plan, PlannedCommand, QueueCause, QueueReason,
+};
+pub use reconcile::{
+    reconcile, reconcile_and_replay, AcceptedEvidence, Disagreement, ForkSource, Probe,
+    ProtocolForkEvidence, PulledLogEntry, Reconciliation, RetainedEnvelope, Settled, SettledBy,
 };
 
 /// A table row a command wrote: the table name and its canonical primary key
@@ -225,6 +288,12 @@ pub struct Scratch<'a> {
     base_seq: i64,
     head_seq: i64,
     touched: BTreeSet<RowKey>,
+    /// The rows each applied server envelope wrote, by command: what a reconciled entry's outbox
+    /// row is remapped to.
+    pulled_rows: BTreeMap<Uuid, Vec<RowKey>>,
+    /// The `Approved` entries whose evidence said the service does not know them, so that
+    /// replaying them cannot duplicate an accepted command.
+    cleared: BTreeSet<Uuid>,
     /// Whether the local commands were already rebased onto this scratch vault.
     rebased: bool,
 }
@@ -354,6 +423,8 @@ impl DbWorker {
             base_seq,
             head_seq: base_seq,
             touched: BTreeSet::new(),
+            pulled_rows: BTreeMap::new(),
+            cleared: BTreeSet::new(),
             rebased: false,
         })
     }
@@ -460,6 +531,18 @@ impl Scratch<'_> {
     /// [`RebaseError::PulledEnvelopeRefused`], [`RebaseError::MemoPresent`], or
     /// [`RebaseError::Fork`] when a replica's write set differs from the envelope's.
     pub fn apply_pulled(&mut self, envelopes: &[PulledEnvelope<'_>]) -> Result<(), RebaseError> {
+        self.apply_pulled_remapping(envelopes, &BTreeMap::new())
+    }
+
+    /// [`Self::apply_pulled`], where `own` names the envelopes that are this device's own accepted
+    /// commands (command id to the `op_seq` it had locally). Such a row records the `op_seq` it
+    /// replaces, and its rows do not count as touched by the server: the command is the device's
+    /// own, so a later local command that builds on it must not be mistaken for a conflict.
+    pub(crate) fn apply_pulled_remapping(
+        &mut self,
+        envelopes: &[PulledEnvelope<'_>],
+        own: &BTreeMap<Uuid, i64>,
+    ) -> Result<(), RebaseError> {
         for envelope in envelopes {
             let expected = u64::try_from(self.head_seq + 1).unwrap_or(u64::MAX);
             if envelope.seq != expected {
@@ -478,9 +561,10 @@ impl Scratch<'_> {
             )
             .map_err(|error| undecodable(Undecodable::Payload(error)))?;
             let applied_on = self.head_seq;
+            let command_id = meta.command_id;
             let step = StepContext {
                 applied_base_seq: Some(applied_on),
-                rebased_from: None,
+                rebased_from: own.get(&command_id).copied(),
                 record_outbox: false,
             };
             match self.worker.dispatch_rebase_step(meta, &command, step) {
@@ -500,7 +584,10 @@ impl Scratch<'_> {
                     computed: write_set.hash,
                 }));
             }
-            self.touched.extend(write_set.rows);
+            if !own.contains_key(&command_id) {
+                self.touched.extend(write_set.rows.iter().cloned());
+            }
+            self.pulled_rows.insert(command_id, write_set.rows);
             self.head_seq =
                 i64::try_from(seq).map_err(|_| RebaseError::OutOfOrder { expected, got: seq })?;
         }

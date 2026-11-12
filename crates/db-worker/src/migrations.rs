@@ -2585,7 +2585,89 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
-    // Version 72 (personal-cfo-1cltt.5, slice C; provisional: 73 if another migration lands first).
+    // An accepted command may have no result (personal-cfo-bxsbz.5). Migration 66 required a
+    // `Bound` row's `result_ref` to be non-null, but the protocol allows an accepted command with
+    // none, and the accepted-envelope record (C.10) says a PRESENT `result_ref` is 1 to 64 bytes
+    // because an empty one would be a second encoding of an absent one. So the `Bound` arm now
+    // allows NULL or 1 to 64 bytes; `Pending` and `Approved` still require NULL. SQLite cannot
+    // alter a CHECK, so the table is rebuilt in the migration transaction (create, copy, drop,
+    // rename). Nothing references `sync_outbox` (no foreign key, trigger or view), its only index is
+    // the `op_seq` uniqueness the new table declares again, and every other constraint is kept,
+    // `issued_at` (migration 67) included. A row that could only have meant "no result" under the
+    // old shape, an empty `result_ref`, is carried over as NULL; any other out-of-range value
+    // fails the copy and so the migration, rather than being truncated. The down migration
+    // rebuilds the old shape and FAILS CLOSED: a `Bound` row with a NULL result violates the old
+    // CHECK, the copy aborts, and the migration rolls back. It never invents a value.
+    Migration {
+        version: 72,
+        name: "sync_outbox_bound_without_result",
+        up: "CREATE TABLE sync_outbox_rebuilt (
+                 command_id       BLOB PRIMARY KEY CHECK (length(command_id) = 16),
+                 op_seq           INTEGER NOT NULL UNIQUE,
+                 state            TEXT NOT NULL DEFAULT 'Pending'
+                                  CHECK (state IN ('Pending', 'Approved', 'Bound')),
+                 write_set_keys   BLOB NOT NULL,
+                 sealed_container BLOB,
+                 bound_seq        INTEGER,
+                 result_ref       BLOB,
+                 created_at       TEXT NOT NULL,
+                 issued_at        INTEGER
+                     CHECK (issued_at IS NULL OR (issued_at >= 0 AND issued_at <= 253402300799999999)),
+                 CHECK (
+                     (state = 'Pending' AND sealed_container IS NULL
+                         AND bound_seq IS NULL AND result_ref IS NULL)
+                     OR (state = 'Approved' AND sealed_container IS NOT NULL
+                         AND bound_seq IS NULL AND result_ref IS NULL)
+                     OR (state = 'Bound' AND sealed_container IS NOT NULL
+                         AND bound_seq IS NOT NULL
+                         AND (result_ref IS NULL OR length(result_ref) BETWEEN 1 AND 64))
+                 )
+             );
+             INSERT INTO sync_outbox_rebuilt
+                 (command_id, op_seq, state, write_set_keys, sealed_container, bound_seq, result_ref,
+                 created_at, issued_at)
+             SELECT command_id, op_seq, state, write_set_keys, sealed_container, bound_seq,
+                    CASE WHEN length(result_ref) = 0 THEN NULL ELSE result_ref END,
+                    created_at, issued_at
+               FROM sync_outbox;
+             DROP TABLE sync_outbox;
+             ALTER TABLE sync_outbox_rebuilt RENAME TO sync_outbox;",
+        down: Some(
+            "CREATE TABLE sync_outbox_rebuilt (
+                 command_id       BLOB PRIMARY KEY CHECK (length(command_id) = 16),
+                 op_seq           INTEGER NOT NULL UNIQUE,
+                 state            TEXT NOT NULL DEFAULT 'Pending'
+                                  CHECK (state IN ('Pending', 'Approved', 'Bound')),
+                 write_set_keys   BLOB NOT NULL,
+                 sealed_container BLOB,
+                 bound_seq        INTEGER,
+                 result_ref       BLOB,
+                 created_at       TEXT NOT NULL,
+                 issued_at        INTEGER
+                     CHECK (issued_at IS NULL OR (issued_at >= 0 AND issued_at <= 253402300799999999)),
+                 CHECK (
+                     (state = 'Pending' AND sealed_container IS NULL
+                         AND bound_seq IS NULL AND result_ref IS NULL)
+                     OR (state = 'Approved' AND sealed_container IS NOT NULL
+                         AND bound_seq IS NULL AND result_ref IS NULL)
+                     OR (state = 'Bound' AND sealed_container IS NOT NULL
+                         AND bound_seq IS NOT NULL
+                         AND result_ref IS NOT NULL)
+                 )
+             );
+             INSERT INTO sync_outbox_rebuilt
+                 (command_id, op_seq, state, write_set_keys, sealed_container, bound_seq, result_ref,
+                 created_at, issued_at)
+             SELECT command_id, op_seq, state, write_set_keys, sealed_container, bound_seq, result_ref,
+                 created_at, issued_at
+               FROM sync_outbox;
+             DROP TABLE sync_outbox;
+             ALTER TABLE sync_outbox_rebuilt RENAME TO sync_outbox;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
+    // Version 73 (personal-cfo-1cltt.5, slice C; provisional: it moves if another migration lands first).
     // Two device-local additions:
     // * `operation_log.issued_at` (INTEGER, nullable, Unix microseconds, the encoding of
     //   `sync_outbox.issued_at`) is the instant the command was issued, which `apply` reads for
@@ -2604,7 +2686,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // trusting the service's copy. Both or neither: a digest without an id, or the reverse, is
     // refused.
     Migration {
-        version: 72,
+        version: 73,
         name: "sync_genesis_snapshot_identity",
         up: "ALTER TABLE operation_log ADD COLUMN issued_at INTEGER;
              ALTER TABLE sync_genesis ADD COLUMN genesis_snapshot_id BLOB
@@ -4172,9 +4254,9 @@ mod tests {
         );
         assert!(origin.is_ok(), "an unchanged cursor is not a move back");
 
-        // 70, 71 and 72 (`sync_artifacts`, `sync_notices`, the genesis identity) sit above 69: stepping
-        // to 68 reverts all four.
-        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 4);
+        // 70, 71, 72 and 73 (`sync_artifacts`, `sync_notices`, the outbox rebuild, the genesis
+        // identity) sit above 69: stepping to 68 reverts all five.
+        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 5);
         assert!(
             objects(&conn).is_empty(),
             "down drops both tables and every trigger"
@@ -4213,9 +4295,9 @@ mod tests {
                 "sync_artifacts"
             ]
         );
-        // 71 and 72 (`sync_notices`, the genesis identity) sit above 70: stepping to 69 reverts all
-        // three.
-        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 3);
+        // 71, 72 and 73 (`sync_notices`, the outbox rebuild, the genesis identity) sit above 70:
+        // stepping to 69 reverts all four.
+        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 4);
         assert!(objects(&conn).is_empty());
         apply(&mut conn, MIGRATIONS).unwrap();
         let rows: i64 = conn
@@ -4341,8 +4423,9 @@ mod tests {
         assert!(insert("something_else", 16, 3).is_err());
         assert!(insert("import_discarded", 15, 3).is_err());
         assert!(insert("import_discarded", 16, -1).is_err());
-        // 72 (the genesis identity) sits above 71: stepping to 70 reverts both.
-        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 2);
+        // 72 and 73 (the outbox rebuild, the genesis identity) sit above 71: stepping to 70
+        // reverts all three.
+        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 3);
         let left: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%sync_notices%'",
@@ -4358,12 +4441,172 @@ mod tests {
         assert_eq!(rows, 0);
     }
 
-    /// 72 adds the genesis snapshot's identity to `sync_genesis`: two nullable columns, both or
-    /// neither, that an existing row keeps as NULL; down drops them and up adds them again.
+    fn outbox_insert(
+        conn: &Connection,
+        id: u8,
+        state: &str,
+        sealed: &str,
+        bound_seq: &str,
+        result: &str,
+    ) -> rusqlite::Result<usize> {
+        conn.execute(
+            &format!(
+                "INSERT INTO sync_outbox
+                   (command_id, op_seq, state, write_set_keys, sealed_container, bound_seq,
+                    result_ref, created_at, issued_at)
+                 VALUES (x'000000000000000000000000000000{id:02x}', {id}, '{state}', zeroblob(0), {sealed},
+                         {bound_seq}, {result}, '2026-11-06T00:00:00Z', 5)"
+            ),
+            [],
+        )
+    }
+
+    /// 72: a `Bound` row may have no result, or a 1 to 64 byte one, and nothing else.
     #[test]
-    fn v72_adds_the_genesis_snapshot_identity_both_or_neither_and_down_drops_it() {
+    fn v72_a_bound_row_has_no_result_or_a_one_to_sixty_four_byte_one() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+
+        outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "NULL").unwrap();
+        outbox_insert(&conn, 2, "Bound", "zeroblob(1)", "7", "zeroblob(1)").unwrap();
+        outbox_insert(&conn, 3, "Bound", "zeroblob(1)", "8", "zeroblob(64)").unwrap();
+        assert!(
+            outbox_insert(&conn, 4, "Bound", "zeroblob(1)", "9", "zeroblob(0)").is_err(),
+            "an empty result is a second encoding of none"
+        );
+        assert!(
+            outbox_insert(&conn, 5, "Bound", "zeroblob(1)", "9", "zeroblob(65)").is_err(),
+            "a 65 byte result is over the bound"
+        );
+        // The other states are unchanged: no result, no position.
+        outbox_insert(&conn, 6, "Pending", "NULL", "NULL", "NULL").unwrap();
+        outbox_insert(&conn, 7, "Approved", "zeroblob(1)", "NULL", "NULL").unwrap();
+        assert!(outbox_insert(&conn, 8, "Pending", "NULL", "NULL", "zeroblob(1)").is_err());
+        assert!(outbox_insert(&conn, 9, "Approved", "zeroblob(1)", "NULL", "zeroblob(1)").is_err());
+        assert!(outbox_insert(&conn, 10, "Bound", "zeroblob(1)", "NULL", "NULL").is_err());
+        assert!(outbox_insert(&conn, 11, "Bound", "NULL", "6", "NULL").is_err());
+        let none: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT result_ref FROM sync_outbox WHERE op_seq = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(none, None, "a Bound row with no result reads back as None");
+    }
+
+    /// Up and down with nothing the old shape cannot hold restores the old shape, and the rows.
+    #[test]
+    fn v72_down_restores_the_old_shape_and_keeps_the_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "zeroblob(2)").unwrap();
+        outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
+
+        // 73 (the genesis identity) sits above 72: step past it first.
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 1);
+        assert_eq!(migrate_down(&mut conn, 71).unwrap(), 1);
+
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2, "down keeps the outbox rows");
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('sync_outbox') ORDER BY cid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            columns,
+            [
+                "command_id",
+                "op_seq",
+                "state",
+                "write_set_keys",
+                "sealed_container",
+                "bound_seq",
+                "result_ref",
+                "created_at",
+                "issued_at"
+            ]
+        );
+        // The old check is back: a Bound row needs a result.
+        assert!(outbox_insert(&conn, 3, "Bound", "zeroblob(1)", "7", "NULL").is_err());
+        outbox_insert(&conn, 4, "Bound", "zeroblob(1)", "7", "zeroblob(1)").unwrap();
+
+        // And up again carries the rows over.
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 3);
+        outbox_insert(&conn, 5, "Bound", "zeroblob(1)", "8", "NULL").unwrap();
+    }
+
+    /// Down refuses, and changes nothing, while a `Bound` row has no result: it never invents one.
+    #[test]
+    fn v72_down_fails_closed_when_a_bound_row_has_no_result() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "NULL").unwrap();
+        outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
+
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 1);
+        assert!(migrate_down(&mut conn, 71).is_err());
+
+        let applied: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 72",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1, "72 is still applied");
+        let rows: Vec<(i64, Option<Vec<u8>>)> = conn
+            .prepare("SELECT op_seq, result_ref FROM sync_outbox ORDER BY op_seq")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [(1, None), (2, None)],
+            "both rows untouched, no value invented"
+        );
+        // The new shape still stands.
+        outbox_insert(&conn, 3, "Bound", "zeroblob(1)", "7", "NULL").unwrap();
+    }
+
+    /// An upgrade carries a row the old shape could only have meant "no result" for, an empty
+    /// `result_ref`, over as NULL, and keeps every other row as it was.
+    #[test]
+    fn v72_up_carries_an_empty_result_over_as_none() {
         let mut conn = Connection::open_in_memory().unwrap();
         apply(&mut conn, &MIGRATIONS[..71]).unwrap();
+        outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "zeroblob(0)").unwrap();
+        outbox_insert(&conn, 2, "Bound", "zeroblob(1)", "7", "zeroblob(3)").unwrap();
+
+        apply(&mut conn, MIGRATIONS).unwrap();
+
+        let rows: Vec<(i64, Option<Vec<u8>>)> = conn
+            .prepare("SELECT op_seq, result_ref FROM sync_outbox ORDER BY op_seq")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, [(1, None), (2, Some(vec![0, 0, 0]))]);
+    }
+
+    /// 73 adds the genesis snapshot's identity to `sync_genesis`: two nullable columns, both or
+    /// neither, that an existing row keeps as NULL; down drops them and up adds them again.
+    #[test]
+    fn v73_adds_the_genesis_snapshot_identity_both_or_neither_and_down_drops_it() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..72]).unwrap();
         // A genesis recorded by an earlier build.
         conn.execute(
             "INSERT INTO sync_genesis (singleton, vault_id, membership_record, epoch_record, state,
@@ -4409,7 +4652,7 @@ mod tests {
         );
         assert_eq!(identity(&conn).0.map(|id| id.len()), Some(16));
 
-        assert_eq!(migrate_down(&mut conn, 71).unwrap(), 1);
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 1);
         let columns: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('sync_genesis')
