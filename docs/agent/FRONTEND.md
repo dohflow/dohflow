@@ -519,6 +519,12 @@ on a desktop window, and a test proves each.
   container query (`compact:@max-[15rem]:flex-col` inside an `@container`), and prose takes
   `compact:@max-[15rem]:hyphens-auto` (only on the narrow card, so a normal-size card keeps whole words)
   so words break at syllables instead of mid-syllable.
+  A word breaks at a hyphen only with at least eight letters on each side
+  (`compact:@max-[15rem]:[-webkit-hyphenate-limit-before:8]` and
+  `compact:@max-[15rem]:[-webkit-hyphenate-limit-after:8]`; the iOS WebView honors this prefixed pair and
+  ignored the standard `hyphenate-limit-chars`), so words the copy depends on, such as "password", are not
+  hyphenated. `[overflow-wrap:anywhere]` stays the last resort, and it breaks only a word wider than the
+  whole line.
   The shared `Button` is `h-10 whitespace-nowrap`, so a button whose label can outgrow the column at that
   size takes `h-auto min-h-10 whitespace-normal [overflow-wrap:anywhere]` at its call site (`cn()` drops the
   primitive's `h-10` and `whitespace-nowrap`), with `compact:@max-[15rem]:px-1` inside an `@container` so a
