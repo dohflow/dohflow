@@ -36,7 +36,7 @@ cat <<'JSON'
 [
   {"id":"personal-cfo-28js0","title":"FEATURE: phone container builder","priority":1},
   {"id":"personal-cfo-7vbdq","title":"The M0 viewer","priority":1},
-  {"id":"personal-cfo-r2pow","title":"LunchFlow adapter","priority":2},
+  {"id":"personal-cfo-t2s4b","title":"Op-log v2","priority":2},
   {"id":"personal-cfo-aaa1","title":"FEATURE: Real shipped thing","priority":2},
   {"id":"personal-cfo-bbb2","title":"Another shipped thing","priority":2}
 ]
@@ -51,18 +51,18 @@ gen() { ( cd "$TMP/work" && HOME="$TMP/home" PATH="$TMP/bin:$PATH" node "$GEN" "
 
 OUT="$TMP/work/docs/product/shipped-features.md"
 
-case_start "the shipped exclusion list is valid and names the four beads"
+case_start "the shipped exclusion list is valid and names the five beads"
 if node -e '
   const l = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).exclusions
   const ids = l.map((e) => e.id).sort().join(",")
-  if (ids !== "personal-cfo-28js0,personal-cfo-7ie.10,personal-cfo-7vbdq,personal-cfo-r2pow") process.exit(1)
+  if (ids !== "personal-cfo-28js0,personal-cfo-2bxkg.4,personal-cfo-7ie.10,personal-cfo-7vbdq,personal-cfo-t2s4b") process.exit(1)
   if (!l.every((e) => typeof e.reason === "string" && e.reason.trim().length > 0)) process.exit(2)
-' "$LIST"; then pass "28js0, 7ie.10, 7vbdq and r2pow are listed, each with a reason"; else fail "exclusion list wrong or a reason is missing"; fi
+' "$LIST"; then pass "28js0, 2bxkg.4, 7ie.10, 7vbdq and t2s4b are listed, each with a reason"; else fail "exclusion list wrong or a reason is missing"; fi
 
 case_start "excluded beads are omitted and the rest are kept"
 gen >/dev/null 2>&1; rc=$?
 [ "$rc" = 0 ] && pass "generator exits 0" || fail "generator exit $rc"
-for id in 28js0 7vbdq r2pow; do
+for id in 28js0 7vbdq t2s4b; do
   if grep -q "\`$id\`" "$OUT"; then fail "excluded bead $id is in the output"; else pass "$id is omitted"; fi
 done
 for id in aaa1 bbb2; do
@@ -73,7 +73,7 @@ grep -q "2 shipped features" "$OUT" && pass "the count excludes the omitted bead
 case_start "--check passes on a fresh generation and fails when an excluded row is hand-added"
 gen --check >/dev/null 2>&1 && pass "--check passes right after generation" || fail "--check failed on a fresh file"
 # shellcheck disable=SC2016  # the backticks are literal Markdown
-printf '%s\n' '| `r2pow` | LunchFlow adapter |' >> "$OUT"
+printf '%s\n' '| `t2s4b` | Op-log v2 |' >> "$OUT"
 gen --check >/dev/null 2>&1 && fail "--check accepted a hand-added excluded row" || pass "--check rejects a hand-added excluded row"
 
 case_start "a malformed exclusion list is an error, not a silent skip"

@@ -298,6 +298,180 @@ out="$(run --clean --yes --idle-days 100000 2>&1)"
 [ ! -s "$CALLS" ] && pass "ran no cargo clean" || fail "cleaned despite a huge threshold: $(cat "$CALLS")"
 
 # ===========================================================================
+# Every workspace counted, the cap, --cap-check and the snapshot line
+# (personal-cfo-0rein.13)
+# ===========================================================================
+# wt-two has the two cargo workspaces the real repository has: the root one and
+# apps/desktop/src-tauri (four levels down). Its files have known, different sizes.
+TWO="$TMP/wt-two"
+git -C "$MAIN" worktree add -q -b br-two "$TWO" main
+git -C "$TWO" push -q -u origin br-two 2>/dev/null
+mkdir -p "$TWO/target/debug" "$TWO/apps/desktop/src-tauri/target/debug/deps"
+: > "$TWO/target/CACHEDIR.TAG"; : > "$TWO/apps/desktop/src-tauri/target/CACHEDIR.TAG"
+head -c 300000 /dev/zero > "$TWO/target/debug/a.bin"
+head -c 900000 /dev/zero > "$TWO/apps/desktop/src-tauri/target/debug/deps/b.bin"
+# some bytes in the two worktrees the cap-check cases run from, so the cap can sit below them
+head -c 100000 /dev/zero > "$TMP/wt-idle/target/debug/deps/big.bin"
+head -c 100000 /dev/zero > "$TMP/wt-busy/target/debug/deps/big.bin"
+K_ROOT="$(du -sk "$TWO/target" | awk '{print $1}')"
+K_DESK="$(du -sk "$TWO/apps/desktop/src-tauri/target" | awk '{print $1}')"
+K_SUM=$((K_ROOT + K_DESK))
+two_block() { awk '/^  \/.*wt-two$/ { f = 1; print; next } f && /^$/ { exit } f'; }
+
+case_start "the report lists every cargo workspace of a worktree separately, with the worktree total"
+out="$(run 2>&1)"
+blk="$(two_block <<<"$out")"
+grep -q "in 2 cargo target dir(s), every workspace counted" <<<"$blk" && pass "the text row says two target dirs" || fail "target count missing: $blk"
+grep -q "^ *[0-9.]* [KMG]iB  target$" <<<"$blk" && pass "lists the root target" || fail "root target not listed: $blk"
+grep -q "^ *[0-9.]* [KMG]iB  apps/desktop/src-tauri/target$" <<<"$blk" && pass "lists apps/desktop/src-tauri/target, four levels down" || fail "desktop target not listed: $blk"
+if command -v jq >/dev/null 2>&1; then
+  json="$(run --json 2>&1)"
+  tw() { printf '%s' "$json" | jq -r "[.worktrees[] | select(.path|endswith(\"wt-two\"))] | first | $1"; }
+  [ "$(tw '.targets | length')" = 2 ] && pass "JSON carries two targets" || fail "JSON targets: $(tw '.targets')"
+  [ "$(tw '[.targets[] | select(.path|endswith("/wt-two/target")) | .kib] | first')" = "$K_ROOT" ] && pass "the root target's size is its own du" || fail "root size wrong"
+  [ "$(tw '[.targets[] | select(.path|endswith("src-tauri/target")) | .kib] | first')" = "$K_DESK" ] && pass "the desktop target's size is its own du" || fail "desktop size wrong"
+  [ "$(tw '.target_kib')" = "$K_SUM" ] && pass "the worktree total is the sum of both" || fail "total $(tw '.target_kib') is not $K_SUM"
+  [ "$(tw '.target_dirs | length')" = 2 ] && pass "target_dirs still lists both" || fail "target_dirs wrong"
+  [ "$(printf '%s' "$json" | jq -r '.disk.percent_free != null')" = true ] && pass "the existing disk member is intact" || fail "disk member lost"
+else
+  echo "    skip — jq not installed"
+fi
+
+case_start "the report flags a worktree over the cap: at, below and above"
+nover() { grep -c "OVER THE CAP" <<<"$1"; }
+out="$(run 2>&1)"
+[ "$(nover "$out")" = 0 ] && pass "no worktree is over the default cap" || fail "default cap flagged something: $out"
+out="$(DEV_HYGIENE_TESTING=1 DEV_HYGIENE_CAP_KIB=$((K_SUM + 1)) run 2>&1)"
+[ "$(nover "$out")" = 0 ] && pass "one KiB under the cap: not flagged" || fail "flagged under the cap"
+out="$(DEV_HYGIENE_TESTING=1 DEV_HYGIENE_CAP_KIB="$K_SUM" run 2>&1)"
+[ "$(nover "$out")" = 0 ] && pass "exactly at the cap: not flagged" || fail "flagged at the cap"
+out="$(DEV_HYGIENE_TESTING=1 DEV_HYGIENE_CAP_KIB=$((K_SUM - 1)) run 2>&1)"
+[ "$(nover "$out")" = 1 ] && pass "one KiB over the cap: exactly one worktree flagged" || fail "wrong number flagged: $(nover "$out")"
+blk="$(two_block <<<"$out")"
+grep -q "OVER THE CAP" <<<"$blk" && pass "and it is wt-two" || fail "wrong worktree flagged: $blk"
+grep -q "OVER THE CAP: .* against" <<<"$blk" && grep -q -- "--cap-check" <<<"$blk" && grep -q "cargo clean" <<<"$blk" && pass "the flag shows the size and names the action the role rules name" || fail "flag text: $blk"
+if command -v jq >/dev/null 2>&1; then
+  json="$(DEV_HYGIENE_TESTING=1 DEV_HYGIENE_CAP_KIB=$((K_SUM - 1)) run --json 2>&1)"
+  [ "$(printf '%s' "$json" | jq -r '[.worktrees[] | select(.over_cap)] | length')" = 1 ] && pass "JSON: one worktree over_cap" || fail "over_cap in JSON wrong"
+  json="$(DEV_HYGIENE_TESTING=1 DEV_HYGIENE_CAP_KIB="$K_SUM" run --json 2>&1)"
+  [ "$(printf '%s' "$json" | jq -r '[.worktrees[] | select(.over_cap)] | length')" = 0 ] && pass "JSON: none over_cap at the cap" || fail "over_cap at the cap"
+  json="$(run --target-cap-gib 3 --json 2>&1)"
+  [ "$(printf '%s' "$json" | jq -r '.target_cap_kib')" = 3145728 ] && pass "--target-cap-gib 3 is 3145728 KiB" || fail "cap conversion wrong: $(printf '%s' "$json" | jq -r '.target_cap_kib')"
+  json="$(run --json 2>&1)"
+  [ "$(printf '%s' "$json" | jq -r '.target_cap_kib')" = 16777216 ] && pass "the default cap is 16 GiB" || fail "default cap: $(printf '%s' "$json" | jq -r '.target_cap_kib')"
+fi
+for bad in 0 abc "" 007 -3 1.5 1048577 99999999999999999999; do
+  run --target-cap-gib "$bad" >/dev/null 2>&1; rc=$?
+  [ "$rc" = 64 ] && pass "--target-cap-gib '$bad' is a usage error (64)" || fail "--target-cap-gib '$bad' gave $rc"
+done
+
+if command -v jq >/dev/null 2>&1; then
+  json="$(run --target-cap-gib 1048576 --json 2>&1)"
+  [ "$(printf '%s' "$json" | jq -r '.target_cap_kib')" = 1099511627776 ] && pass "the largest accepted cap (1 PiB) converts without overflow" || fail "largest cap: $(printf '%s' "$json" | head -c 200)"
+fi
+
+case_start "--cap-check: the worktree it is run from, exit 0 under the cap, 1 over and quiet, 2 over and busy"
+cc() {
+  # cc DIR [ENV=VAL...]: run --cap-check from DIR; sets CC_OUT and CC_RC.
+  local d="$1"; shift
+  CC_OUT="$( cd "$d" && env DEV_HYGIENE_TESTING=1 "$@" "$SCRIPT" --cap-check 2>&1 )"; CC_RC=$?
+}
+mkdir -p "$TMP/lsofstub"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP/lsofstub/lsof"
+chmod +x "$TMP/lsofstub/lsof"
+: > "$CALLS"; before="$(snapshot)"
+cc "$TWO"
+[ "$CC_RC" = 0 ] && pass "under the cap: exit 0" || fail "under the cap: exit $CC_RC: $CC_OUT"
+grep -q "[KMG]iB  target$" <<<"$CC_OUT" && grep -q "[KMG]iB  apps/desktop/src-tauri/target$" <<<"$CC_OUT" && pass "lists each target dir with its size" || fail "targets not listed: $CC_OUT"
+grep -q "total .* against the cap of 16.0 GiB" <<<"$CC_OUT" && pass "shows the total against the cap" || fail "no total line: $CC_OUT"
+grep -q "none running" <<<"$CC_OUT" && pass "says no cargo/rustc is running" || fail "process line missing"
+if grep -q "wt-idle\|wt-busy" <<<"$CC_OUT"; then fail "mentioned another worktree"; else pass "mentions no other worktree"; fi
+cc "$TWO" DEV_HYGIENE_CAP_KIB="$K_SUM"
+[ "$CC_RC" = 0 ] && pass "exactly at the cap: exit 0" || fail "at the cap: exit $CC_RC"
+cc "$TWO" DEV_HYGIENE_CAP_KIB=$((K_SUM - 1))
+[ "$CC_RC" = 1 ] && pass "one KiB over and quiet: exit 1" || fail "over and quiet: exit $CC_RC: $CC_OUT"
+grep -q "OVER THE CAP, and quiet" <<<"$CC_OUT" && grep -q "cargo clean --manifest-path .*--target-dir .*/wt-two/target" <<<"$CC_OUT" && pass "names the cargo clean for each of its own target dirs" || fail "no action shown: $CC_OUT"
+grep -q "src-tauri/Cargo.toml.*src-tauri/target" <<<"$CC_OUT" && pass "including the desktop workspace's" || fail "desktop clean command missing"
+cc "$TMP/wt-idle" DEV_HYGIENE_CAP_KIB=1
+[ "$CC_RC" = 1 ] && pass "another worktree, over and quiet: exit 1" || fail "wt-idle: exit $CC_RC: $CC_OUT"
+cc "$TMP/wt-busy" DEV_HYGIENE_CAP_KIB=1
+[ "$CC_RC" = 2 ] && pass "over with a cargo process running in it: exit 2" || fail "busy: exit $CC_RC: $CC_OUT"
+grep -q "a build is running: do not clean" <<<"$CC_OUT" && pass "says not to clean while a build runs" || fail "no busy message: $CC_OUT"
+if grep -q "cargo clean --manifest-path" <<<"$CC_OUT"; then fail "offered a clean while busy"; else pass "offers no clean while busy"; fi
+cc "$TMP/wt-busy"
+[ "$CC_RC" = 0 ] && pass "busy but under the cap: exit 0" || fail "busy under the cap: exit $CC_RC"
+# A cargo process is running somewhere but where it works cannot be read (an lsof
+# that prints nothing): nothing can be ruled out, so over the cap that is busy, never
+# permission to clean.
+cc "$TWO" PATH="$TMP/lsofstub:$PATH" DEV_HYGIENE_CAP_KIB=1
+[ "$CC_RC" = 2 ] && pass "over the cap with an unreadable process list: exit 2" || fail "unreadable process list: exit $CC_RC: $CC_OUT"
+grep -q "a build is running: do not clean" <<<"$CC_OUT" && pass "says not to clean when a build cannot be ruled out" || fail "no busy message: $CC_OUT"
+if grep -q "cargo clean --manifest-path" <<<"$CC_OUT"; then fail "offered a clean with an unreadable process list"; else pass "offers no clean with an unreadable process list"; fi
+cc "$TWO" PATH="$TMP/lsofstub:$PATH"
+[ "$CC_RC" = 0 ] && pass "unreadable process list but under the cap: exit 0" || fail "unreadable list, under the cap: exit $CC_RC"
+[ ! -s "$CALLS" ] && pass "never ran cargo" || fail "ran cargo: $(cat "$CALLS")"
+[ "$before" = "$(snapshot)" ] && pass "deleted and changed nothing" || fail "changed the tree"
+( cd "$TWO" && "$SCRIPT" --cap-check --clean ) >/dev/null 2>&1; rc=$?
+[ "$rc" = 64 ] && pass "--cap-check with --clean is a usage error (64), not a cap status" || fail "--cap-check --clean gave $rc"
+( cd "$TWO" && "$SCRIPT" --cap-check --json ) >/dev/null 2>&1; rc=$?
+[ "$rc" = 64 ] && pass "--cap-check with --json is a usage error (64)" || fail "--cap-check --json gave $rc"
+( cd "$TWO" && "$SCRIPT" --cap-check --repo "$TWO" ) >/dev/null 2>&1; rc=$?
+[ "$rc" = 64 ] && pass "--cap-check with --repo is a usage error (64): it checks the worktree it runs from" || fail "--cap-check --repo gave $rc"
+( cd "$TMP" && "$SCRIPT" --cap-check ) >/dev/null 2>&1; rc=$?
+[ "$rc" = 64 ] && pass "outside any git worktree: usage error (64)" || fail "outside a worktree gave $rc"
+run --bogus >/dev/null 2>&1; rc=$?
+[ "$rc" = 64 ] && pass "usage errors exit 64, so 2 means only 'over and busy'" || fail "usage error gave $rc"
+
+case_start "the report says how many Time Machine local snapshots exist, and when they may delay freed space"
+cat > "$BIN/tmutil" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/tmutil-calls"
+[ "\$1" = listlocalsnapshots ] || exit 64
+printf 'Snapshots for volume group containing disk /:\n'
+i=1
+while [ "\$i" -le "\${HYGTEST_SNAPS:-0}" ]; do
+  printf 'com.apple.TimeMachine.2026-11-0%s-120000.local\n' "\$i"
+  i=\$((i + 1))
+done
+STUB
+chmod +x "$BIN/tmutil"
+: > "$TMP/tmutil-calls"
+mac() { DEV_HYGIENE_TESTING=1 DEV_HYGIENE_OS=Darwin "$@"; }
+out="$(HYGTEST_SNAPS=3 HYGTEST_LOW_DISK=1 mac run 2>&1)"
+grep -q "Time Machine local snapshots: 3" <<<"$out" && pass "shows the count" || fail "count missing: $out"
+grep -q "may not return until the" <<<"$out" && grep -q "owner-side note in docs/agent/WORKFLOW_ROLES.md" <<<"$out" && pass "with free space under 15%: says freed space may not return, and points to the owner-side note" || fail "delay warning missing: $out"
+grep -q "never run thinlocalsnapshots or sudo" <<<"$out" && pass "says agents never thin or use sudo" || fail "no agents-never line"
+out="$(HYGTEST_SNAPS=3 HYGTEST_LOW_DISK=0 mac run 2>&1)"
+grep -q "Time Machine local snapshots: 3" <<<"$out" && pass "plenty of space: still shows the count" || fail "count missing with plenty of space"
+grep -q "may not return" <<<"$out" && fail "warned with plenty of free space" || pass "plenty of space: no delay warning"
+out="$(HYGTEST_SNAPS=0 HYGTEST_LOW_DISK=1 mac run 2>&1)"
+grep -q "Time Machine local snapshots: 0" <<<"$out" && pass "none present: shows 0" || fail "zero not shown: $out"
+grep -q "may not return" <<<"$out" && fail "warned with no snapshots" || pass "none present, low disk: no delay warning"
+n_before="$(wc -l < "$TMP/tmutil-calls" | tr -d ' ')"
+out="$(HYGTEST_SNAPS=3 HYGTEST_LOW_DISK=1 DEV_HYGIENE_TESTING=1 DEV_HYGIENE_OS=Linux run 2>&1)"
+grep -q "Time Machine" <<<"$out" && fail "not macOS: still showed a snapshot line" || pass "not macOS: no snapshot line, silently"
+[ "$n_before" = "$(wc -l < "$TMP/tmutil-calls" | tr -d ' ')" ] && pass "not macOS: tmutil was not even called" || fail "called tmutil off macOS"
+if command -v jq >/dev/null 2>&1; then
+  json="$(HYGTEST_SNAPS=3 HYGTEST_LOW_DISK=1 mac run --json 2>&1)"
+  [ "$(printf '%s' "$json" | jq -r '.local_snapshots')" = 3 ] && [ "$(printf '%s' "$json" | jq -r '.snapshots_may_delay_freed_space')" = true ] && pass "JSON: count and delay flag" || fail "JSON snapshot members wrong"
+  json="$(HYGTEST_SNAPS=3 HYGTEST_LOW_DISK=1 DEV_HYGIENE_TESTING=1 DEV_HYGIENE_OS=Linux run --json 2>&1)"
+  [ "$(printf '%s' "$json" | jq -r '.local_snapshots')" = null ] && pass "JSON: null off macOS" || fail "JSON snapshot not null off macOS"
+  # Faking the operating system is for the snapshot line only: how files are
+  # stat'ed follows the real one, so the activity times must not change.
+  act() { jq -c '[.. | .last_activity? | select(. != null)]'; }
+  plain="$(run --json 2>&1 | act)"
+  fake_mac="$(DEV_HYGIENE_TESTING=1 DEV_HYGIENE_OS=Darwin run --json 2>&1 | act)"
+  fake_lin="$(DEV_HYGIENE_TESTING=1 DEV_HYGIENE_OS=Linux run --json 2>&1 | act)"
+  [ -n "$plain" ] && [ "$plain" != "[]" ] && pass "activity times are present to compare" || fail "no activity times to compare: $plain"
+  [ "$plain" = "$fake_mac" ] && [ "$plain" = "$fake_lin" ] && pass "faking the OS leaves file stat times alone" || fail "faked OS changed activity times: $plain / $fake_mac / $fake_lin"
+fi
+odd="$(grep -v -x 'listlocalsnapshots /' "$TMP/tmutil-calls" || true)"
+if [ -n "$odd" ]; then fail "ran tmutil with something other than listlocalsnapshots /: $(cat "$TMP/tmutil-calls")"; else pass "tmutil was only ever asked to list"; fi
+code="$(grep -v '^[[:space:]]*#' "$SCRIPT")"
+cmds="$(grep -E -v '^[[:space:]]*(echo|printf) ' <<<"$code")"
+if grep -E -q 'thinlocalsnapshots|deletelocalsnapshots|(^|[^[:alnum:]_.-])sudo([[:space:]]|$)' <<<"$cmds"; then fail "the script can run thinlocalsnapshots, deletelocalsnapshots or sudo"; else pass "no command in the script thins or deletes snapshots, or uses sudo"; fi
+
+# ===========================================================================
 # Session scratch (personal-cfo-0rein.12)
 # ===========================================================================
 # A scratch root with two DohFlow slugs per lane checkout and a foreign project.

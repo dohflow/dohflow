@@ -378,12 +378,18 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
 **The tool.** `scripts/dev-hygiene.sh` is read-only by default.
 
 - `scripts/dev-hygiene.sh` (or `--report`, with `--json` for machine output) lists,
-  for every registered worktree: its cargo `target/` size, last activity, branch,
+  for every registered worktree: the size of **each** cargo target directory
+  (the root workspace and `apps/desktop/src-tauri`, and any other) and their
+  total, last activity, branch,
   whether the branch is merged into `origin/main` or its remote branch is gone,
   uncommitted changes, commits that exist on no remote, and whether a
-  cargo/rustc process is running in it. It also reports the free disk space and
-  flags free space under 15%, and it reports the session scratch directory per
-  session folder (below).
+  cargo/rustc process is running in it. It flags every worktree whose targets
+  together pass the **cap** (`--target-cap-gib N`, default 16 GiB; see the cap
+  paragraph below). It also reports the free disk space and flags free space under
+  15%; on macOS, the number of Time Machine local snapshots, with a warning when
+  snapshots exist and free space is under 15% that freed space may not return
+  until the owner thins them (it only lists them, read-only); and the session
+  scratch directory per session folder (below).
 - The scratch report. Scratch lives at
   `/private/tmp/claude-<uid>/<project slug>/<session uuid>/`, one slug per lane
   checkout. For every session folder under a DohFlow slug the report shows the
@@ -424,9 +430,33 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
   cleaned, because no pull request ties it to finished work. The plan,
   confirmation, `--yes` and re-inspection after the prompt work as for `--clean`;
   the re-inspection also re-asks `gh`.
+- `scripts/dev-hygiene.sh --cap-check [--target-cap-gib N]` is read-only and
+  looks only at the worktree it is run from: each cargo target directory with its
+  size, the total against the cap, and whether a cargo/rustc process works in it.
+  Exit status **0** under the cap, **1** over the cap and quiet, **2** over the cap
+  with a build running (or one that could not be ruled out); usage errors exit
+  64. It never cleans anything, and `--clean` still never touches the worktree it
+  is run from.
 - "Last activity" is an approximation (git index and reflog, and the newest
   entries in the cargo target directory). The worst result of a wrong guess is a
   rebuild, never lost work.
+
+**The cap.** Nothing bounded an active lane's `target/`: `--clean` acts only on
+worktrees idle for three days or more. On 2026-11-05 the build machine fell to
+12.6 GiB free (2.7%), the third disk incident after `personal-cfo-0rein.6` and
+`personal-cfo-0rein.12`, with lane caches of 73.8 GiB, 65.6 GiB (two workspaces)
+and 22.6 GiB. The cap is **16 GiB per worktree, every workspace counted
+together**. It comes from a measured clean quality-gate build of both workspaces
+(`personal-cfo-0rein.13`, 2026-11-05, on the build machine, `du -sk` of each
+target): root `cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo test --workspace` left 4.98 GiB, and the desktop crate's `cargo clippy
+--all-targets -- -D warnings` and `cargo test` left 5.96 GiB, 10.94 GiB in all;
+10.94 GiB times 1.5 is 16.4 GiB, rounded to 16. It leaves room for one gate build
+plus the incremental and feature builds a lane does in a day; a lane over it has
+accumulated stale build output, which a rebuild brings back in minutes. The
+measurement did not include the CI-only MSRV, iOS and wasm builds. It is a
+default, not a fact of the machine: pass `--target-cap-gib N` to change it, and
+change the default in the script and here together.
 
 **Rules per role.**
 
@@ -445,9 +475,21 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
   nothing else in `AGENTS.md` section 1. Deleting the branch on `origin` is
   outside it and stays the owner's call. A long-lived lane worktree is not removed: after the merge, return it
   to a detached `origin/main` (`git switch --detach origin/main`).
+  **Cap check (owner decision 2026-11-05, `personal-cfo-0rein.13`: "File with A").**
+  At a quiet point (after a quality-gate run has finished, or after you push a
+  checkpoint, and **never while cargo runs in your worktree**) run
+  `scripts/dev-hygiene.sh --cap-check` from your lane worktree. On exit 1 (over the
+  cap and quiet), run `cargo clean --manifest-path <dir>/Cargo.toml --target-dir
+  <dir>/target` in **your own lane worktree's** target directories, the commands
+  the check prints, and nothing else: never another worktree, never scratch beyond
+  Tier 1, never `rm`. On exit 2 (busy), do not clean; check again after the build.
+  Exit 0 needs nothing. This is the standing owner authorization for this one
+  case and nothing else in `AGENTS.md` section 1.
 - **Review and escalation.** Both run the project's test suites, so they fill
   `target/` too. Run `cargo clean` after each verdict on a large PR, or whenever
-  your `target/` exceeds about 15 GiB. **Tier 1:** once a PR you gave a verdict on
+  your `target/` exceeds about 15 GiB. (The 2026-11-05 measurement above puts one
+  full gate build of both workspaces at 10.94 GiB, below that line, so the number
+  stands; the report's 16 GiB cap flags a worktree only past it.) **Tier 1:** once a PR you gave a verdict on
   is merged or closed, clean your own scratch for that PR: `cargo clean` in its
   target directories, and `git worktree remove <path>` (never `--force`)
   for a clean registered worktree. Check `git status --short --ignored` first, as
@@ -474,6 +516,14 @@ or touch anything outside the scratch root. The earlier 2026-10-19 authorization
 merges) is unchanged. When free space is under 15% the overseer still asks the
 owner before any `--clean`, `--clean --scratch` included; the report says so.
 
+**Owner authorization for the cap rule.** On 2026-11-05 (`personal-cfo-0rein.13`),
+asked whether to file the cap work with an implementation self-clean rule (A) or
+report only (B), the owner answered: "File with A". That is the standing
+authorization for exactly this: an implementation session runs
+`scripts/dev-hygiene.sh --cap-check` at a quiet point and, on exit 1, runs
+`cargo clean` in its own lane worktree's target directories (the Implementation
+rule above), and nothing else in `AGENTS.md` section 1.
+
 **Owner-side note: Time Machine local snapshots.** Deleting build output does not
 return space at once if local Time Machine snapshots still hold it. These are
 owner-run commands, never run by an agent:
@@ -483,7 +533,9 @@ tmutil listlocalsnapshots /
 sudo tmutil thinlocalsnapshots / 50000000000 4
 ```
 
-The first lists the snapshots. The second asks macOS to reclaim about 50 GB
+After the deletes of 2026-11-05, local snapshots held about 88 GiB until the
+owner thinned them, which is why the report now counts them. The first lists the
+snapshots. The second asks macOS to reclaim about 50 GB
 (the second number is the byte target; the last is urgency, 1 to 4) and needs
 administrator rights. Free space can take a few minutes to catch up.
 

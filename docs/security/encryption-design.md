@@ -224,6 +224,30 @@ before the vault is opened, migrated, stamped or written, and a failure is the t
 and indexes). A key that does not open the file is a wrong key, never corruption. A host sets the
 option when it has reason to doubt the file; the kernel does not know why.
 
+## A mismatched write-ahead log is refused before it is opened (2026-11-10, `personal-cfo-5vto5`)
+
+**What was exposed.** RUSTSEC-2026-0459 (issued 2026-11-09): SQLite before 3.54.0 can return
+uninitialized page-cache memory when it opens a database together with a sibling `-wal` file whose
+page size differs from the database's. The trigger is local: someone has to place that file beside
+the database. The vault runs in WAL mode on `libsqlite3-sys` 0.38.2 through `rusqlite`'s bundled
+SQLCipher, which has no release on a fixed SQLite yet, so there was nothing to update to.
+
+**What closes the trigger.** Every SQLCipher open of a vault, a base image, a rebuilt copy or a
+restored backup goes through one helper (`open_vault_connection`, `crates/db-worker/src/lib.rs`), and
+that helper first reads the first twelve bytes of a sibling `-wal` (`crates/db-worker/src/wal_guard.rs`).
+A page size in the header (bytes 8 to 11, big-endian) other than 4096, the page size SQLCipher gives
+every vault here, is a typed refusal that reports the size found. Nothing else is done to the file:
+it is not moved, renamed, truncated or deleted, because a genuine log can hold committed work that has
+not been checkpointed yet, so the person decides. A missing or empty log is fine; a log the app cannot
+read is refused rather than assumed safe. A test scans the sources and fails if any other call opens
+a SQLite file.
+
+**What it does not cover.** A mismatched log placed while the app is running and opened later by SQLite
+itself, between the check and the open, is outside this guard; the threat is a file placed beside a
+closed vault. The advisory exception in `scripts/cargo-audit.py` expires 2026-12-10, and its renewal
+goes back to the owner if no fixed build exists by then. The real fix is a SQLCipher build on SQLite
+3.54 or later; the guard stays after it.
+
 ## Verification
 
 ```sh

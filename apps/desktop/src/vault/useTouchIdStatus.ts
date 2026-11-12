@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { commands, type TouchIdStatusDto } from "@/bindings";
+import { TOUCH_ID_ENABLED } from "@/vault/touchIdEnabled";
 
 /// Touch ID's status for the active vault, read from the host (personal-cfo-xuu). It carries only a
 /// state, a flag, a stable reason code and a count. A failed read leaves `status` null, which every
@@ -13,6 +14,12 @@ export function useTouchIdStatus() {
   const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(async (): Promise<TouchIdStatusDto | undefined> => {
+    // With the controls off (v0.4.1) nothing asks the host about Touch ID at all: no status, no prompt.
+    if (!TOUCH_ID_ENABLED) {
+      setStatus(null);
+      setLoaded(true);
+      return undefined;
+    }
     try {
       const read = await commands.touchIdStatus();
       setStatus(read);

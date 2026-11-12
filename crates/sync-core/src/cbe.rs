@@ -62,6 +62,14 @@ pub enum WireError {
     /// A snapshot header carries no manifest commitment (it is always present for a snapshot).
     #[error("a snapshot header must carry its manifest commitment")]
     SnapshotWithoutManifest,
+    /// A snapshot header carries no artifact binding commitment (it is always present for a
+    /// snapshot, like the manifest commitment).
+    #[error("a snapshot header must carry its artifact binding commitment")]
+    SnapshotWithoutBinding,
+    /// An envelope header carries exactly one of the manifest commitment and the binding
+    /// commitment: they are present together or absent together (C.4 fields 17 and 18).
+    #[error("the manifest commitment and the binding commitment must be present together")]
+    BindingFieldsMismatch,
     /// The invocation counter is above the per-key cap of `2^32 - 1`.
     #[error("the invocation counter is above the per-key cap")]
     CounterAboveCap,

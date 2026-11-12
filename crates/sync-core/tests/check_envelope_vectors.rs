@@ -20,8 +20,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sync_core::envelope::{check_envelope, ArtifactManifest, EnvelopePlaintext, IdempotencyKey};
 use sync_core::header::{
-    ClearHeader, IdempotencyKeyTag, ManifestCommitment, MetadataCommitment, NonceDomain,
-    ObjectKind, OBJECT_ENVELOPE, OBJECT_SNAPSHOT,
+    BindingCommitment, ClearHeader, IdempotencyKeyTag, ManifestCommitment, MetadataCommitment,
+    NonceDomain, ObjectKind, OBJECT_ENVELOPE, OBJECT_SNAPSHOT,
 };
 
 const SPEC: &str = include_str!("../../../docs/architecture/vault-format.md");
@@ -137,6 +137,28 @@ fn set_manifest(header: &mut ClearHeader, commitment: Option<ManifestCommitment>
     }
 }
 
+fn set_binding(header: &mut ClearHeader, commitment: Option<BindingCommitment>) {
+    if let ObjectKind::Envelope {
+        artifact_binding_commitment,
+        ..
+    } = &mut header.object
+    {
+        *artifact_binding_commitment = commitment;
+    }
+}
+
+/// Make fields 17 and 18 the plaintext's own: present together when its delta is non-empty, absent
+/// together when it is empty.
+fn set_manifest_and_binding(header: &mut ClearHeader, plaintext: &EnvelopePlaintext) {
+    if plaintext.delta_manifest.is_empty() {
+        set_manifest(header, None);
+        set_binding(header, None);
+    } else {
+        set_manifest(header, Some(plaintext.delta_manifest.commitment()));
+        set_binding(header, Some(plaintext.delta_manifest.binding()));
+    }
+}
+
 fn set_tag(header: &mut ClearHeader, tag: [u8; 32]) {
     if let ObjectKind::Envelope {
         idempotency_key_tag,
@@ -206,7 +228,7 @@ fn all_cases() -> Vec<Case> {
     // ---- valid ----
     cases.push(single(
         "valid_spec_envelope",
-        "the C.14 sample envelope: a delta manifest of two artifact ids and its commitment in the header",
+        "the C.14 sample envelope: a delta manifest of two artifact ids with their bound hashes, and both commitments in the header",
         "ok",
         &|_, _| {},
     ));
@@ -215,17 +237,27 @@ fn all_cases() -> Vec<Case> {
         "an empty delta manifest and no manifest commitment in the header",
         "ok",
         &|h, p| {
-            p.delta_manifest = ArtifactManifest::new(vec![]).unwrap();
-            set_manifest(h, None);
+            p.delta_manifest = sync_core::envelope::BoundManifest::empty();
+            set_manifest_and_binding(h, p);
         },
     ));
     cases.push(single(
         "valid_other_non_empty_manifest",
-        "another non-empty delta manifest with its own commitment in the header",
+        "another non-empty delta manifest with its own commitments in the header",
         "ok",
         &|h, p| {
-            p.delta_manifest = ArtifactManifest::new(vec![[0x71; 32], [0x72; 32]]).unwrap();
-            set_manifest(h, Some(p.delta_manifest.commitment()));
+            p.delta_manifest = sync_core::envelope::BoundManifest::new(vec![
+                sync_core::envelope::BoundArtifact {
+                    id: [0x71; 32],
+                    ciphertext_sha256: [0x81; 32],
+                },
+                sync_core::envelope::BoundArtifact {
+                    id: [0x72; 32],
+                    ciphertext_sha256: [0x82; 32],
+                },
+            ])
+            .unwrap();
+            set_manifest_and_binding(h, p);
         },
     ));
     cases.push(single(
@@ -277,6 +309,9 @@ fn all_cases() -> Vec<Case> {
         &|h, _| {
             h.object = ObjectKind::Snapshot {
                 artifact_manifest_commitment: ManifestCommitment::from_derived([0x61; 32]),
+                artifact_binding_commitment: sync_core::header::BindingCommitment::from_derived(
+                    [0x61; 32],
+                ),
             };
         },
     ));
@@ -403,15 +438,31 @@ fn all_cases() -> Vec<Case> {
         "a manifest commitment present (even the commitment of the empty manifest) although the delta manifest is empty",
         "ManifestCommitmentMismatch",
         &|h, p| {
-            p.delta_manifest = ArtifactManifest::new(vec![]).unwrap();
+            p.delta_manifest = sync_core::envelope::BoundManifest::empty();
+            // Both fields present, as the header must carry them together: the empty list's.
             set_manifest(h, Some(p.delta_manifest.commitment()));
+            set_binding(h, Some(p.delta_manifest.binding()));
         },
     ));
     cases.push(single(
         "invalid_manifest_commitment_absent_for_a_non_empty_manifest",
         "a non-empty delta manifest with no commitment in the header",
         "ManifestCommitmentMismatch",
-        &|h, _| set_manifest(h, None),
+        &|h, _| {
+            // Both fields absent together, for a non-empty manifest.
+            set_manifest(h, None);
+            set_binding(h, None);
+        },
+    ));
+    cases.push(single(
+        "invalid_binding_commitment_of_other_hashes",
+        "the plaintext binds a different ciphertext hash to an id than the header's binding commitment commits to",
+        "BindingCommitmentMismatch",
+        &|_, p| {
+            let mut entries = p.delta_manifest.entries().to_vec();
+            entries[0].ciphertext_sha256[0] ^= 1;
+            p.delta_manifest = sync_core::envelope::BoundManifest::new(entries).unwrap();
+        },
     ));
     cases.push(single(
         "invalid_manifest_commitment_of_another_manifest",
@@ -470,6 +521,9 @@ fn all_cases() -> Vec<Case> {
         &|h, _| {
             h.object = ObjectKind::Snapshot {
                 artifact_manifest_commitment: ManifestCommitment::from_derived([0x61; 32]),
+                artifact_binding_commitment: sync_core::header::BindingCommitment::from_derived(
+                    [0x61; 32],
+                ),
             };
             h.object_id[0] ^= 1;
         },
@@ -511,12 +565,22 @@ fn all_cases() -> Vec<Case> {
         },
     ));
     cases.push(multi(
+        "order_manifest_before_binding",
+        "a wrong manifest commitment and a wrong binding commitment: the manifest commitment is checked first",
+        "ManifestCommitmentMismatch",
+        &|h, _| {
+            set_manifest(h, Some(ManifestCommitment::from_derived([0x62; 32])));
+            set_binding(h, Some(BindingCommitment::from_derived([0x63; 32])));
+        },
+    ));
+    cases.push(multi(
         "order_nonce_domain_before_manifest",
         "a wrong nonce domain and a missing manifest commitment for a non-empty manifest: the domain is checked first",
         "NonceDomainMismatch",
         &|h, _| {
             h.nonce_domain = NonceDomain::from_derived([1, 2, 3, 4]);
             set_manifest(h, None);
+            set_binding(h, None);
         },
     ));
 
@@ -543,6 +607,27 @@ fn all_cases() -> Vec<Case> {
         "malformed_header_trailing_byte",
         "the header has a trailing byte",
         [header.clone(), vec![0]].concat(),
+        plaintext.clone(),
+        "MalformedHeader",
+    ));
+    // Fields 17 and 18 are present together or absent together: a header with one and not the other
+    // does not decode. Field 18 is the last 33 bytes of the header, field 17 the 33 before them.
+    cases.push(raw(
+        "malformed_header_manifest_commitment_without_binding_commitment",
+        "field 17 present and field 18 absent",
+        [&header[..header.len() - 33], &[0][..]].concat(),
+        plaintext.clone(),
+        "MalformedHeader",
+    ));
+    cases.push(raw(
+        "malformed_header_binding_commitment_without_manifest_commitment",
+        "field 17 absent and field 18 present",
+        [
+            &header[..header.len() - 66],
+            &[0][..],
+            &header[header.len() - 33..],
+        ]
+        .concat(),
         plaintext.clone(),
         "MalformedHeader",
     ));
@@ -647,7 +732,7 @@ fn document() -> Value {
         "spec": "docs/architecture/vault-format.md C.4 \"Receiver checks\" and C.14",
         "synthetic": "Every case is built from the public C.14 sample envelope. No key, secret or real value is in this file.",
         "how_to_read": "Each case gives a clear header and an envelope plaintext (hex of their canonical bytes), 'tagger_output' (the idempotency-key tag that the receiver's own tagger returns for the plaintext's key: an input, because the tag secret is not in this file), and 'expect'. An implementation decodes the header, then the plaintext; if either does not decode the outcome is 'MalformedHeader' or 'MalformedPlaintext'. Otherwise it runs the receiver checks in the order below and the outcome is 'ok' or the name of the first failing check. Every outcome other than 'ok' means the envelope is INVALID, and that class is the contract: a decode failure counts (a MalformedPlaintext after a successful open is a producer fault; a MalformedHeader at an accepted position means the service let through what its own checks should have refused; both are deterministic from the bytes and voidable). For a case with 'error_normative' true the specific outcome is also normative; for a multi-defect case it is informative (the reference order): a second implementation must agree the envelope is invalid but may report a different first error. Internal error names are never part of the contract. 'tagger_output' is HMAC-SHA256 under the C.14 sample tag key over the CBE1 label 'dohflow/sync-idem-tag/v1' and the plaintext's canonical 16-byte idempotency key.",
-        "check_order": ["NotAnEnvelope", "ObjectIdMismatch", "DeviceMismatch", "TagMismatch", "MetadataCommitmentMismatch", "NonceDomainMismatch", "ManifestCommitmentMismatch", "IssuedAtOutOfRange"],
+        "check_order": ["NotAnEnvelope", "ObjectIdMismatch", "DeviceMismatch", "TagMismatch", "MetadataCommitmentMismatch", "NonceDomainMismatch", "ManifestCommitmentMismatch", "BindingCommitmentMismatch", "IssuedAtOutOfRange"],
         "single_defect": "A case with 'multi_defect' false has exactly one defect and its error is normative. A case with 'multi_defect' true has several: it documents the reference order of check_order, and its error is informative.",
         "not_checked_here": "The checks that need the membership chain or the AEAD key (the sealing device belongs to a member of the object's epoch; the AEAD key was derived from the expected vault, epoch and chain fingerprint) are the caller's, as in C.4, and are not in this file.",
         "unreachable_from_bytes": [

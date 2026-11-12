@@ -2919,6 +2919,19 @@ pub enum KernelError {
         /// How many problems the check reported (capped at 100 by the pragma).
         problems: usize,
     },
+    /// A `-wal` file beside the vault was written with a page size this app never uses
+    /// (personal-cfo-5vto5, RUSTSEC-2026-0459). Nothing was opened and the file was left exactly where
+    /// it is. The two sizes are all that is reported: no path crosses the boundary.
+    #[error(
+        "a write-ahead log beside the vault was written with a page size of {found_page_size} bytes, \
+         not the {expected_page_size} this vault uses; it was left untouched and the vault was not opened"
+    )]
+    WalHeaderMismatch {
+        /// The page size the file's header names.
+        found_page_size: u32,
+        /// The page size every vault uses.
+        expected_page_size: u32,
+    },
     /// A vault state transition not permitted by the §6.2.1 state machine
     /// (`personal-cfo-tg5`).
     #[error("illegal vault transition from {from:?} to {to:?}")]
@@ -2964,11 +2977,24 @@ impl From<DbError> for KernelError {
                 bill_id: bill_id.to_string(),
                 bill_name,
             },
+            // A change a rebase queued for the person's decision (personal-cfo-bxsbz.4). It crosses
+            // the boundary as a validation message until the interface that resolves it adds a
+            // typed error with its own screen (SYNC-3).
+            DbError::QueuedForDisposition { .. } => KernelError::Validation(
+                "this change is waiting for your decision after a sync".to_owned(),
+            ),
             DbError::SelfTestFailed(message) => KernelError::Persistence(message),
             // Generic text; no path or key crosses the boundary.
             DbError::CipherUnavailable => KernelError::Persistence(
                 "the encryption library did not finish starting up".to_owned(),
             ),
+            DbError::WalHeaderMismatch {
+                found_page_size,
+                expected_page_size,
+            } => KernelError::WalHeaderMismatch {
+                found_page_size,
+                expected_page_size,
+            },
             DbError::CheckpointBusy => KernelError::Persistence(
                 "the write-ahead log could not be fully checkpointed".to_owned(),
             ),

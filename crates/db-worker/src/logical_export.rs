@@ -42,8 +42,9 @@ const INVENTORY_VERSION: &str = "1";
 pub struct ExportInput<'a> {
     /// The honored voids this replica holds, ascending and disjoint (C.10).
     pub voids: &'a [RecordedVoid],
-    /// The closure manifest, ascending; empty until personal-cfo-1cltt.7.
-    pub artifacts: &'a [[u8; 32]],
+    /// The closure manifest: each id with the ciphertext hash bound to it, ascending by id; empty
+    /// until personal-cfo-1cltt.7.
+    pub artifacts: &'a [sync_core::envelope::BoundArtifact],
 }
 
 /// Why the export stopped. A name is a table or column name, never a value from a row.
@@ -133,7 +134,40 @@ pub fn export_genesis_plaintext(
     conn: &Connection,
     input: &ExportInput<'_>,
 ) -> Result<Vec<u8>, ExportError> {
+    Ok(export_genesis_with_mark(conn, input)?.0)
+}
+
+/// [`export_genesis_plaintext`] and the `operation_log` high-water mark (the largest `op_seq`, `0`
+/// for an empty log) of the **same** read transaction: the mark is the first statement of the
+/// transaction, so it describes exactly the state the plaintext was built from. The enable sequence
+/// persists it with the genesis (C.8) and compares the log against it once the genesis is published.
+///
+/// # Errors
+/// [`ExportError`], as [`export_genesis_plaintext`].
+pub fn export_genesis_with_mark(
+    conn: &Connection,
+    input: &ExportInput<'_>,
+) -> Result<(Vec<u8>, u64), ExportError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Deferred)?;
+    export_within(&tx, input)
+}
+
+/// [`export_genesis_with_mark`] over a connection whose current view is the state to export: the
+/// caller owns the transaction. The snapshot installer calls it inside its write transaction to
+/// prove that what it installed re-exports to exactly the snapshot it was given.
+///
+/// # Errors
+/// [`ExportError`], as [`export_genesis_plaintext`].
+pub(crate) fn export_within(
+    tx: &Connection,
+    input: &ExportInput<'_>,
+) -> Result<(Vec<u8>, u64), ExportError> {
+    let high_water: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(op_seq), 0) FROM operation_log",
+        [],
+        |r| r.get(0),
+    )?;
+    let high_water = u64::try_from(high_water).unwrap_or(0);
     let (created_at, schema_version): (String, i64) = tx.query_row(
         "SELECT created_at, schema_version FROM vault_metadata WHERE singleton = 1",
         [],
@@ -146,7 +180,7 @@ pub fn export_genesis_plaintext(
     let mut stored: BTreeMap<&str, Vec<Row>> = BTreeMap::new();
     for spec in &tables {
         let projection = manifest.projection_of(&spec.name);
-        stored.insert(&spec.name, read_table(&tx, spec, projection)?);
+        stored.insert(&spec.name, read_table(tx, spec, projection)?);
     }
 
     let mut files = Vec::with_capacity(tables.len());
@@ -162,7 +196,7 @@ pub fn export_genesis_plaintext(
         voids: input.voids,
         artifacts: input.artifacts,
     };
-    Ok(build(&header, files)?)
+    Ok((build(&header, files)?, high_water))
 }
 
 /// Every exported row of a table, as stored, with the replicated-key filter applied.
@@ -502,7 +536,7 @@ fn folded_child_file(
     })
 }
 
-const fn kind_name(kind: Kind) -> &'static str {
+pub(crate) const fn kind_name(kind: Kind) -> &'static str {
     match kind {
         Kind::Int => "int",
         Kind::Text => "text",

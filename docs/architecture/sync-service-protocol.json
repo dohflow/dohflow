@@ -173,6 +173,33 @@
       ]
     },
     {
+      "op": "stageSnapshotClosure",
+      "method": "PUT",
+      "path": "/vaults/{vault_id}/snapshots/{snapshot_id}/closure",
+      "auth": "account/device",
+      "success": "201/200",
+      "errors": [
+        "VaultNotFound",
+        "ReplicaHalted",
+        "WritesSuspended",
+        "SnapshotNotFound",
+        "SnapshotTooLarge",
+        "MalformedObject",
+        "QuotaExceeded"
+      ]
+    },
+    {
+      "op": "getSnapshotClosure",
+      "method": "GET",
+      "path": "/vaults/{vault_id}/snapshots/{snapshot_id}/closure",
+      "auth": "device",
+      "success": "200",
+      "errors": [
+        "VaultNotFound",
+        "SnapshotNotFound"
+      ]
+    },
+    {
       "op": "putArtifact",
       "method": "PUT",
       "path": "/vaults/{vault_id}/artifacts/{artifact_id}",
@@ -483,11 +510,13 @@
     }
   ],
   "limits": {
-    "max_envelope_container_bytes": 16909058,
-    "max_snapshot_container_bytes": 1073742104,
+    "max_envelope_container_bytes": 17040163,
+    "max_snapshot_container_bytes": 1073742137,
     "max_membership_record_bytes": 2300,
     "max_epoch_record_bytes": 2421030,
     "max_artifact_manifest_ids": 4096,
+    "max_snapshot_closure_ids": 1048576,
+    "max_snapshot_closure_bytes": 33554432,
     "max_epoch_recipients": 1024,
     "min_json_body_bytes": 25165824,
     "claim_skew_seconds": 300

@@ -47,6 +47,9 @@ fn snapshot_container(ciphertext_len: usize) -> Vec<u8> {
         key_epoch: 3,
         object: ObjectKind::Snapshot {
             artifact_manifest_commitment: ManifestCommitment::from_derived([0x22; 32]),
+            artifact_binding_commitment: sync_core::header::BindingCommitment::from_derived(
+                [0x22; 32],
+            ),
         },
         object_id: [0x33; 16],
         device_id: [0xa1; 16],

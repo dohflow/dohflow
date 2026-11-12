@@ -97,6 +97,22 @@ pub enum HaltEvidence {
         /// The conflicting, otherwise valid record.
         conflicting: [u8; 32],
     },
+    /// One command identity (a `command_id`, or the idempotency-key tag it carries) is bound to
+    /// two different envelopes: the C.10 `ProtocolFork`. The client found it reconciling its
+    /// unpushed command against the log or the accepted-envelope index. Like a membership fork it
+    /// is not recoverable by a snapshot: the two envelopes are kept and the vault stops.
+    ProtocolFork {
+        /// The command whose identity is claimed twice.
+        command_id: [u8; 16],
+        /// The `canonical_envelope_digest` of this device's retained envelope for it. `None` when
+        /// the device never sealed one (a `Pending` entry): the halt then means the device never
+        /// sealed this command and the log holds an envelope for its identity anyway, not that two
+        /// digests differ.
+        local_digest: Option<[u8; 32]>,
+        /// The digest of the other envelope. `None` when the service refused this device's exact
+        /// bytes as a fork and did not say which envelope holds the identity.
+        other_digest: Option<[u8; 32]>,
+    },
 }
 
 /// An authenticated envelope that failed the receiver checks, and where.
@@ -230,6 +246,44 @@ pub struct SnapshotFacts<'a> {
     /// The ranges `(seq, V - 1)` of every verified void this replica holds, honored or not. A
     /// snapshot rooted inside any of them was built on poisoned state and is never a root.
     pub held_voids: &'a [(u64, u64)],
+}
+
+/// Whether `snapshot` may be the root a replica builds on at all, whatever the replica's state: a
+/// first bootstrap and every exit from a stop ask this first (`personal-cfo-1cltt.5`; one rule
+/// set, so a first bootstrap can never accept what a re-bootstrap would refuse):
+///
+/// * the snapshot is of this build's `engine_version` (any other is update-required itself);
+/// * the root is not inside a void range this replica holds (the snapshot was built on poisoned
+///   state, C.10 rule 4); and
+/// * every void the snapshot records lies **below** the root and the records ascend without
+///   overlap (C.8): a recorded range reaching the root would make the ledger a bootstrapped
+///   replica seeds from it skip positions in the tail that every other replica applies, a silent
+///   divergence that comes from the snapshot's producer alone.
+///
+/// A fresh device holds no voids, so the second rule is vacuous for it unless the caller passes the
+/// ranges of the void records positioned after the root (the tail it must pull anyway) as
+/// `held_voids`; the engine does so before it installs anything.
+#[must_use]
+pub fn snapshot_is_valid_root(snapshot: &SnapshotFacts<'_>) -> bool {
+    if *snapshot.engine_version != *snapshot.own_engine_version
+        || snapshot
+            .held_voids
+            .iter()
+            .any(|(first, last)| *first <= snapshot.root && snapshot.root <= *last)
+    {
+        return false;
+    }
+    let mut previous_last: Option<u64> = None;
+    for recorded in snapshot.recorded_voids {
+        if recorded.first > recorded.last
+            || recorded.last >= snapshot.root
+            || previous_last.is_some_and(|last| recorded.first <= last)
+        {
+            return false;
+        }
+        previous_last = Some(recorded.last);
+    }
+    true
 }
 
 /// Proof that a snapshot is a valid way out of the replica's CURRENT stop. Only
@@ -637,6 +691,27 @@ impl SyncStatus {
         Some(SyncEvent::Halted(evidence))
     }
 
+    /// Halt on a command identity bound to two different envelopes (C.10 `ProtocolFork`), found
+    /// while reconciling the device's unpushed commands. A status that is already `Halted`
+    /// absorbs it. Persisting the halt is the engine's, under the anti-rollback witness.
+    pub fn observe_protocol_fork(
+        &mut self,
+        command_id: [u8; 16],
+        local_digest: Option<[u8; 32]>,
+        other_digest: Option<[u8; 32]>,
+    ) -> Option<SyncEvent> {
+        if matches!(self, Self::Halted(_)) {
+            return None;
+        }
+        let evidence = HaltEvidence::ProtocolFork {
+            command_id,
+            local_digest,
+            other_digest,
+        };
+        *self = Self::Halted(evidence);
+        Some(SyncEvent::Halted(evidence))
+    }
+
     /// Whether `snapshot` is a valid way out of the current stop, and if so the permit that
     /// [`Self::observe_rebootstrapped`] requires:
     ///
@@ -652,15 +727,8 @@ impl SyncStatus {
     ///   is key quarantine and re-enrollment, never a snapshot.
     #[must_use]
     pub fn rebootstrap_permit(&self, snapshot: &SnapshotFacts<'_>) -> Option<RebootstrapPermit> {
-        // For EVERY kind of stop: the snapshot is of this build's version (any other would be
-        // update-required itself) and is not rooted inside a void range this replica holds (it
-        // was built on poisoned state).
-        if *snapshot.engine_version != *snapshot.own_engine_version
-            || snapshot
-                .held_voids
-                .iter()
-                .any(|(first, last)| *first <= snapshot.root && snapshot.root <= *last)
-        {
+        // For EVERY kind of stop, and for a first bootstrap: the one rule set (AC5).
+        if !snapshot_is_valid_root(snapshot) {
             return None;
         }
         let (stop, ok) = match self {

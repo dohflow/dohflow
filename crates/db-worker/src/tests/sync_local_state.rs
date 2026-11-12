@@ -2,7 +2,9 @@
 //! transaction while Sync is enabled, and not at all while it is off. Fake data only.
 
 use super::*;
-use crate::sync_state::{decode_row_keys, DEVICE_LOCAL_OPERATION_LOG_COLUMNS};
+use crate::sync_state::{
+    decode_row_keys, outbox_issued_at, OutboxIssuedAtError, DEVICE_LOCAL_OPERATION_LOG_COLUMNS,
+};
 
 /// Enable Sync on this device the way the base image will (a `sync_base` row), at server seq 7.
 fn enable_sync(worker: &DbWorker, base_seq: i64) {
@@ -243,7 +245,12 @@ fn the_outbox_states_carry_exactly_the_columns_they_need() {
     assert!(insert("Pending", "zeroblob(4)", "NULL", "NULL").is_err());
     assert!(insert("Approved", "NULL", "NULL", "NULL").is_err());
     assert!(insert("Approved", "zeroblob(4)", "9", "NULL").is_err());
-    assert!(insert("Bound", "zeroblob(4)", "9", "NULL").is_err());
+    // An accepted command may have no result (bxsbz.5, migration 72), and a present one is 1 to 64
+    // bytes.
+    assert!(insert("Bound", "zeroblob(4)", "9", "NULL").is_ok());
+    assert!(insert("Bound", "zeroblob(4)", "9", "zeroblob(0)").is_err());
+    assert!(insert("Bound", "zeroblob(4)", "9", "zeroblob(65)").is_err());
+    assert!(insert("Bound", "zeroblob(4)", "NULL", "NULL").is_err());
     assert!(insert("Bound", "NULL", "9", "zeroblob(1)").is_err());
     assert!(insert("Done", "NULL", "NULL", "NULL").is_err());
 }
@@ -340,6 +347,152 @@ fn the_device_local_log_columns_exist_and_are_listed() {
         assert!(
             present.iter().any(|p| p == column),
             "{column} is an operation_log column"
+        );
+    }
+}
+
+// ---- the issue time of an unpushed command (AC0 of personal-cfo-bxsbz.4) ---------------------
+
+const FIXED_ISSUED_AT: i64 = 1_790_000_000_123_456;
+
+fn meta_issued_at(micros: i64) -> CommandMeta {
+    let mut m = meta();
+    m.issued_at = IssuedAt::from_unix_micros(micros);
+    m
+}
+
+#[test]
+fn the_outbox_row_records_the_commands_original_issue_time() {
+    let (_dir, worker) = worker();
+    enable_sync(&worker, 7);
+    let m = meta_issued_at(FIXED_ISSUED_AT);
+    worker.dispatch(m.clone(), create_account_cmd()).unwrap();
+
+    let read = outbox_issued_at(&worker.lock().conn, &m.command_id).unwrap();
+    assert_eq!(read.as_unix_micros(), FIXED_ISSUED_AT);
+}
+
+#[test]
+fn the_issue_time_column_is_nullable_and_bounded_like_an_envelopes() {
+    let (_dir, worker) = worker();
+    let conn = worker.lock();
+    let insert = |value: &str| {
+        conn.conn.execute(
+            &format!(
+                "INSERT INTO sync_outbox
+                   (command_id, op_seq, state, write_set_keys, created_at, issued_at)
+                 VALUES (randomblob(16), abs(random()), 'Pending', zeroblob(0),
+                         '2026-11-06T00:00:00Z', {value})"
+            ),
+            [],
+        )
+    };
+    assert!(insert("NULL").is_ok(), "a row from before the column");
+    assert!(insert("0").is_ok());
+    assert!(insert("253402300799999999").is_ok());
+    for refused in ["-1", "253402300800000000"] {
+        assert!(insert(refused).is_err(), "{refused}");
+    }
+}
+
+#[test]
+fn a_row_with_no_recorded_issue_time_is_refused_by_name_and_so_is_a_missing_row() {
+    let (_dir, worker) = worker();
+    let id = Uuid::now_v7();
+    worker
+        .lock()
+        .conn
+        .execute(
+            "INSERT INTO sync_outbox (command_id, op_seq, state, write_set_keys, created_at)
+             VALUES (?1, 1, 'Pending', zeroblob(0), '2026-11-06T00:00:00Z')",
+            [id],
+        )
+        .unwrap();
+    let conn = &worker.lock().conn;
+    assert!(matches!(
+        outbox_issued_at(conn, &id),
+        Err(OutboxIssuedAtError::Missing { command_id }) if command_id == id
+    ));
+    let other = Uuid::now_v7();
+    assert!(matches!(
+        outbox_issued_at(conn, &other),
+        Err(OutboxIssuedAtError::NotInOutbox { command_id }) if command_id == other
+    ));
+}
+
+/// The commitment an envelope would bind for `meta`, with the device id of the issuing vault.
+fn commitment_of(meta: &CommandMeta, device: Uuid) -> sync_core::header::MetadataCommitment {
+    sync_core::envelope::ImmutableMeta {
+        command_id: *meta.command_id.as_bytes(),
+        correlation_id: *meta.correlation_id.as_bytes(),
+        causation_id: meta.causation_id.map(|id| *id.as_bytes()),
+        actor_type: 1,
+        actor_id: meta.actor_id.clone(),
+        idempotency_key: sync_core::envelope::IdempotencyKey::parse(&meta.idempotency_key).unwrap(),
+        issued_at: meta.issued_at.as_unix_micros(),
+        device_id: *device.as_bytes(),
+    }
+    .commitment()
+    .unwrap()
+}
+
+#[test]
+fn a_command_replayed_from_its_recorded_issue_time_mints_the_same_ids_and_stamps_and_commits_the_same_meta(
+) {
+    let (dir, live) = worker();
+    enable_sync(&live, 7);
+    // State the command is applied on: an income source to tombstone.
+    let income = income_cmd(None);
+    let WriteCommand::CreateIncomeSource { id: income_id, .. } = &income else {
+        panic!("an income source command");
+    };
+    let income_id = *income_id;
+    live.dispatch(meta(), income).unwrap();
+    // The device at the same state, standing in for the vault rolled back to its base.
+    let rolled_back = dir.path().join("rolled-back.vault");
+    std::fs::write(&rolled_back, live.snapshot_bytes().unwrap()).unwrap();
+    let replica = DbWorker::open(&rolled_back, KEY).unwrap();
+    // A control at the same state that replays under a DIFFERENT issue time: if the issue time did
+    // not matter, the check below would prove nothing.
+    let wrong_path = dir.path().join("wrong-time.vault");
+    std::fs::write(&wrong_path, std::fs::read(&rolled_back).unwrap()).unwrap();
+    let wrong = DbWorker::open(&wrong_path, KEY).unwrap();
+
+    // Two commands that read the issue time: one mints ids (an opening balance), one stamps
+    // `deleted_at`.
+    let account = liquid_account_cmd(AccountId::new(), Currency::Usd, 12_345);
+    let tombstone = WriteCommand::DeleteIncomeSource(income_id);
+    for cmd in [account, tombstone] {
+        let wrong_cmd = cmd.clone();
+        let original = meta_issued_at(FIXED_ISSUED_AT);
+        let before_seal = commitment_of(&original, live.node_id);
+        live.dispatch(original.clone(), cmd.clone()).unwrap();
+        let recorded_write_set = live.last_write_set().unwrap();
+
+        // Rebuild the metadata from what the vault kept, as a rebase must.
+        let kept = outbox_issued_at(&live.lock().conn, &original.command_id).unwrap();
+        let rebuilt = CommandMeta {
+            issued_at: kept,
+            ..original.clone()
+        };
+        replica.dispatch(rebuilt.clone(), cmd).unwrap();
+
+        // Every derived id and every stamp is inside the write-set hash.
+        assert_eq!(replica.last_write_set().unwrap(), recorded_write_set);
+        let elsewhere = CommandMeta {
+            issued_at: IssuedAt::from_unix_micros(FIXED_ISSUED_AT + 86_400_000_000),
+            ..original.clone()
+        };
+        wrong.dispatch(elsewhere, wrong_cmd).unwrap();
+        assert_ne!(
+            wrong.last_write_set().unwrap().hash,
+            recorded_write_set.hash,
+            "another issue time mints other ids or stamps"
+        );
+        assert_eq!(
+            commitment_of(&rebuilt, live.node_id),
+            before_seal,
+            "the replay's metadata commits to what a seal made before the rollback bound"
         );
     }
 }

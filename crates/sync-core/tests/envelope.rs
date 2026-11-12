@@ -289,7 +289,11 @@ fn a_delta_manifest_that_is_not_strictly_ascending_is_refused_on_decode() {
     let good_bytes = good.encode().unwrap();
     let find = |needle: &[u8; 32]| good_bytes.windows(32).position(|w| w == needle).unwrap();
     let (low_at, high_at) = (find(&low), find(&high));
-    assert_eq!(high_at, low_at + 32, "adjacent list items");
+    assert_eq!(
+        high_at,
+        low_at + 64,
+        "adjacent list items: an id and its bound hash each"
+    );
 
     let mut descending = good_bytes.clone();
     descending[low_at..low_at + 32].copy_from_slice(&high);
@@ -335,7 +339,7 @@ fn the_plaintext_round_trips_for_an_empty_manifest_and_a_causation_id() {
             ..sample_meta()
         },
         write_set_hash: [0x44; 32],
-        delta_manifest: ArtifactManifest::new(vec![]).unwrap(),
+        delta_manifest: sync_core::envelope::BoundManifest::empty(),
         payload: b"{}".to_vec(),
     };
     assert_eq!(
@@ -451,17 +455,24 @@ fn a_nonce_domain_that_is_not_the_derived_one_fails_closed() {
 #[test]
 fn the_header_manifest_commitment_is_present_exactly_when_the_delta_manifest_is_not_empty() {
     let empty = |plaintext: &EnvelopePlaintext| EnvelopePlaintext {
-        delta_manifest: ArtifactManifest::new(vec![]).unwrap(),
+        delta_manifest: sync_core::envelope::BoundManifest::empty(),
         ..plaintext.clone()
     };
+    // Fields 17 and 18 together, as a header carries them: both present or both absent.
     let with_manifest = |header: &ClearHeader, commitment: Option<ManifestCommitment>| {
         let mut header = header.clone();
         if let ObjectKind::Envelope {
             artifact_manifest_commitment,
+            artifact_binding_commitment,
             ..
         } = &mut header.object
         {
             *artifact_manifest_commitment = commitment;
+            // Whatever the binding is, the manifest check comes first; the binding here is the
+            // header's own (present) or absent together with the manifest commitment.
+            if commitment.is_none() {
+                *artifact_binding_commitment = None;
+            }
         }
         header
     };
@@ -497,6 +508,86 @@ fn the_header_manifest_commitment_is_present_exactly_when_the_delta_manifest_is_
         ),
         Err(ReceiverError::ManifestCommitmentMismatch)
     );
+}
+
+#[test]
+fn the_binding_commitment_follows_the_manifest_commitment_and_commits_to_the_bound_hashes() {
+    let plaintext = spec_plaintext();
+    let header = spec_header();
+    let set_binding = |header: &ClearHeader,
+                       value: Option<sync_core::header::BindingCommitment>| {
+        let mut header = header.clone();
+        if let ObjectKind::Envelope {
+            artifact_binding_commitment,
+            ..
+        } = &mut header.object
+        {
+            *artifact_binding_commitment = value;
+        }
+        header
+    };
+    // The sample is coherent: field 18 is the binding of the hashes bound to the ids, in id order.
+    check_envelope(&header, &plaintext, tagger).expect("the sample envelope");
+    let ObjectKind::Envelope {
+        artifact_binding_commitment: Some(found),
+        ..
+    } = &header.object
+    else {
+        panic!("the sample carries field 18");
+    };
+    assert_eq!(*found, plaintext.delta_manifest.binding());
+
+    // Absent for a non-empty delta, or the commitment of other hashes: refused.
+    assert_eq!(
+        check_envelope(&set_binding(&header, None), &plaintext, tagger),
+        Err(ReceiverError::BindingCommitmentMismatch)
+    );
+    let mut entries = plaintext.delta_manifest.entries().to_vec();
+    entries[1].ciphertext_sha256[0] ^= 1;
+    let rebound = EnvelopePlaintext {
+        delta_manifest: sync_core::envelope::BoundManifest::new(entries).unwrap(),
+        ..plaintext.clone()
+    };
+    assert_eq!(
+        check_envelope(&header, &rebound, tagger),
+        Err(ReceiverError::BindingCommitmentMismatch),
+        "one bound hash differs from what the header commits to"
+    );
+    // The ids' commitment is unaffected by the hashes: only field 18 notices.
+    assert_eq!(
+        rebound.delta_manifest.commitment(),
+        plaintext.delta_manifest.commitment()
+    );
+
+    // Order matters: the binding is over the hashes in the ids' order.
+    let entries = plaintext.delta_manifest.entries();
+    let swapped = sync_core::envelope::binding_commitment(
+        &[entries[1].ciphertext_sha256, entries[0].ciphertext_sha256],
+        4096,
+    )
+    .unwrap();
+    assert_ne!(swapped, plaintext.delta_manifest.binding());
+
+    // For an empty delta the field is absent, never the commitment of the empty list.
+    let empty_plaintext = EnvelopePlaintext {
+        delta_manifest: sync_core::envelope::BoundManifest::empty(),
+        ..plaintext.clone()
+    };
+    let mut empty_header = header.clone();
+    if let ObjectKind::Envelope {
+        artifact_manifest_commitment,
+        artifact_binding_commitment,
+        ..
+    } = &mut empty_header.object
+    {
+        *artifact_manifest_commitment = None;
+        *artifact_binding_commitment = Some(empty_plaintext.delta_manifest.binding());
+    }
+    assert_eq!(
+        check_envelope(&empty_header, &empty_plaintext, tagger),
+        Err(ReceiverError::BindingCommitmentMismatch)
+    );
+    set_binding(&empty_header, None);
 }
 
 #[test]
@@ -574,11 +665,14 @@ fn the_largest_legal_envelope_fits_the_container_cap() {
         encode_container, parse_container_with_limit, MAX_ENGINE_VERSION,
         MAX_ENVELOPE_CONTAINER_LEN,
     };
-    let manifest_ids: Vec<[u8; 32]> = (0..4096_u32)
+    let manifest_entries: Vec<sync_core::envelope::BoundArtifact> = (0..4096_u32)
         .map(|n| {
             let mut id = [0xff; 32];
             id[..4].copy_from_slice(&n.to_be_bytes());
-            id
+            sync_core::envelope::BoundArtifact {
+                id,
+                ciphertext_sha256: [0xee; 32],
+            }
         })
         .collect();
     let plaintext = EnvelopePlaintext {
@@ -588,7 +682,7 @@ fn the_largest_legal_envelope_fits_the_container_cap() {
             ..sample_meta()
         },
         write_set_hash: [0x44; 32],
-        delta_manifest: ArtifactManifest::new(manifest_ids).unwrap(),
+        delta_manifest: sync_core::envelope::BoundManifest::new(manifest_entries).unwrap(),
         payload: vec![b' '; 1 << 24],
     };
     let mut header = spec_header();
@@ -604,4 +698,6 @@ fn the_largest_legal_envelope_fits_the_container_cap() {
         container.len()
     );
     parse_container_with_limit(&container, MAX_ENVELOPE_CONTAINER_LEN).unwrap();
+    // The protocol's `max_envelope_container_bytes` (7.1) is this exact size.
+    assert_eq!(container.len(), 17_040_163);
 }

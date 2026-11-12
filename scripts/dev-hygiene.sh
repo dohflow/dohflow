@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # dev-hygiene.sh — stop build caches and stale worktrees from filling the build
-# machine (personal-cfo-0rein.6, personal-cfo-0rein.12).
+# machine (personal-cfo-0rein.6, personal-cfo-0rein.12, personal-cfo-0rein.13).
 #
 # READ-ONLY BY DEFAULT. `--report` (the default) changes nothing. `--clean` is
 # explicit. Without --scratch it does exactly two things, nothing else:
@@ -32,9 +32,16 @@
 # worktree (AGENTS.md section 1: non-destructive by default). Other projects'
 # folders under the scratch root are measured as one size and never opened.
 #
+# `--cap-check` (personal-cfo-0rein.13) is read-only too: for the worktree it is
+# run from, and no other, it lists each cargo target directory with its size, the
+# total against the cap, and whether a cargo/rustc process works in it. It never
+# cleans anything. Exit status: 0 under the cap; 1 over the cap and quiet; 2 over
+# the cap and a build is running (or could not be ruled out). Usage errors exit 64.
+#
 # Usage:
-#   scripts/dev-hygiene.sh [--report] [--json] [--no-pr]
+#   scripts/dev-hygiene.sh [--report] [--json] [--no-pr] [--target-cap-gib N]
 #   scripts/dev-hygiene.sh --clean [--scratch] [--idle-days N] [--yes] [--no-pr]
+#   scripts/dev-hygiene.sh --cap-check [--target-cap-gib N]
 #   scripts/dev-hygiene.sh --help
 #
 # Options:
@@ -47,6 +54,11 @@
 #   --idle-days N     Idle threshold in days for --clean (default 3).
 #   --no-pr           Do not ask GitHub for pull request states: every scratch
 #                     worktree is then "unknown" and Tier 2 does nothing.
+#   --target-cap-gib N  The cap on one worktree's cargo targets, every workspace
+#                     counted together (default 16). The report flags a worktree
+#                     over it; --cap-check exits non-zero over it.
+#   --cap-check       Check the worktree this is run from against the cap. Never
+#                     cleans. See above for the exit status.
 #   --scratch-dir D   Session scratch directory (default /private/tmp/claude-<uid>).
 #   --repo DIR        Repository to inspect (default: this script's repository).
 #
@@ -63,9 +75,13 @@
 # SHA for a detached HEAD), against the checkout's own origin. A squash merge
 # counts as merged through the PR, never through ancestry.
 #
-# Environment: DEV_HYGIENE_AFTER_CONFIRM_HOOK and DEV_HYGIENE_BIG_KIB, honored
-# only when DEV_HYGIENE_TESTING=1 (tests only): the first runs between the
-# confirmation and the apply step; the second replaces the 20 GiB session flag.
+# Environment: DEV_HYGIENE_AFTER_CONFIRM_HOOK, DEV_HYGIENE_BIG_KIB and
+# DEV_HYGIENE_CAP_KIB, honored only when DEV_HYGIENE_TESTING=1 (tests only): the
+# first runs between the confirmation and the apply step; the second replaces the
+# 20 GiB session flag; the third replaces the target cap with a size in KiB.
+# DEV_HYGIENE_OS overrides the operating system name for the Time Machine snapshot
+# line only (tests only, with DEV_HYGIENE_TESTING=1), so that line can be tested
+# anywhere; how files are stat'ed always follows the real operating system.
 # DEV_HYGIENE_PROCESS_NAMES overrides the process names treated as "a build is
 # running" (default "cargo rustc rust-analyzer"); the tests use it.
 #
@@ -83,6 +99,8 @@ ASSUME_YES=0
 IDLE_DAYS=3
 SCRATCH_CLEAN=0
 NO_PR=0
+CAP_CHECK=0
+TARGET_CAP_GIB=16
 SCRATCH_DIR="/private/tmp/claude-$(id -u)"
 REPO=""
 
@@ -90,7 +108,8 @@ usage() {
   sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-die() { echo "dev-hygiene: $*" >&2; exit 2; }
+# Usage errors exit 64, so that exit status 2 keeps its one meaning under --cap-check.
+die() { echo "dev-hygiene: $*" >&2; exit 64; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -100,6 +119,10 @@ while [ $# -gt 0 ]; do
     --yes) ASSUME_YES=1 ;;
     --scratch) SCRATCH_CLEAN=1 ;;
     --no-pr) NO_PR=1 ;;
+    --cap-check) CAP_CHECK=1 ;;
+    --target-cap-gib)
+      [ $# -ge 2 ] || die "--target-cap-gib needs a number"
+      TARGET_CAP_GIB="$2"; shift ;;
     --idle-days)
       [ $# -ge 2 ] || die "--idle-days needs a number"
       IDLE_DAYS="$2"; shift ;;
@@ -118,6 +141,19 @@ done
 case "$IDLE_DAYS" in
   ''|*[!0-9]*) die "--idle-days must be a whole number of days, got '$IDLE_DAYS'" ;;
 esac
+case "$TARGET_CAP_GIB" in
+  ''|*[!0-9]*|0|0[0-9]*) die "--target-cap-gib must be a whole number of GiB, 1 or more, got '$TARGET_CAP_GIB'" ;;
+esac
+# At most 1 PiB, so that the KiB conversion below can never overflow.
+if [ "${#TARGET_CAP_GIB}" -gt 7 ] || [ "$TARGET_CAP_GIB" -gt 1048576 ]; then
+  die "--target-cap-gib must be at most 1048576 GiB, got '$TARGET_CAP_GIB'"
+fi
+if [ "$CAP_CHECK" = 1 ] && { [ "$MODE" = clean ] || [ "$FORMAT" = json ] || [ "$ASSUME_YES" = 1 ] || [ "$SCRATCH_CLEAN" = 1 ]; }; then
+  die "--cap-check is read-only and stands alone: it cannot be combined with --clean, --json, --yes or --scratch"
+fi
+if [ "$CAP_CHECK" = 1 ] && [ -n "$REPO" ]; then
+  die "--cap-check checks the worktree it runs from; --repo does not apply"
+fi
 if [ "$ASSUME_YES" = 1 ] && [ "$MODE" != clean ]; then
   die "--yes only makes sense with --clean"
 fi
@@ -128,10 +164,14 @@ if [ "$FORMAT" = json ] && [ "$MODE" = clean ]; then
   die "--json is a report format; it cannot be combined with --clean"
 fi
 
-if [ -z "$REPO" ]; then
-  REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# --cap-check looks only at the worktree it runs from, so it needs no repository
+# for the script itself (cap_check does its own git check on $PWD).
+if [ "$CAP_CHECK" != 1 ]; then
+  if [ -z "$REPO" ]; then
+    REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+  fi
+  git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $REPO"
 fi
-git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $REPO"
 
 # git and lsof report physical paths, so compare against the physical scratch root.
 if [ -d "$SCRATCH_DIR" ]; then SCRATCH_DIR="$(cd "$SCRATCH_DIR" && pwd -P)"; fi
@@ -147,6 +187,10 @@ NL="
 # ---------------------------------------------------------------------------
 
 OS="$(uname)"
+SNAP_OS="$OS"
+if [ "${DEV_HYGIENE_TESTING:-}" = 1 ] && [ -n "${DEV_HYGIENE_OS:-}" ]; then SNAP_OS="$DEV_HYGIENE_OS"; fi
+CAP_KIB=$(( TARGET_CAP_GIB * 1024 * 1024 ))
+if [ "${DEV_HYGIENE_TESTING:-}" = 1 ] && [ -n "${DEV_HYGIENE_CAP_KIB:-}" ]; then CAP_KIB="$DEV_HYGIENE_CAP_KIB"; fi
 
 mtime() {
   if [ "$OS" = Darwin ]; then
@@ -178,7 +222,7 @@ json_str() {
 
 W_PATH="" W_BRANCH="" W_HEAD="" W_MISSING=0 W_TARGETS="" W_TARGET_KIB=0
 W_ACTIVITY="" W_IDLE_DAYS="" W_DIRTY="" W_UNPUSHED="" W_MERGED="" W_GONE=0
-W_BUSY=0 W_CURRENT=0 W_SKIP="" W_ELIGIBLE=0
+W_BUSY=0 W_CURRENT=0 W_SKIP="" W_ELIGIBLE=0 W_TSIZES="" W_OVER=0
 
 # Cargo target directories (a directory named `target` that holds CACHEDIR.TAG)
 # up to four levels down, never descending into node_modules, .git or a target,
@@ -310,11 +354,28 @@ RECORDS
   return 1
 }
 
+measure_targets() {
+  # Sizes every directory in W_TARGETS on its own: W_TSIZES (one "kib<US>path"
+  # per line), their sum W_TARGET_KIB, and W_OVER when the sum passes the cap.
+  local t k
+  W_TARGET_KIB=0 W_TSIZES="" W_OVER=0
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    k="$(du_kib "$t")"
+    W_TARGET_KIB=$(( W_TARGET_KIB + ${k:-0} ))
+    W_TSIZES="${W_TSIZES}${k:-0}${US}${t}${NL}"
+  done <<EOF
+$W_TARGETS
+EOF
+  [ "$W_TARGET_KIB" -gt "$CAP_KIB" ] && W_OVER=1
+  return 0
+}
+
 inspect_worktree() {
   # inspect_worktree PATH BRANCH HEAD MISSING
   W_PATH="$1" W_BRANCH="$2" W_HEAD="$3" W_MISSING="$4"
   W_TARGETS="" W_TARGET_KIB=0 W_ACTIVITY="" W_IDLE_DAYS="" W_DIRTY="" W_UNPUSHED=""
-  W_MERGED="" W_GONE=0 W_BUSY=0 W_CURRENT=0 W_SKIP="" W_ELIGIBLE=0
+  W_MERGED="" W_GONE=0 W_BUSY=0 W_CURRENT=0 W_SKIP="" W_ELIGIBLE=0 W_TSIZES="" W_OVER=0
 
   if [ "$W_MISSING" = 1 ]; then
     W_SKIP="directory is gone (git worktree prune handles the registration)"
@@ -327,14 +388,7 @@ inspect_worktree() {
   if [ "$here" = "$(cd "$W_PATH" 2>/dev/null && pwd -P)" ]; then W_CURRENT=1; fi
 
   W_TARGETS="$(find_targets "$W_PATH")"
-  local t k
-  while IFS= read -r t; do
-    [ -n "$t" ] || continue
-    k="$(du_kib "$t")"
-    W_TARGET_KIB=$(( W_TARGET_KIB + ${k:-0} ))
-  done <<EOF
-$W_TARGETS
-EOF
+  measure_targets
 
   W_ACTIVITY="$(worktree_activity "$W_PATH")"
   if [ -n "$W_ACTIVITY" ]; then
@@ -434,6 +488,26 @@ read_disk() {
 }
 
 scratch_kib=""
+
+# macOS Time Machine local snapshots (personal-cfo-0rein.13): they keep deleted
+# build output alive, so freed space may not return until the owner thins them.
+# Read-only (`tmutil listlocalsnapshots`), skipped silently where tmutil does not
+# exist. This script never thins a snapshot and never runs sudo.
+LOCAL_SNAPSHOTS=""
+read_snapshots() {
+  local out n
+  LOCAL_SNAPSHOTS=""
+  [ "$SNAP_OS" = Darwin ] || return 0
+  command -v tmutil >/dev/null 2>&1 || return 0
+  out="$(tmutil listlocalsnapshots / 2>/dev/null </dev/null)" || return 0
+  n="$(printf '%s\n' "$out" | grep -c '^com\.apple\.TimeMachine\.' || true)"
+  LOCAL_SNAPSHOTS="${n:-0}"
+}
+
+snapshots_delay() {
+  # True when snapshots exist and free space is under 15%.
+  [ -n "$LOCAL_SNAPSHOTS" ] && [ "$LOCAL_SNAPSHOTS" -gt 0 ] && low_disk
+}
 
 low_disk() {
   [ -n "$disk_pct_free" ] && awk -v p="$disk_pct_free" 'BEGIN { exit !(p < 15) }'
@@ -762,7 +836,25 @@ text_row() {
     return
   fi
   echo "    branch:       ${W_BRANCH:-(detached at ${W_HEAD:0:8})}"
-  echo "    target:       $(human "$W_TARGET_KIB")$( [ -z "$W_TARGETS" ] && echo ' (no cargo target dir)')"
+  if [ -z "$W_TARGETS" ]; then
+    echo "    target:       $(human 0) (no cargo target dir)"
+  else
+    echo "    target:       $(human "$W_TARGET_KIB") in $(printf '%s' "$W_TSIZES" | grep -c .) cargo target dir(s), every workspace counted"
+    local trec tk tp
+    while IFS= read -r trec; do
+      [ -n "$trec" ] || continue
+      tk="${trec%%"$US"*}"; tp="${trec#*"$US"}"
+      echo "                  $(human "$tk")  ${tp#"$W_PATH"/}"
+    done <<TSIZES
+$W_TSIZES
+TSIZES
+    if [ "$W_OVER" = 1 ]; then
+      echo "    OVER THE CAP: $(human "$W_TARGET_KIB") against $(human "$CAP_KIB") (--target-cap-gib). An implementation session"
+      echo "                  runs scripts/dev-hygiene.sh --cap-check at a quiet point and, if it says over, cargo clean"
+      echo "                  in its own worktree's target dirs (docs/agent/WORKFLOW_ROLES.md). Nobody else cleans it;"
+      echo "                  a review or escalation worktree follows its own 15 GiB rule."
+    fi
+  fi
   if [ -n "$W_ACTIVITY" ]; then
     echo "    last active:  $(date -r "$W_ACTIVITY" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$W_ACTIVITY" '+%Y-%m-%d %H:%M' 2>/dev/null) (${W_IDLE_DAYS} day(s) ago)"
   else
@@ -815,7 +907,17 @@ json_row() {
   done <<EOF
 $W_TARGETS
 EOF
-  printf '],"target_kib":%s' "$W_TARGET_KIB"
+  printf '],"targets":['
+  local trec tk tp tfirst=1
+  while IFS= read -r trec; do
+    [ -n "$trec" ] || continue
+    tk="${trec%%"$US"*}"; tp="${trec#*"$US"}"
+    [ "$tfirst" = 1 ] && tfirst=0 || printf ','
+    printf '{"path":"%s","kib":%s}' "$(json_str "$tp")" "$tk"
+  done <<TSIZES
+$W_TSIZES
+TSIZES
+  printf '],"target_kib":%s,"over_cap":%s' "$W_TARGET_KIB" "$([ "$W_OVER" = 1 ] && echo true || echo false)"
   printf ',"last_activity":%s,"idle_days":%s' "${W_ACTIVITY:-null}" "${W_IDLE_DAYS:-null}"
   printf ',"dirty":%s' "$(json_tri "$W_DIRTY")"
   printf ',"unpushed_commits":%s' "${W_UNPUSHED:-null}"
@@ -994,6 +1096,7 @@ ACTIONS
 
 report() {
   read_disk
+  read_snapshots
   scan_scratch
   scratch_totals
   evaluate_scratch
@@ -1001,6 +1104,8 @@ report() {
     printf '{\n  "generated_at":%s,\n  "idle_days_threshold":%s,\n' "$NOW" "$IDLE_DAYS"
     printf '  "disk":{"total_kib":%s,"avail_kib":%s,"percent_free":%s,"under_15_percent":%s},\n' \
       "${disk_total_kib:-null}" "${disk_avail_kib:-null}" "${disk_pct_free:-null}" "$(low_disk && echo true || echo false)"
+    printf '  "local_snapshots":%s,"snapshots_may_delay_freed_space":%s,"target_cap_kib":%s,\n' \
+      "${LOCAL_SNAPSHOTS:-null}" "$(snapshots_delay && echo true || echo false)" "$CAP_KIB"
     printf '  "scratch":{"path":"%s","kib":%s,"dohflow_kib":%s,"other_projects_kib":%s,"session_flag_kib":%s,\n  ' \
       "$(json_str "$SCRATCH_DIR")" "${scratch_kib:-null}" "$SC_DOH_KIB" "$SC_OTHER_KIB" "$BIG_KIB"
     json_scratch
@@ -1019,7 +1124,16 @@ report() {
   else
     echo "Disk: unreadable"
   fi
+  if [ -n "$LOCAL_SNAPSHOTS" ]; then
+    echo "Time Machine local snapshots: $LOCAL_SNAPSHOTS"
+    if snapshots_delay; then
+      echo "  ** Local snapshots exist and free space is under 15%: space freed by a clean may not return until the"
+      echo "     owner thins them. See the owner-side note in docs/agent/WORKFLOW_ROLES.md (Build-machine hygiene)."
+      echo "     Agents never run thinlocalsnapshots or sudo. **"
+    fi
+  fi
   echo
+  echo "Per-worktree cargo target cap: $(human "$CAP_KIB"), every workspace counted together (--target-cap-gib)."
   echo "Registered worktrees:"
   for_each_worktree text_row
   echo
@@ -1223,6 +1337,59 @@ clean() {
   [ -n "$disk_avail_kib" ] && echo "Disk now: $(human "$disk_avail_kib") free (${disk_pct_free}% free). Time Machine local snapshots may hold freed space for a while (docs/agent/WORKFLOW_ROLES.md)."
 }
 
+# --cap-check (personal-cfo-0rein.13): the worktree this is run from, and no
+# other. Read-only. Exit 0 under the cap, 1 over it and quiet, 2 over it with a
+# build running (or one that could not be ruled out).
+cap_check() {
+  local top trec tk tp d
+  top="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" || die "--cap-check must be run inside a git worktree"
+  top="$(cd "$top" && pwd -P)"
+  W_PATH="$top"
+  W_TARGETS="$(find_targets "$top")"
+  measure_targets
+  echo "dev-hygiene --cap-check (read-only) — $top"
+  if [ -z "$W_TARGETS" ]; then
+    echo "  no cargo target dir"
+  else
+    while IFS= read -r trec; do
+      [ -n "$trec" ] || continue
+      tk="${trec%%"$US"*}"; tp="${trec#*"$US"}"
+      echo "  $(human "$tk")  ${tp#"$top"/}"
+    done <<TSIZES
+$W_TSIZES
+TSIZES
+  fi
+  echo "  total $(human "$W_TARGET_KIB") against the cap of $(human "$CAP_KIB")"
+  if cargo_busy "$top"; then
+    echo "  cargo/rustc: a process is running in this worktree (or that could not be ruled out)"
+    W_BUSY=1
+  else
+    echo "  cargo/rustc: none running"
+  fi
+  if [ "$W_OVER" != 1 ]; then
+    echo "  Under the cap. Nothing to do."
+    return 0
+  fi
+  if [ "$W_BUSY" = 1 ]; then
+    echo "  OVER THE CAP, and a build is running: do not clean. Check again when it has finished."
+    return 2
+  fi
+  echo "  OVER THE CAP, and quiet. Clean your own target dirs (nothing else, never rm):"
+  while IFS= read -r tp; do
+    [ -n "$tp" ] || continue
+    d="$(dirname "$tp")"
+    echo "    cargo clean --manifest-path \"$d/Cargo.toml\" --target-dir \"$tp\""
+  done <<TARGETS
+$W_TARGETS
+TARGETS
+  echo "  This script did not clean anything."
+  return 1
+}
+
+if [ "$CAP_CHECK" = 1 ]; then
+  cap_check
+  exit $?
+fi
 case "$MODE" in
   report) report ;;
   clean) clean ;;

@@ -2329,6 +2329,344 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // The issue time of an unpushed command (personal-cfo-bxsbz.4, AC0). A rebase re-applies a
+    // local command under its COMPLETE original `CommandMeta`, and `issued_at` is part of it: the
+    // ids `apply` derives and the `deleted_at` stamps it writes come from it, and the envelope's
+    // immutable-metadata commitment binds it. Nothing else records it for a command that has not
+    // been sealed (the operation log keeps the wall clock, not the issue time), so the outbox row
+    // does. Microseconds since the Unix epoch, bounded as an envelope's `issued_at` is (C.6); NULL
+    // only for a row written before this migration, which a rebase refuses by name.
+    Migration {
+        version: 67,
+        name: "sync_outbox_issued_at",
+        up: "ALTER TABLE sync_outbox ADD COLUMN issued_at INTEGER
+                 CHECK (issued_at IS NULL OR (issued_at >= 0 AND issued_at <= 253402300799999999));",
+        down: Some("ALTER TABLE sync_outbox DROP COLUMN issued_at;"),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
+    // SYNC-3d device-local state (personal-cfo-1cltt.4; vault-format.md C.4 "Counter register and
+    // nonce state", C.6 freshness rule 5). Three more class-3 tables: never replicated, never part
+    // of a snapshot or a write set.
+    //
+    // * `sync_counter_register` is the durable `next_counter` of every
+    //   `(vault_id, key_epoch, fingerprint, object_type)` context. A row is never 0 (the first
+    //   advance goes to 1), so a witness at exactly 0 can only mean "no counter was handed out".
+    //   The advance is a compare-and-set, and it is written under the writer lock, so a backup
+    //   restore rolls it back: that rollback is what the independent witness detects.
+    // * `sync_saved_snapshot` is the sealed snapshot saved for an exact-byte retransmission, one per
+    //   context, with the hashes that say which publish it belongs to. The container bytes are a
+    //   file beside the vault, not a column.
+    // * `sync_genesis` is a singleton holding the genesis records this device minted at
+    //   sync-enable, persisted BEFORE the keys are installed and before anything is published:
+    //   the start of the accepted epoch chain. `state` only moves forward (Persisted, Installed,
+    //   Published); VaultKnown is the terminal state of a genesis the service refused because the
+    //   vault already exists, which is never published or re-minted; GenesisResumeLost is the
+    //   terminal state of a genesis whose snapshot the service holds but whose saved container is
+    //   gone (persisted so that a restart never retries and burns a counter). `export_high_water`
+    //   is the `operation_log` high-water mark (the largest `op_seq`, 0 for an empty log) read in
+    //   the transaction that exported the genesis snapshot: NULL until an export is made, and
+    //   replaced by a later export only while nothing has been sealed. After the genesis is
+    //   published, a log that has grown past the mark holds local commands the genesis does not
+    //   carry and no envelope has sequenced.
+    Migration {
+        version: 68,
+        name: "sync_register_and_genesis",
+        up: "CREATE TABLE sync_counter_register (
+                 vault_id     BLOB NOT NULL CHECK (length(vault_id) = 16),
+                 key_epoch    INTEGER NOT NULL CHECK (key_epoch >= 1),
+                 fingerprint  BLOB NOT NULL CHECK (length(fingerprint) = 32),
+                 object_type  INTEGER NOT NULL CHECK (object_type IN (1, 2)),
+                 next_counter INTEGER NOT NULL CHECK (next_counter >= 1),
+                 PRIMARY KEY (vault_id, key_epoch, fingerprint, object_type)
+             );
+             CREATE TABLE sync_saved_snapshot (
+                 vault_id         BLOB NOT NULL CHECK (length(vault_id) = 16),
+                 key_epoch        INTEGER NOT NULL CHECK (key_epoch >= 1),
+                 fingerprint      BLOB NOT NULL CHECK (length(fingerprint) = 32),
+                 object_type      INTEGER NOT NULL CHECK (object_type IN (1, 2)),
+                 object_id        BLOB NOT NULL CHECK (length(object_id) = 16),
+                 base_seq         INTEGER NOT NULL CHECK (base_seq >= 0),
+                 plaintext_sha256 BLOB NOT NULL CHECK (length(plaintext_sha256) = 32),
+                 container_sha256 BLOB NOT NULL CHECK (length(container_sha256) = 32),
+                 container_len    INTEGER NOT NULL CHECK (container_len >= 0),
+                 counter          INTEGER NOT NULL CHECK (counter >= 0),
+                 PRIMARY KEY (vault_id, key_epoch, fingerprint, object_type)
+             );
+             CREATE TABLE sync_genesis (
+                 singleton         INTEGER PRIMARY KEY CHECK (singleton = 1),
+                 vault_id          BLOB NOT NULL CHECK (length(vault_id) = 16),
+                 membership_record BLOB NOT NULL CHECK (length(membership_record) > 0),
+                 epoch_record      BLOB NOT NULL CHECK (length(epoch_record) > 0),
+                 state             TEXT NOT NULL
+                                   CHECK (state IN ('Persisted', 'Installed', 'Published', 'VaultKnown',
+                                                    'GenesisResumeLost')),
+                 export_high_water INTEGER
+                                   CHECK (export_high_water IS NULL OR export_high_water >= 0),
+                 persisted_at      TEXT NOT NULL,
+                 updated_at        TEXT NOT NULL
+             );",
+        down: Some(
+            "DROP TABLE sync_genesis;
+             DROP TABLE sync_saved_snapshot;
+             DROP TABLE sync_counter_register;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
+    // SYNC-3e device-local state (personal-cfo-1cltt.5; vault-format.md B.2, C.8, C.10). Two more
+    // class-3 tables: never replicated, never part of a snapshot or a write set.
+    //
+    // * `sync_voids` is the void ledger (ADR 0074 Addendum D and E): the voids this replica
+    //   skips, each with the id of the void record, the range of log positions it skips and its
+    //   `origin`: `seeded` from the snapshot the replica bootstrapped from (recorded by the
+    //   snapshot's producer, never judged here, so never a fork check's input) or `honored` here.
+    //   The table is append-only: an entry is never updated or deleted (a re-bootstrap builds a
+    //   NEW vault), `ordinal` is dense and in the order the entries were written (a trigger
+    //   refuses any other), and the ranges ascend without overlap (a trigger refuses any other).
+    //   The key is the ordinal, not the void id: a snapshot may record one id at two ranges (the
+    //   verifier does not refuse it), and a void a snapshot recorded may later be honored here as a
+    //   new void (the seeded entry is history and never a fork check's input), so one id can hold
+    //   more than one entry.
+    // * `sync_position` is a singleton: `snapshot_root`, the last log position of the snapshot the
+    //   replica bootstrapped from (NULL for the origin, which was never bootstrapped, and never
+    //   changed after the row is written), and `next_to_apply`, the lowest position the replica has
+    //   neither applied nor skipped. `next_to_apply` can pass positions the replica never applied
+    //   (it moves past a range once a void for it is honored), so it is not derivable from
+    //   `sync_base.base_seq`; it only increases. A row exists only once a replica has bootstrapped
+    //   or Sync is armed on an origin: the ledger and the cursor are written in one transaction.
+    Migration {
+        version: 69,
+        name: "sync_void_ledger_and_position",
+        up: "CREATE TABLE sync_voids (
+                 ordinal INTEGER PRIMARY KEY CHECK (ordinal >= 1),
+                 void_id BLOB NOT NULL CHECK (length(void_id) = 32),
+                 first   INTEGER NOT NULL CHECK (first >= 1),
+                 last    INTEGER NOT NULL CHECK (last >= first),
+                 origin  TEXT NOT NULL CHECK (origin IN ('honored', 'seeded'))
+             );
+             CREATE TRIGGER sync_voids_next_ordinal BEFORE INSERT ON sync_voids
+             WHEN NEW.ordinal <> COALESCE((SELECT MAX(ordinal) FROM sync_voids), 0) + 1
+             BEGIN
+                 SELECT RAISE(ABORT, 'a void takes the next ordinal');
+             END;
+             CREATE TRIGGER sync_voids_ascending BEFORE INSERT ON sync_voids
+             WHEN COALESCE((SELECT MAX(last) FROM sync_voids), 0) >= NEW.first
+             BEGIN
+                 SELECT RAISE(ABORT, 'void ranges ascend without overlap');
+             END;
+             CREATE TRIGGER sync_voids_no_update BEFORE UPDATE ON sync_voids
+             BEGIN
+                 SELECT RAISE(ABORT, 'sync_voids is append-only');
+             END;
+             CREATE TRIGGER sync_voids_no_delete BEFORE DELETE ON sync_voids
+             BEGIN
+                 SELECT RAISE(ABORT, 'sync_voids is append-only');
+             END;
+             CREATE TABLE sync_position (
+                 singleton     INTEGER PRIMARY KEY CHECK (singleton = 1),
+                 snapshot_root INTEGER CHECK (snapshot_root IS NULL OR snapshot_root >= 0),
+                 next_to_apply INTEGER NOT NULL CHECK (next_to_apply >= 1),
+                 CHECK (snapshot_root IS NULL OR next_to_apply > snapshot_root)
+             );
+             CREATE TRIGGER sync_position_forward BEFORE UPDATE ON sync_position
+             WHEN NEW.next_to_apply < OLD.next_to_apply
+                 OR NEW.snapshot_root IS NOT OLD.snapshot_root
+             BEGIN
+                 SELECT RAISE(ABORT, 'sync_position only moves forward and keeps its root');
+             END;
+             CREATE TRIGGER sync_position_no_delete BEFORE DELETE ON sync_position
+             BEGIN
+                 SELECT RAISE(ABORT, 'sync_position is never deleted');
+             END;",
+        down: Some(
+            "DROP TRIGGER sync_position_no_delete;
+             DROP TRIGGER sync_position_forward;
+             DROP TABLE sync_position;
+             DROP TRIGGER sync_voids_no_delete;
+             DROP TRIGGER sync_voids_no_update;
+             DROP TRIGGER sync_voids_ascending;
+             DROP TRIGGER sync_voids_next_ordinal;
+             DROP TABLE sync_voids;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
+    // Version 70 (personal-cfo-0g528.2, S2c part 2; provisional: renumbered above the void ledger's
+    // 69 when that landed first):
+    // * `sync_artifacts` is the device-local mapping from a class-1b artifact's service address in
+    //   an epoch (`sync_artifact_id_e`) to the local identity that carries it, with the ciphertext
+    //   hash this device verified when it published the artifact or fetched it (the only hash a
+    //   producer may bind; a cache for the no-refetch rule that never decides a verdict) and, for
+    //   a producer, whether a durable receipt matched. It is class 3: never replicated, exported
+    //   or snapshotted.
+    // * For an attachment received from a peer, the `staged_*` columns hold the receiver-local
+    //   crypto fields (storage id, wrapped content key and nonces, algorithm, size, MIME type)
+    //   from the moment the bytes are materialized until the attach command's `apply` creates the
+    //   class-4 `attachments` row from them. The same transaction then sets them to NULL, so the
+    //   `attachments` row is the only long-lived copy of the key material. While staged they are
+    //   re-wrapped and re-addressed by a key rotation, like an `attachments` row (ADR 0083).
+    //   The CHECKs tie them to an attachment, all present or all absent.
+    Migration {
+        version: 70,
+        name: "sync_artifacts",
+        up: "CREATE TABLE sync_artifacts (
+                 key_epoch                  INTEGER NOT NULL CHECK (key_epoch >= 1),
+                 sync_artifact_id           BLOB NOT NULL CHECK (length(sync_artifact_id) = 32),
+                 ciphertext_sha256          BLOB NOT NULL CHECK (length(ciphertext_sha256) = 32),
+                 kind                       INTEGER NOT NULL CHECK (kind IN (1, 2)),
+                 logical_id                 BLOB NOT NULL CHECK (length(logical_id) = 16),
+                 part_index                 INTEGER,
+                 part_count                 INTEGER,
+                 receipt_at                 TEXT,
+                 staged_storage_id          TEXT,
+                 staged_wrapped_content_key BLOB,
+                 staged_content_key_nonce   BLOB,
+                 staged_content_nonce       BLOB,
+                 staged_content_alg         TEXT,
+                 staged_plaintext_size      INTEGER,
+                 staged_mime_type           TEXT,
+                 PRIMARY KEY (key_epoch, sync_artifact_id),
+                 CHECK (
+                     (kind = 1 AND part_index IS NULL AND part_count IS NULL)
+                     OR (kind = 2 AND part_index IS NOT NULL AND part_count IS NOT NULL
+                         AND part_count >= 1 AND part_index >= 0 AND part_index < part_count)
+                 ),
+                 CHECK (
+                     (staged_storage_id IS NULL AND staged_wrapped_content_key IS NULL
+                      AND staged_content_key_nonce IS NULL AND staged_content_nonce IS NULL
+                      AND staged_content_alg IS NULL AND staged_plaintext_size IS NULL
+                      AND staged_mime_type IS NULL)
+                     OR (kind = 1 AND staged_storage_id IS NOT NULL
+                         AND staged_wrapped_content_key IS NOT NULL
+                         AND staged_content_key_nonce IS NOT NULL
+                         AND staged_content_nonce IS NOT NULL
+                         AND staged_content_alg IS NOT NULL
+                         AND staged_plaintext_size IS NOT NULL AND staged_plaintext_size >= 0)
+                 )
+             );
+             CREATE INDEX idx_sync_artifacts_logical
+                 ON sync_artifacts (kind, logical_id, key_epoch);
+             CREATE UNIQUE INDEX idx_sync_artifacts_staged_storage
+                 ON sync_artifacts (staged_storage_id) WHERE staged_storage_id IS NOT NULL;",
+        down: Some(
+            "DROP INDEX idx_sync_artifacts_staged_storage;
+             DROP INDEX idx_sync_artifacts_logical;
+             DROP TABLE sync_artifacts;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
+    // Version 71 (personal-cfo-0g528.2, S2c part 2; provisional, one above the artifact mapping's
+    // version, so it moves with it):
+    // * `sync_notices` is the durable, device-local notice that Sync discarded something the user
+    //   was in the middle of. Its only kind today is `import_discarded`: a received batch replaced
+    //   the rows of an import that was still being reviewed on this device, and the staged
+    //   import for that batch was removed in the same transaction (C.9), so the user must run the
+    //   import again. `source_name` is the file name the user chose, so the notice can name it; it
+    //   is shown to the user and never logged. Class 3: never replicated, exported or snapshotted.
+    Migration {
+        version: 71,
+        name: "sync_notices",
+        up: "CREATE TABLE sync_notices (
+                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                 kind            TEXT NOT NULL CHECK (kind IN ('import_discarded')),
+                 batch_id        BLOB NOT NULL CHECK (length(batch_id) = 16),
+                 source_name     TEXT,
+                 discarded_count INTEGER NOT NULL CHECK (discarded_count >= 0),
+                 created_at      TEXT NOT NULL,
+                 dismissed_at    TEXT
+             );
+             CREATE INDEX idx_sync_notices_pending ON sync_notices (dismissed_at, id);",
+        down: Some(
+            "DROP INDEX idx_sync_notices_pending;
+             DROP TABLE sync_notices;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
+    // An accepted command may have no result (personal-cfo-bxsbz.5). Migration 66 required a
+    // `Bound` row's `result_ref` to be non-null, but the protocol allows an accepted command with
+    // none, and the accepted-envelope record (C.10) says a PRESENT `result_ref` is 1 to 64 bytes
+    // because an empty one would be a second encoding of an absent one. So the `Bound` arm now
+    // allows NULL or 1 to 64 bytes; `Pending` and `Approved` still require NULL. SQLite cannot
+    // alter a CHECK, so the table is rebuilt in the migration transaction (create, copy, drop,
+    // rename). Nothing references `sync_outbox` (no foreign key, trigger or view), its only index is
+    // the `op_seq` uniqueness the new table declares again, and every other constraint is kept,
+    // `issued_at` (migration 67) included. A row that could only have meant "no result" under the
+    // old shape, an empty `result_ref`, is carried over as NULL; any other out-of-range value
+    // fails the copy and so the migration, rather than being truncated. The down migration
+    // rebuilds the old shape and FAILS CLOSED: a `Bound` row with a NULL result violates the old
+    // CHECK, the copy aborts, and the migration rolls back. It never invents a value.
+    Migration {
+        version: 72,
+        name: "sync_outbox_bound_without_result",
+        up: "CREATE TABLE sync_outbox_rebuilt (
+                 command_id       BLOB PRIMARY KEY CHECK (length(command_id) = 16),
+                 op_seq           INTEGER NOT NULL UNIQUE,
+                 state            TEXT NOT NULL DEFAULT 'Pending'
+                                  CHECK (state IN ('Pending', 'Approved', 'Bound')),
+                 write_set_keys   BLOB NOT NULL,
+                 sealed_container BLOB,
+                 bound_seq        INTEGER,
+                 result_ref       BLOB,
+                 created_at       TEXT NOT NULL,
+                 issued_at        INTEGER
+                     CHECK (issued_at IS NULL OR (issued_at >= 0 AND issued_at <= 253402300799999999)),
+                 CHECK (
+                     (state = 'Pending' AND sealed_container IS NULL
+                         AND bound_seq IS NULL AND result_ref IS NULL)
+                     OR (state = 'Approved' AND sealed_container IS NOT NULL
+                         AND bound_seq IS NULL AND result_ref IS NULL)
+                     OR (state = 'Bound' AND sealed_container IS NOT NULL
+                         AND bound_seq IS NOT NULL
+                         AND (result_ref IS NULL OR length(result_ref) BETWEEN 1 AND 64))
+                 )
+             );
+             INSERT INTO sync_outbox_rebuilt
+                 (command_id, op_seq, state, write_set_keys, sealed_container, bound_seq, result_ref,
+                 created_at, issued_at)
+             SELECT command_id, op_seq, state, write_set_keys, sealed_container, bound_seq,
+                    CASE WHEN length(result_ref) = 0 THEN NULL ELSE result_ref END,
+                    created_at, issued_at
+               FROM sync_outbox;
+             DROP TABLE sync_outbox;
+             ALTER TABLE sync_outbox_rebuilt RENAME TO sync_outbox;",
+        down: Some(
+            "CREATE TABLE sync_outbox_rebuilt (
+                 command_id       BLOB PRIMARY KEY CHECK (length(command_id) = 16),
+                 op_seq           INTEGER NOT NULL UNIQUE,
+                 state            TEXT NOT NULL DEFAULT 'Pending'
+                                  CHECK (state IN ('Pending', 'Approved', 'Bound')),
+                 write_set_keys   BLOB NOT NULL,
+                 sealed_container BLOB,
+                 bound_seq        INTEGER,
+                 result_ref       BLOB,
+                 created_at       TEXT NOT NULL,
+                 issued_at        INTEGER
+                     CHECK (issued_at IS NULL OR (issued_at >= 0 AND issued_at <= 253402300799999999)),
+                 CHECK (
+                     (state = 'Pending' AND sealed_container IS NULL
+                         AND bound_seq IS NULL AND result_ref IS NULL)
+                     OR (state = 'Approved' AND sealed_container IS NOT NULL
+                         AND bound_seq IS NULL AND result_ref IS NULL)
+                     OR (state = 'Bound' AND sealed_container IS NOT NULL
+                         AND bound_seq IS NOT NULL
+                         AND result_ref IS NOT NULL)
+                 )
+             );
+             INSERT INTO sync_outbox_rebuilt
+                 (command_id, op_seq, state, write_set_keys, sealed_container, bound_seq, result_ref,
+                 created_at, issued_at)
+             SELECT command_id, op_seq, state, write_set_keys, sealed_container, bound_seq, result_ref,
+                 created_at, issued_at
+               FROM sync_outbox;
+             DROP TABLE sync_outbox;
+             ALTER TABLE sync_outbox_rebuilt RENAME TO sync_outbox;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
@@ -2466,11 +2804,32 @@ pub(crate) fn run_migrations(conn: &mut Connection) -> Result<u64, DbError> {
     apply(conn, MIGRATIONS)
 }
 
+/// Apply the migrations up to and including `target` and stamp `PRAGMA user_version` with
+/// `target`, for a new vault that must be at a snapshot's schema version before the snapshot is
+/// installed (`personal-cfo-1cltt.5`); [`run_migrations`] then carries it the rest of the way, over
+/// the installed rows, as it carries any older vault.
+///
+/// # Errors
+/// [`DbError::UnsupportedSchema`] when `target` is not a migration's version (or 0), otherwise as
+/// [`apply`].
+pub(crate) fn run_migrations_to(conn: &mut Connection, target: i64) -> Result<u64, DbError> {
+    if !MIGRATIONS.iter().any(|m| m.version == target) {
+        return Err(DbError::UnsupportedSchema);
+    }
+    let through = MIGRATIONS.partition_point(|m| m.version <= target);
+    apply_to(conn, &MIGRATIONS[..through], target)
+}
+
 /// Apply pending migrations from `migrations` (split out so tests can drive a
 /// synthetic set). Each migration commits in its own transaction; a tracker row
 /// records its content hash. If any applied migration rebuilds read models, the
 /// transaction-display projection is rebuilt afterward.
 pub(crate) fn apply(conn: &mut Connection, migrations: &[Migration]) -> Result<u64, DbError> {
+    apply_to(conn, migrations, CURRENT_VERSION)
+}
+
+/// [`apply`], stamping `PRAGMA user_version` with `stamp` instead of the build's version.
+fn apply_to(conn: &mut Connection, migrations: &[Migration], stamp: i64) -> Result<u64, DbError> {
     // Defensive last line of defense for callers that bypass DbWorker::open.
     // In particular, never let an unknown future row reach ensure_tracker or
     // the unconditional user_version stamp below.
@@ -2518,7 +2877,7 @@ pub(crate) fn apply(conn: &mut Connection, migrations: &[Migration]) -> Result<u
         needs_rebuild |= m.rebuilds_read_models;
     }
 
-    conn.pragma_update(None, "user_version", CURRENT_VERSION)?;
+    conn.pragma_update(None, "user_version", stamp)?;
     if needs_rebuild {
         projection::rebuild(conn)?;
     }
@@ -3692,6 +4051,503 @@ mod tests {
 
         apply(&mut conn, MIGRATIONS).unwrap();
         assert_eq!(ordinals(&conn), vec![(1, 1, Some(1))]);
+    }
+
+    /// 67 adds the outbox's issue time; down drops the column and keeps the rows, and up adds it
+    /// back empty (a row from before it, which a rebase refuses by name).
+    #[test]
+    fn v67_down_drops_the_issue_time_and_keeps_the_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..67]).unwrap();
+        conn.execute(
+            "INSERT INTO sync_outbox
+               (command_id, op_seq, state, write_set_keys, created_at, issued_at)
+             VALUES (zeroblob(16), 1, 'Pending', zeroblob(0), '2026-11-06T00:00:00Z', 5)",
+            [],
+        )
+        .unwrap();
+        let has_column = |conn: &Connection| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sync_outbox') WHERE name = 'issued_at'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(has_column(&conn), 1);
+
+        assert_eq!(migrate_down(&mut conn, 66).unwrap(), 1);
+        assert_eq!(has_column(&conn), 0, "down drops the column");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "down keeps the outbox rows");
+
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(has_column(&conn), 1);
+        let issued: Option<i64> = conn
+            .query_row("SELECT issued_at FROM sync_outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            issued, None,
+            "a row from before the column has no issue time"
+        );
+    }
+
+    /// 68 adds the counter register, the saved snapshot record and the persisted genesis; down
+    /// drops the three, and up creates them again empty.
+    #[test]
+    fn v68_down_drops_the_register_and_genesis_tables_and_up_creates_them_empty() {
+        let tables = |conn: &Connection| -> Vec<String> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN
+                     ('sync_counter_register', 'sync_saved_snapshot', 'sync_genesis')
+                     ORDER BY name",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..68]).unwrap();
+        assert_eq!(
+            tables(&conn),
+            [
+                "sync_counter_register",
+                "sync_genesis",
+                "sync_saved_snapshot"
+            ]
+        );
+
+        assert_eq!(migrate_down(&mut conn, 67).unwrap(), 1);
+        assert!(tables(&conn).is_empty(), "down drops all three");
+
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(tables(&conn).len(), 3);
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_genesis", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    /// 69 adds the void ledger and the applied cursor; down drops both with their triggers, and up
+    /// creates them again empty. Each trigger is exercised: the ledger is append-only with a dense
+    /// ordinal and ascending ranges, and the cursor only moves forward and keeps its root.
+    #[test]
+    fn v69_creates_the_ledger_and_the_cursor_with_their_guards_and_down_drops_them() {
+        let objects = |conn: &Connection| -> Vec<String> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE name LIKE 'sync_voids%'
+                     OR name LIKE 'sync_position%' ORDER BY name",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(objects(&conn).len(), 8, "two tables and six triggers");
+
+        let insert = |conn: &Connection, id: u8, first: i64, last: i64, ordinal: i64| {
+            conn.execute(
+                "INSERT INTO sync_voids (void_id, first, last, ordinal, origin)
+                 VALUES (?1, ?2, ?3, ?4, 'seeded')",
+                rusqlite::params![vec![id; 32], first, last, ordinal],
+            )
+        };
+        insert(&conn, 1, 2, 3, 1).unwrap();
+        insert(&conn, 2, 5, 6, 2).unwrap();
+        assert!(insert(&conn, 3, 8, 9, 4).is_err(), "a gap in the ordinals");
+        assert!(insert(&conn, 3, 8, 9, 2).is_err(), "a repeated ordinal");
+        assert!(insert(&conn, 3, 6, 9, 3).is_err(), "overlapping ranges");
+        assert!(insert(&conn, 3, 4, 4, 3).is_err(), "a range below the last");
+        assert!(
+            insert(&conn, 3, 9, 8, 3).is_err(),
+            "a range that runs backwards"
+        );
+        insert(&conn, 1, 7, 9, 3).unwrap();
+        assert!(conn
+            .execute("UPDATE sync_voids SET origin = 'honored'", [])
+            .is_err());
+        assert!(conn.execute("DELETE FROM sync_voids", []).is_err());
+
+        conn.execute(
+            "INSERT INTO sync_position (singleton, snapshot_root, next_to_apply) VALUES (1, 10, 11)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO sync_position (singleton, snapshot_root, next_to_apply)
+                 VALUES (1, 10, 11)",
+                []
+            )
+            .is_err(),
+            "one row"
+        );
+        conn.execute("UPDATE sync_position SET next_to_apply = 15", [])
+            .unwrap();
+        assert!(conn
+            .execute("UPDATE sync_position SET next_to_apply = 14", [])
+            .is_err());
+        assert!(conn
+            .execute("UPDATE sync_position SET snapshot_root = 11", [])
+            .is_err());
+        assert!(conn
+            .execute("UPDATE sync_position SET snapshot_root = NULL", [])
+            .is_err());
+        assert!(conn.execute("DELETE FROM sync_position", []).is_err());
+        let origin = conn.execute(
+            "UPDATE sync_position SET next_to_apply = 15 WHERE singleton = 1",
+            [],
+        );
+        assert!(origin.is_ok(), "an unchanged cursor is not a move back");
+
+        // 70, 71 and 72 (`sync_artifacts`, `sync_notices`, the outbox rebuild) sit above 69: stepping to 68 reverts all four.
+        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 4);
+        assert!(
+            objects(&conn).is_empty(),
+            "down drops both tables and every trigger"
+        );
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(objects(&conn).len(), 8);
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_voids", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    /// 70 adds the device-local artifact mapping; down drops it with its indexes, and up creates it
+    /// again empty.
+    #[test]
+    fn v70_down_drops_the_artifact_mapping_and_up_creates_it_empty() {
+        let objects = |conn: &Connection| -> Vec<String> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE name LIKE '%sync_artifacts%'
+                       AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(
+            objects(&conn),
+            [
+                "idx_sync_artifacts_logical",
+                "idx_sync_artifacts_staged_storage",
+                "sync_artifacts"
+            ]
+        );
+        // 71 (`sync_notices`) and 72 (the outbox rebuild) sit above 70: stepping to 69 reverts all three.
+        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 3);
+        assert!(objects(&conn).is_empty());
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_artifacts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    /// The mapping's CHECKs: an attachment has no part, a part has an index inside its count, and
+    /// the staged crypto fields are all present on an attachment or all absent.
+    #[test]
+    fn the_artifact_mapping_refuses_a_row_that_is_not_one_of_its_two_shapes() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        // `n` makes the address unique; `staged` is the five-part crypto set or all NULLs.
+        let insert = |n: u8, id_len: usize, kind: i64, part: (&str, &str), staged: &str| {
+            conn.execute(
+                &format!(
+                    "INSERT INTO sync_artifacts
+                         (key_epoch, sync_artifact_id, ciphertext_sha256, kind, logical_id,
+                          part_index, part_count, staged_storage_id, staged_wrapped_content_key,
+                          staged_content_key_nonce, staged_content_nonce, staged_content_alg,
+                          staged_plaintext_size)
+                     VALUES (1, x'{}', zeroblob(32), {kind}, zeroblob(16), {}, {}, {staged})",
+                    format!("{n:02x}").repeat(id_len),
+                    part.0,
+                    part.1
+                ),
+                [],
+            )
+        };
+        const NONE: &str = "NULL, NULL, NULL, NULL, NULL, NULL";
+        const STAGED: &str = "'sb', x'aa', x'00', x'01', 'AES-256-GCM', 5";
+
+        // The two shapes: an attachment with no part, and a batch part inside its count.
+        assert!(insert(1, 32, 1, ("NULL", "NULL"), NONE).is_ok());
+        assert!(insert(2, 32, 2, ("0", "3"), NONE).is_ok());
+        assert!(insert(3, 32, 2, ("2", "3"), NONE).is_ok(), "the last part");
+
+        // Refused: an attachment with a part, a part at or past its count, a part with no index or
+        // no count, a count of zero, a negative index, an unknown kind, a short address.
+        for (n, (id_len, kind, part)) in [
+            (32, 1, ("0", "1")),
+            (32, 2, ("3", "3")),
+            (32, 2, ("NULL", "3")),
+            (32, 2, ("0", "NULL")),
+            (32, 2, ("0", "0")),
+            (32, 2, ("-1", "3")),
+            (32, 3, ("NULL", "NULL")),
+            (31, 1, ("NULL", "NULL")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(
+                insert(10 + n as u8, id_len, kind, part, NONE).is_err(),
+                "kind {kind}, part {part:?}, id length {id_len}"
+            );
+        }
+
+        // Staged crypto fields: all present on an attachment is fine; some missing, or on a batch
+        // part, is not; and a staged storage id names one blob.
+        assert!(insert(20, 32, 1, ("NULL", "NULL"), STAGED).is_ok());
+        assert!(
+            insert(
+                21,
+                32,
+                1,
+                ("NULL", "NULL"),
+                &STAGED.replace("x'aa'", "NULL")
+            )
+            .is_err(),
+            "a storage id with no key"
+        );
+        assert!(
+            insert(22, 32, 1, ("NULL", "NULL"), &STAGED.replace("'sb'", "NULL")).is_err(),
+            "a key with no storage id"
+        );
+        assert!(
+            insert(23, 32, 2, ("0", "1"), &STAGED.replace("'sb'", "'sc'")).is_err(),
+            "key material on a batch part"
+        );
+        assert!(
+            insert(24, 32, 1, ("NULL", "NULL"), STAGED).is_err(),
+            "two rows staged for one blob"
+        );
+        assert!(
+            insert(25, 32, 1, ("NULL", "NULL"), &STAGED.replace("'sb'", "'sd'")).is_ok(),
+            "another blob"
+        );
+
+        // Clearing the staging on its own is allowed (what the attach command's apply does).
+        let cleared = conn
+            .execute(
+                "UPDATE sync_artifacts SET staged_storage_id = NULL,
+                        staged_wrapped_content_key = NULL, staged_content_key_nonce = NULL,
+                        staged_content_nonce = NULL, staged_content_alg = NULL,
+                        staged_plaintext_size = NULL, staged_mime_type = NULL
+                  WHERE staged_storage_id = 'sb'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(cleared, 1);
+    }
+
+    /// 71 adds the device-local notice table; down drops it with its index, and up creates it
+    /// again empty. Its CHECKs refuse an unknown kind, a short batch id and a negative count.
+    #[test]
+    fn v71_down_drops_the_notice_table_and_up_creates_it_empty() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let insert = |kind: &str, batch_len: usize, count: i64| {
+            conn.execute(
+                &format!(
+                    "INSERT INTO sync_notices (kind, batch_id, source_name, discarded_count, created_at)
+                     VALUES ('{kind}', zeroblob({batch_len}), 'statement.csv', {count}, 't')"
+                ),
+                [],
+            )
+        };
+        assert!(insert("import_discarded", 16, 3).is_ok());
+        assert!(insert("import_discarded", 16, 0).is_ok());
+        assert!(insert("something_else", 16, 3).is_err());
+        assert!(insert("import_discarded", 15, 3).is_err());
+        assert!(insert("import_discarded", 16, -1).is_err());
+        // 72 (the outbox rebuild) sits above 71: stepping to 70 reverts both.
+        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 2);
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%sync_notices%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_notices", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    fn outbox_insert(
+        conn: &Connection,
+        id: u8,
+        state: &str,
+        sealed: &str,
+        bound_seq: &str,
+        result: &str,
+    ) -> rusqlite::Result<usize> {
+        conn.execute(
+            &format!(
+                "INSERT INTO sync_outbox
+                   (command_id, op_seq, state, write_set_keys, sealed_container, bound_seq,
+                    result_ref, created_at, issued_at)
+                 VALUES (x'000000000000000000000000000000{id:02x}', {id}, '{state}', zeroblob(0), {sealed},
+                         {bound_seq}, {result}, '2026-11-06T00:00:00Z', 5)"
+            ),
+            [],
+        )
+    }
+
+    /// 72: a `Bound` row may have no result, or a 1 to 64 byte one, and nothing else.
+    #[test]
+    fn v72_a_bound_row_has_no_result_or_a_one_to_sixty_four_byte_one() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+
+        outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "NULL").unwrap();
+        outbox_insert(&conn, 2, "Bound", "zeroblob(1)", "7", "zeroblob(1)").unwrap();
+        outbox_insert(&conn, 3, "Bound", "zeroblob(1)", "8", "zeroblob(64)").unwrap();
+        assert!(
+            outbox_insert(&conn, 4, "Bound", "zeroblob(1)", "9", "zeroblob(0)").is_err(),
+            "an empty result is a second encoding of none"
+        );
+        assert!(
+            outbox_insert(&conn, 5, "Bound", "zeroblob(1)", "9", "zeroblob(65)").is_err(),
+            "a 65 byte result is over the bound"
+        );
+        // The other states are unchanged: no result, no position.
+        outbox_insert(&conn, 6, "Pending", "NULL", "NULL", "NULL").unwrap();
+        outbox_insert(&conn, 7, "Approved", "zeroblob(1)", "NULL", "NULL").unwrap();
+        assert!(outbox_insert(&conn, 8, "Pending", "NULL", "NULL", "zeroblob(1)").is_err());
+        assert!(outbox_insert(&conn, 9, "Approved", "zeroblob(1)", "NULL", "zeroblob(1)").is_err());
+        assert!(outbox_insert(&conn, 10, "Bound", "zeroblob(1)", "NULL", "NULL").is_err());
+        assert!(outbox_insert(&conn, 11, "Bound", "NULL", "6", "NULL").is_err());
+        let none: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT result_ref FROM sync_outbox WHERE op_seq = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(none, None, "a Bound row with no result reads back as None");
+    }
+
+    /// Up and down with nothing the old shape cannot hold restores the old shape, and the rows.
+    #[test]
+    fn v72_down_restores_the_old_shape_and_keeps_the_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "zeroblob(2)").unwrap();
+        outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
+
+        assert_eq!(migrate_down(&mut conn, 71).unwrap(), 1);
+
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2, "down keeps the outbox rows");
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('sync_outbox') ORDER BY cid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            columns,
+            [
+                "command_id",
+                "op_seq",
+                "state",
+                "write_set_keys",
+                "sealed_container",
+                "bound_seq",
+                "result_ref",
+                "created_at",
+                "issued_at"
+            ]
+        );
+        // The old check is back: a Bound row needs a result.
+        assert!(outbox_insert(&conn, 3, "Bound", "zeroblob(1)", "7", "NULL").is_err());
+        outbox_insert(&conn, 4, "Bound", "zeroblob(1)", "7", "zeroblob(1)").unwrap();
+
+        // And up again carries the rows over.
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 3);
+        outbox_insert(&conn, 5, "Bound", "zeroblob(1)", "8", "NULL").unwrap();
+    }
+
+    /// Down refuses, and changes nothing, while a `Bound` row has no result: it never invents one.
+    #[test]
+    fn v72_down_fails_closed_when_a_bound_row_has_no_result() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "NULL").unwrap();
+        outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
+
+        assert!(migrate_down(&mut conn, 71).is_err());
+
+        let applied: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 72",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1, "72 is still applied");
+        let rows: Vec<(i64, Option<Vec<u8>>)> = conn
+            .prepare("SELECT op_seq, result_ref FROM sync_outbox ORDER BY op_seq")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [(1, None), (2, None)],
+            "both rows untouched, no value invented"
+        );
+        // The new shape still stands.
+        outbox_insert(&conn, 3, "Bound", "zeroblob(1)", "7", "NULL").unwrap();
+    }
+
+    /// An upgrade carries a row the old shape could only have meant "no result" for, an empty
+    /// `result_ref`, over as NULL, and keeps every other row as it was.
+    #[test]
+    fn v72_up_carries_an_empty_result_over_as_none() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..71]).unwrap();
+        outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "zeroblob(0)").unwrap();
+        outbox_insert(&conn, 2, "Bound", "zeroblob(1)", "7", "zeroblob(3)").unwrap();
+
+        apply(&mut conn, MIGRATIONS).unwrap();
+
+        let rows: Vec<(i64, Option<Vec<u8>>)> = conn
+            .prepare("SELECT op_seq, result_ref FROM sync_outbox ORDER BY op_seq")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, [(1, None), (2, Some(vec![0, 0, 0]))]);
     }
 
     fn hex_upper(bytes: &[u8]) -> String {

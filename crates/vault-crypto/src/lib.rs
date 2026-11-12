@@ -35,6 +35,7 @@ pub mod released;
 pub mod secret;
 pub mod sync;
 pub mod sync_artifact;
+pub mod sync_artifact_flow;
 pub mod sync_counter;
 pub mod sync_custody;
 pub mod sync_envelope;
@@ -42,6 +43,7 @@ pub mod sync_keys;
 pub mod sync_keyset;
 pub mod sync_records;
 pub mod sync_snapshot;
+pub mod sync_snapshot_flow;
 
 pub use attachment::{
     decrypt_blob, encrypt_blob, generate_content_key, storage_id, unwrap_content_key,

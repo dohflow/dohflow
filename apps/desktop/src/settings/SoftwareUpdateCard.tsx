@@ -10,6 +10,9 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
+import { useAttemptCount, useReannounced } from "./attemptKey";
+import { PersistentNotice } from "./PersistentSlot";
+import { useKeepFocusAcrossMove } from "./useKeepFocusAcrossMove";
 import { hasUpdate, isDevUpdate, isReleaseUpdate, useSoftwareUpdate } from "./useSoftwareUpdate";
 
 /// A readable build stamp ("Jul 20, 2026, 14:32"), or null when unparseable.
@@ -43,17 +46,28 @@ export function SoftwareUpdateCard() {
     useSoftwareUpdate();
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
+  // Each settled attempt that fails clears and restores its alert text, so an identical repeat is
+  // announced again (the error is kept on screen through the retry).
+  const [applyAttempt, nextApplyAttempt] = useAttemptCount();
+  const applyAlert = useReannounced(applyError, applyAttempt);
+  // Check and Update each move between the body and the persistent slot (rendered once, wherever
+  // the error needs them), so each keeps focus across the move.
+  const checkFocus = useKeepFocusAcrossMove({ settled: !checking });
+  const updateFocus = useKeepFocusAcrossMove({ settled: !applying });
 
   async function onUpdate() {
+    updateFocus.remember();
     setApplying(true);
-    setApplyError(null);
+    // An earlier failure stays, with its Update & relaunch, until this try settles.
     const result = await apply();
     if (result.ok) {
+      setApplyError(null);
       // Relaunch quits this instance and reopens the new build — this never returns.
       await relaunch();
     } else {
       setApplying(false);
       setApplyError(result.message);
+      nextApplyAttempt();
     }
   }
 
@@ -64,6 +78,48 @@ export function SoftwareUpdateCard() {
   const dev = isDevUpdate(status) ? status : null;
   const release = isReleaseUpdate(status) ? status : null;
   const offline = release && !release.checked && release.error && looksOffline(release.error);
+
+  // An error, its full message and its one recovery action stay in the section's persistent slot,
+  // open or closed; the action is rendered once, there while the error shows, else in the body.
+  // A failed check recovers with Check for updates, a failed install with Update & relaunch.
+  const checkFailed = (dev !== null && !dev.checked) || (release !== null && !release.checked);
+  const updateFailed = hasUpdate(status) && applyError !== null;
+  const checkButton = (
+    <Button
+      ref={checkFocus.ref}
+      variant="outline"
+      size="sm"
+      className="self-start"
+      onClick={() => {
+        checkFocus.remember();
+        void check();
+      }}
+      disabled={checking || applying}
+    >
+      {checking ? <Loader2 className="animate-spin" aria-hidden /> : <RotateCw aria-hidden />}
+      {checking ? "Checking…" : "Check for updates"}
+    </Button>
+  );
+  const updateButton = (
+    <Button
+      ref={updateFocus.ref}
+      size="sm"
+      className="self-start"
+      onClick={() => void onUpdate()}
+      disabled={applying}
+    >
+      {applying ? <Loader2 className="animate-spin" aria-hidden /> : <Download aria-hidden />}
+      {applying
+        ? progress?.phase === "installing"
+          ? "Installing…"
+          : progress?.phase === "downloading" && typeof progress.percent === "number"
+            ? `Downloading… ${progress.percent}%`
+            : progress?.phase === "downloading"
+              ? "Downloading…"
+              : "Updating…"
+        : "Update & relaunch"}
+    </Button>
+  );
 
   return (
     <Card>
@@ -111,24 +167,6 @@ export function SoftwareUpdateCard() {
             </div>
           )}
         </div>
-
-        {offline && (
-          <div className="flex items-center gap-2 rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">
-            <CloudOff className="size-4 shrink-0" aria-hidden />
-            Couldn't reach the update server. Check your connection and try again.
-          </div>
-        )}
-
-        {dev && !dev.checked && (
-          <p className="rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">
-            {dev.error ?? "Couldn't check for updates."}
-          </p>
-        )}
-        {release && !release.checked && !offline && (
-          <p className="rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">
-            {release.error ?? "Couldn't check for updates."}
-          </p>
-        )}
 
         {dev?.checked && dev.up_to_date && (
           <div className="flex items-center gap-2 text-sm text-gain">
@@ -193,28 +231,7 @@ export function SoftwareUpdateCard() {
                 {release.notes}
               </p>
             )}
-            <Button
-              size="sm"
-              className="self-start"
-              onClick={() => void onUpdate()}
-              disabled={applying}
-            >
-              {applying ? (
-                <Loader2 className="animate-spin" aria-hidden />
-              ) : (
-                <Download aria-hidden />
-              )}
-              {applying
-                ? progress?.phase === "installing"
-                  ? "Installing…"
-                  : progress?.phase === "downloading" &&
-                      typeof progress.percent === "number"
-                    ? `Downloading… ${progress.percent}%`
-                    : progress?.phase === "downloading"
-                      ? "Downloading…"
-                      : "Updating…"
-                : "Update & relaunch"}
-            </Button>
+            {!updateFailed && updateButton}
             {applying && (
               <p className="text-xs text-muted-foreground">
                 {dev
@@ -222,13 +239,33 @@ export function SoftwareUpdateCard() {
                   : "The update downloads, its signature is verified, then the app installs it and relaunches."}
               </p>
             )}
-            {applyError && (
+          </div>
+        )}
+
+        <PersistentNotice>
+          {checkFailed && (
+            <div className="flex flex-col gap-2">
+              {offline ? (
+                <div className="flex items-center gap-2 rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">
+                  <CloudOff className="size-4 shrink-0" aria-hidden />
+                  Couldn't reach the update server. Check your connection and try again.
+                </div>
+              ) : (
+                <p className="rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">
+                  {(dev ?? release)?.error ?? "Couldn't check for updates."}
+                </p>
+              )}
+              {checkButton}
+            </div>
+          )}
+          {updateFailed && (
+            <div className="flex flex-col gap-2">
               <div
                 role="alert"
                 className="flex flex-col gap-1 rounded-md bg-warning/10 p-2 text-xs text-warning"
               >
                 <p className="font-medium">The update didn't complete.</p>
-                <pre className="whitespace-pre-wrap font-mono">{applyError}</pre>
+                <pre className="whitespace-pre-wrap font-mono">{applyAlert}</pre>
                 {dev && (
                   <p>
                     You can also run{" "}
@@ -237,24 +274,11 @@ export function SoftwareUpdateCard() {
                   </p>
                 )}
               </div>
-            )}
-          </div>
-        )}
-
-        <Button
-          variant="outline"
-          size="sm"
-          className="self-start"
-          onClick={() => void check()}
-          disabled={checking || applying}
-        >
-          {checking ? (
-            <Loader2 className="animate-spin" aria-hidden />
-          ) : (
-            <RotateCw aria-hidden />
+              {updateButton}
+            </div>
           )}
-          {checking ? "Checking…" : "Check for updates"}
-        </Button>
+        </PersistentNotice>
+        {!checkFailed && checkButton}
       </CardContent>
     </Card>
   );

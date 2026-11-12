@@ -66,7 +66,8 @@ The key words MUST, MUST NOT, SHOULD and MAY are used as in
 - `{vault_id}`, `{device_id}` and `{snapshot_id}` are UUIDs in lowercase,
   hyphenated text. `{artifact_id}` is a `sync_artifact_id` as 64 lowercase hex
   characters. `{part_number}` is an unsigned decimal in the syntax of section 2.2
-  (`0|[1-9][0-9]*`), from `1` to `10000`.
+  (`0|[1-9][0-9]*`), from `1` to `10000`. Path forms are checked by routing before
+  the credential is read; a malformed path is `MalformedRequest`.
 - Request and response bodies are `application/json` (UTF-8) except where an
   operation says `application/octet-stream`, which carries one container exactly
   as defined in `vault-format.md` (`DFSY` for envelopes and snapshots, `DFSA`
@@ -116,8 +117,12 @@ credential, and a server MAY implement either with any opaque token format:
   entitlement) is outside this protocol; the DohFlow desktop client obtains it
   through a system-browser sign-in (ADR 0004 section 4). It is
   accepted only by `claimCredential`, and, **before the vault's genesis is
-  installed**, by `stageSnapshot`, `putArtifact` and `installEpoch` (`reason 1`),
-  because no device credential exists yet.
+  installed**, by `stageSnapshot`, `stageSnapshotClosure` (4.14), the four
+  operations that stage in parts (4.13: `beginSnapshotUpload`, `putSnapshotPart`,
+  `completeSnapshotUpload` and `abortSnapshotUpload`), `putArtifact` and
+  `installEpoch` (`reason 1`), because no device credential exists yet. (A vault
+  whose first snapshot has more than 4096 artifacts is founded by staging its closure
+  under the account credential, so that operation has to be on this list.)
 - A **device credential** is scoped to one device of one vault and is returned
   by `claimCredential`. It is accepted by every other authenticated operation,
   and by all of them once the genesis is installed.
@@ -218,6 +223,8 @@ authenticated operation can also return the common errors of section 8.2.
 | `publishSnapshot` | POST | `/vaults/{vault_id}/snapshots/{snapshot_id}/publish` | device | 200 | VaultNotFound, ReplicaHalted, WritesSuspended, SnapshotNotFound, MalformedObject, EpochRejected, HeadMismatch, ArtifactMissing, QuotaExceeded |
 | `getLatestSnapshot` | GET | `/vaults/{vault_id}/snapshots/latest` | device | 200 | VaultNotFound, SnapshotNotFound |
 | `getSnapshot` | GET | `/vaults/{vault_id}/snapshots/{snapshot_id}` | device | 200 | VaultNotFound, SnapshotNotFound |
+| `stageSnapshotClosure` | PUT | `/vaults/{vault_id}/snapshots/{snapshot_id}/closure` | account/device | 201/200 | VaultNotFound, ReplicaHalted, WritesSuspended, SnapshotNotFound, SnapshotTooLarge, MalformedObject, QuotaExceeded |
+| `getSnapshotClosure` | GET | `/vaults/{vault_id}/snapshots/{snapshot_id}/closure` | device | 200 | VaultNotFound, SnapshotNotFound |
 | `putArtifact` | PUT | `/vaults/{vault_id}/artifacts/{artifact_id}` | account/device | 201/200 | VaultNotFound, WritesSuspended, MalformedObject, EpochRejected, ObjectConflict, PayloadTooLarge, QuotaExceeded |
 | `getArtifact` | GET | `/vaults/{vault_id}/artifacts/{artifact_id}` | device | 200 | VaultNotFound, ArtifactNotFound |
 | `getArtifactStatus` | POST | `/vaults/{vault_id}/artifacts/status` | device | 200 | VaultNotFound |
@@ -348,7 +355,13 @@ check 7). `artifact_manifest` is the snapshot's full closure sidecar: the
 ordered list of `sync_artifact_id` values whose commitment is the snapshot
 header's `artifact_manifest_commitment` (`vault-format.md` C.3); it is required
 when `snapshot_id` is present and empty otherwise. The snapshot MUST have been
-staged first with `stageSnapshot`.
+staged first with `stageSnapshot`. **A closure of more than 4096 ids is not sent
+here** (`max_artifact_manifest_ids`): it is staged with `stageSnapshotClosure`
+(section 4.14) before this call, and this request then carries an empty
+`artifact_manifest` (a non-empty one beside a staged closure is `MalformedRequest`).
+The closure the server checks is the staged one if the snapshot has one and the list
+in the request otherwise, and the check is the same exact one in both cases (section 6.1
+step 8).
 
 On success the server has, in one transaction: installed the membership record
 (when present) and the epoch record naming it; published the snapshot (when
@@ -372,7 +385,9 @@ makes a lost response safe. Any different record at an occupied position is a
 rejection (section 6), never an overwrite.
 
 `ArtifactMissing` from `installEpoch` carries `{ "key_epoch": "4", "missing":
-["<64 hex>"] }`, the closure ids that lack a durable receipt. The service
+["<64 hex>"] }`, the closure ids that lack a durable receipt: all of them when
+there are at most 4096, and otherwise the first 4096 in ascending order, so a
+client uploads those and calls again (a closure can hold 2^20 ids, section 4.14). The service
 performs every check of section 6.1 that it can perform on public data. It cannot unseal the keys, so it relies on the client to verify them
 (`vault-format.md` C.6, "Sealing the key set").
 
@@ -552,6 +567,27 @@ is two steps, to keep a large upload out of the compare-and-swap:
    7.2) is `PayloadTooLarge` here, with `details.single_request_max_bytes`, and is
    staged through the upload operations of section 4.13 instead; the result, a
    staged snapshot, is the same.
+
+   **The order of decision.** The first failing step answers, and none of steps 1
+   to 3 changes anything. The operations of 4.13 and 4.14 that also stage a
+   snapshot follow the same shape.
+   1. **Authenticate from the credential alone:** `Unauthorized`, `DeviceRevoked`,
+      and any `Forbidden` that the credential itself decides.
+   2. **The checks that need no vault state,** made from the headers and the first
+      bytes of the body: the media type and the declared length (`MalformedRequest`),
+      the clear header (`MalformedObject`, `UnsupportedSuite`), the plaintext bound
+      (`SnapshotTooLarge`) and the single-request limit (`PayloadTooLarge`). A
+      request that fails here has not touched the vault, and does not bind a
+      `vault_id` to an account (section 2.4).
+   3. **The authorization that needs the vault:** `Forbidden` for an account
+      credential once the genesis is installed, for an account that is not the
+      household's primary member, and for the account of another household; then
+      **the halt gate** of section 4.12 (`ReplicaHalted`).
+   4. **The rest,** in the order the checks above describe them: that the header
+      names the credential's device and an epoch in force or the next
+      (`MalformedObject`, `EpochRejected`), writes (`WritesSuspended`), the nonce
+      record and the snapshot id (`NonceTupleReused`, `ObjectConflict`), the quota
+      (`QuotaExceeded`), and the bytes as stored.
 2. `publishSnapshot`: `POST /vaults/{vault_id}/snapshots/{snapshot_id}/publish`:
 
    ```json
@@ -567,13 +603,20 @@ is two steps, to keep a large upload out of the compare-and-swap:
    returns the original result. Response `200`:
    `{ "snapshot_id": "<uuid>", "base_seq": "1000", "key_epoch": "3" }`.
 
+   As for `installEpoch` (section 4.4), a closure of more than 4096 ids is staged
+   first with `stageSnapshotClosure` (section 4.14) and this request then carries an
+   empty `artifact_manifest`.
+
    A snapshot that starts a new key epoch (genesis, cutover, forced rotation) is
    published only by `installEpoch`, never by `publishSnapshot`
    (`EpochRejected`).
 
 `getLatestSnapshot` (`GET /vaults/{vault_id}/snapshots/latest`) returns the
 metadata of the newest published snapshot, `{ "snapshot_id", "base_seq",
-"key_epoch", "size", "artifact_manifest": [...] }`. `getSnapshot` returns a
+"key_epoch", "size", "artifact_count", "artifact_manifest": [...] }`. `artifact_count`
+is the number of ids in the closure, a decimal string. `artifact_manifest` lists them
+(ascending) when there are at most 4096 and is `null` otherwise, and the client then
+reads the closure with `getSnapshotClosure` (section 4.14). `getSnapshot` returns a
 retained snapshot's container bytes (`application/octet-stream`); the client
 verifies the AEAD and the sidecar's commitment itself. A snapshot that is no
 longer retained is `SnapshotNotFound`. Staged snapshots are not returned.
@@ -748,13 +791,15 @@ device reports `null` (it honored a void and resumes, or it re-bootstrapped), or
 when the device is revoked.
 
 **The halt gate.** A device credential whose device has a recorded halt is refused
-by `stageSnapshot`, `publishSnapshot` and `installEpoch` with `ReplicaHalted`
+by `stageSnapshot`, `stageSnapshotClosure`, `publishSnapshot` and `installEpoch` with `ReplicaHalted`
 (HTTP 409), `details: { "stopped_at": "1003" }`. The refusal changes nothing
 (section 2.5), applies to every `reason` of `installEpoch`, and is a statement
 about that device's own report, never an instruction to change any local feature.
-The gate runs after authentication and before the operation's own decision
-procedure; it is not a step of section 5 or 6, and a vault with no recorded halt
-passes it, so those procedures run exactly as written. An account credential
+The gate runs after authentication, after the checks that need no vault state and
+after the vault-side `Forbidden` of the operation (section 4.9, step 3), and before
+the decisions that read the vault's state (the snapshot's presence, an exact retry,
+writes, the quota); it is not a step of section 5 or 6, and a vault with no
+recorded halt passes it, so those procedures run exactly as written. An account credential
 (before the genesis) has no device and passes. `pushEnvelopes` has no gate, since
 the replica holds back its own pushes (Addendum D rule 5), and `appendVoid` and
 `reportHalt` must work for a halted device, because they are how it leaves. The
@@ -794,7 +839,7 @@ implemented on any of them.)
 **`beginSnapshotUpload`:** `POST /vaults/{vault_id}/snapshots/{snapshot_id}/uploads`
 
 ```json
-{ "size": "1073742104", "sha256": "<64 hex>", "part_size": "67108864" }
+{ "size": "1073742137", "sha256": "<64 hex>", "part_size": "67108864" }
 ```
 
 `size` is the exact length of the whole container in bytes and `sha256` is the
@@ -808,14 +853,19 @@ SHA-256 of all of it. Response `201`, or `200` for an exact retry:
 `sha256` is already staged (then `next_part` and `expires_at` are `null` and nothing
 more is sent). The server decides in this order, and the first failing step answers:
 
-1. **Authenticate** (`Unauthorized`, `DeviceRevoked`, `Forbidden`).
-2. **The halt gate** of section 4.12 (`ReplicaHalted`): this operation stages a
-   snapshot like `stageSnapshot`, so a device with a recorded halt is refused.
-3. **Parse** the body (`MalformedRequest`): `size` a positive 64-bit decimal,
+1. **Authenticate from the credential alone** (`Unauthorized`, `DeviceRevoked`, and
+   any `Forbidden` the credential itself decides).
+2. **Parse** the body (`MalformedRequest`): `size` a positive 64-bit decimal,
    `sha256` 64 lowercase hex characters, `part_size` a 64-bit decimal.
-4. **Size.** `size` above `max_snapshot_container_bytes` is `SnapshotTooLarge`.
+3. **Size.** `size` above `max_snapshot_container_bytes` is `SnapshotTooLarge`.
    A `part_size` above `snapshot_part_max_bytes` is `PayloadTooLarge`; one below
    5,242,880, or giving more than 10,000 parts, is `MalformedRequest`.
+4. **The authorization that needs the vault,** as in section 4.9, step 3:
+   `Forbidden` for an account credential once the genesis is installed, for an
+   account that is not the household's primary member and for the account of
+   another household; then **the halt gate** of section 4.12 (`ReplicaHalted`):
+   this operation stages a snapshot like `stageSnapshot`, so a device with a
+   recorded halt is refused.
 5. **Exact retry.** An upload in progress for this `snapshot_id` with the same
    `size`, `sha256` and `part_size` answers `200` with its state; a staged or
    published snapshot with the same `size` and `sha256` answers `200` with
@@ -831,43 +881,51 @@ the part as `application/octet-stream`. `{part_number}` is a decimal from `1`.
 Parts are sent in order, one at a time. Response `201`, or `200` for a retry:
 `{ "part_number": "3", "next_part": "4" }` (`null` after the last). The order:
 
-1. **Authenticate**, then **the halt gate** (`ReplicaHalted`).
-2. **Forms.** A `{part_number}` that is not a decimal in `1` to `10000` is
-   `MalformedRequest`.
-3. **The upload exists** for this `snapshot_id`: `UploadNotFound` (never begun,
+1. **Authenticate from the credential alone** (`Unauthorized`, `DeviceRevoked`, and
+   any `Forbidden` the credential itself decides).
+2. **Forms.** A body that is not `application/octet-stream`, or that declares no
+   length, is `MalformedRequest`. (A `{part_number}` that is not a decimal in `1`
+   to `10000` never gets here: routing refuses it first, section 2.1.)
+3. **The authorization that needs the vault,** as in section 4.9, step 3:
+   `Forbidden`, then **the halt gate** (`ReplicaHalted`).
+4. **The upload exists** for this `snapshot_id`: `UploadNotFound` (never begun,
    aborted, expired, discarded after a failed completion, or already completed).
-4. **Sequence.** A part already received (`part_number` below `next_part`) with the
+5. **Sequence.** A part already received (`part_number` below `next_part`) with the
    same length and bytes answers `200`; with other bytes it is `ObjectConflict`. A
    `part_number` above `next_part`, or above `part_count`, is `PartOutOfSequence`
    with `details.next_part`.
-5. **Writes permitted?** `WritesSuspended`.
-6. **Size.** A body longer than `snapshot_part_max_bytes` is `PayloadTooLarge`; one
+6. **Writes permitted?** `WritesSuspended`.
+7. **Size.** A body longer than `snapshot_part_max_bytes` is `PayloadTooLarge`; one
    whose length is not exactly the size this part must have (`part_size`, or the
    remainder for the last part) is `MalformedObject`.
-7. **The header, on part 1 only.** Part 1 holds the whole clear header. The server
+8. **The header, on part 1 only.** Part 1 holds the whole clear header. The server
    checks it as `stageSnapshot` does (`MalformedObject`, `UnsupportedSuite`,
    `EpochRejected`), and refuses the upload before any more is sent. A refused part
    1 leaves the upload at `next_part` `1`.
-8. **Store** the part and advance `next_part`.
+9. **Store** the part and advance `next_part`.
 
 **`completeSnapshotUpload`:** `POST /vaults/{vault_id}/snapshots/{snapshot_id}/uploads/complete`
 with an empty JSON object. Response `201`, or `200` for a retry, the same as
 `stageSnapshot`'s: `{ "snapshot_id": "<uuid>", "size": "n" }`. **Nothing counts as
 staged until the whole container has been checked.** The order:
 
-1. **Authenticate**, then **the halt gate** (`ReplicaHalted`).
-2. **The upload exists, or this is a retry.** A snapshot already staged from this
+1. **Authenticate from the credential alone** (`Unauthorized`, `DeviceRevoked`, and
+   any `Forbidden` the credential itself decides).
+2. **Forms.** The body is the empty JSON object (`MalformedRequest`, section 2.2).
+3. **The authorization that needs the vault,** as in section 4.9, step 3:
+   `Forbidden`, then **the halt gate** (`ReplicaHalted`).
+4. **The upload exists, or this is a retry.** A snapshot already staged from this
    upload answers `200` with its original result; no upload and no such snapshot is
    `UploadNotFound`.
-3. **Writes permitted?** `WritesSuspended`.
-4. **All parts received:** otherwise `UploadIncomplete` with `details.next_part`.
-5. **The container.** The assembled length must equal `size` and its SHA-256 must
+5. **Writes permitted?** `WritesSuspended`.
+6. **All parts received:** otherwise `UploadIncomplete` with `details.next_part`.
+7. **The container.** The assembled length must equal `size` and its SHA-256 must
    equal `sha256`; otherwise `MalformedObject`, and the server **discards the
    upload** (the client begins again): a mismatch means the bytes sent are not the
    container that was declared, and no part of it is kept.
-6. **The epoch.** The header's `key_epoch` is checked again against the epoch in
+8. **The epoch.** The header's `key_epoch` is checked again against the epoch in
    force now, since it can have changed during a long upload: `EpochRejected`.
-7. **Stage** the snapshot, turn the reservation of `size` into stored bytes, and
+9. **Stage** the snapshot, turn the reservation of `size` into stored bytes, and
    answer `201`.
 
 **`abortSnapshotUpload`:** `DELETE /vaults/{vault_id}/snapshots/{snapshot_id}/uploads`.
@@ -879,6 +937,76 @@ the halt gate does not apply to it, so a halted device can clean up.
 An upload that is not completed within `snapshot_upload_expiry_seconds` is aborted
 by the server (section 7.3). Until completion the parts count toward `usage` only
 through the reservation.
+
+### 4.14 The snapshot closure sidecar
+
+*Added to protocol version 1 on 2026-11-06 (`personal-cfo-v98vd` AC30; section 11.4
+lists it).*
+
+A snapshot's **closure** is every artifact id it references (`vault-format.md` C.3,
+C.4 field 17, C.8). It holds at most **2^20** ids (`max_snapshot_closure_ids`,
+section 7.1); an envelope's delta and a status request stay at 4096
+(`max_artifact_manifest_ids`). Written as the JSON lists of sections 4.4 and 4.9, a
+closure of 2^20 ids is about 70 MB (each id is 64 hex characters, two quotes and a
+comma), nearly three times the 24 MiB every server must accept as JSON (7.1), and a
+server would have to parse all of it into memory before it could check anything. So
+a closure of more than 4096 ids travels as **its own octet-stream object**, staged
+with the snapshot and before it is published; a closure of 4096 or fewer MAY use
+either form.
+
+**The body.** The ids' 32 raw bytes each, in strictly ascending byte order, with no
+count, no separator and no framing: its length is 32 times the number of ids, at most
+**33,554,432 bytes** (`max_snapshot_closure_bytes`, section 7.1), which every server
+MUST accept in one request. Raw bytes are half the size of hex, and the same strict
+rules as the JSON lists apply: a body that is not in strictly ascending order, or
+repeats an id, is refused and never put in order for the sender. The public vectors
+`docs/architecture/vectors/closure-sidecar-v1.json` pin this, with the empty closure,
+4096 and 4097 ids, 2^20 ids and one more, a length that is not whole ids, and a body
+out of order.
+
+**`stageSnapshotClosure`:** `PUT /vaults/{vault_id}/snapshots/{snapshot_id}/closure`,
+the body as `application/octet-stream` with a `Content-Length`. Like `stageSnapshot`
+it accepts an account credential before the vault's genesis is installed and a device
+credential after it. The server decides in this order, and the first failing step
+answers. **Steps 1 to 4 are decided from the headers and the server's state alone, before
+any byte of the body is read,** so a refused request costs the server no more than its
+headers did.
+
+1. **Authenticate from the credential alone** (`Unauthorized`, `DeviceRevoked`, and any
+   `Forbidden` the credential itself decides).
+2. **The length**, from `Content-Length` before any byte is read. A request with no
+   `Content-Length`, or one sent with a chunked `Transfer-Encoding`, is
+   `MalformedRequest`: the length is what lets a server refuse an over-long body unread.
+   More than `max_snapshot_closure_bytes` is `SnapshotTooLarge` (HTTP 413, the closure
+   holds more than 2^20 ids); a length that is not a multiple of 32 is `MalformedObject`.
+3. **The vault, then the snapshot.** First the authorization that needs the vault, as in
+   section 4.9, step 3: `Forbidden` for an account credential once the genesis is installed,
+   for an account that is not the household's primary member and for the account of another
+   household; then **the halt gate** of section 4.12 (`ReplicaHalted`): this operation
+   stages a snapshot. Then the snapshot: it MUST have been staged (or already be published or
+   retained), else `SnapshotNotFound`. A snapshot that is staged keeps its closure; one that
+   was dropped is not there.
+4. **Writes permitted?** `WritesSuspended`.
+5. **The content.** The ids are strictly ascending (`MalformedObject`), and the
+   closure commitment of `vault-format.md` C.3 over them, computed by the server, equals
+   the `artifact_manifest_commitment` in the staged snapshot's clear header
+   (`MalformedObject`). Nothing is stored for a body that fails, and a request that fails changes
+   nothing for a snapshot that is already published.
+6. **Quota.** `QuotaExceeded`.
+7. **Store** the body with the snapshot and answer `201`, or `200` for a snapshot that
+   already holds this closure (the commitment fixes the list, so a retry is always the
+   same bytes). Response: `{ "snapshot_id": "<uuid>", "artifact_count": "1048576" }`.
+
+The commitment check is the exact one of `installEpoch` step 8 and of
+`publishSnapshot`, made once here and again when the snapshot is published or
+installed, from the stored bytes. A snapshot with no staged closure has the list in
+the `publishSnapshot` or `installEpoch` request, as before.
+
+**`getSnapshotClosure`:** `GET /vaults/{vault_id}/snapshots/{snapshot_id}/closure`
+returns a retained snapshot's closure in the same body, whatever its size (a closure
+that was sent as a JSON list is returned in this form too), with `SnapshotNotFound`
+for a snapshot that is not retained. The client checks the commitment against the
+header itself. A staged snapshot's closure is not returned.
 
 ## 5. Push: the compare-and-swap and retry procedure
 
@@ -1017,7 +1145,10 @@ failure answers:
    (`SnapshotNotFound`), its header MUST agree with the record (`vault_id`, the
    epoch's `key_epoch`, `object_type 2`, the sidecar's commitment:
    `MalformedObject`), and every closure id MUST have a durable receipt at the
-   new `key_epoch` (`ArtifactMissing`).
+   new `key_epoch` (`ArtifactMissing`). The sidecar is the closure staged with
+   `stageSnapshotClosure` if the snapshot has one (section 4.14), and the request's
+   `artifact_manifest` otherwise; either way the commitment is recomputed from the
+   ids, and `ArtifactMissing` lists at most the first 4096 missing ids (section 4.4).
 9. **Writes and quota.** `WritesSuspended`, `QuotaExceeded`.
 
 Then the transaction commits atomically (section 4.4).
@@ -1085,11 +1216,13 @@ They are derived from the field maxima of `vault-format.md` C.1.1 to C.9.
 
 | name | value | meaning |
 | --- | --- | --- |
-| `max_envelope_container_bytes` | 16909058 | largest well-formed `DFSY` envelope container |
-| `max_snapshot_container_bytes` | 1073742104 | largest well-formed `DFSY` snapshot container: plaintext at most 2^30, and a 246-byte header because header fields 7 and 8 are absent for a snapshot (2^30 + 280) |
+| `max_envelope_container_bytes` | 17040163 | largest well-formed `DFSY` envelope container: 2^24 payload, a delta manifest of 4096 items of 64 bytes (an id and its ciphertext hash), and a header that carries both manifest commitments (fields 17 and 18) |
+| `max_snapshot_container_bytes` | 1073742137 | largest well-formed `DFSY` snapshot container: plaintext at most 2^30, and a 279-byte header because header fields 7 and 8 are absent for a snapshot and fields 17 and 18 are both present (2^30 + 313) |
 | `max_membership_record_bytes` | 2300 | largest signed membership record |
 | `max_epoch_record_bytes` | 2421030 | largest signed epoch record (1024 recipients) |
-| `max_artifact_manifest_ids` | 4096 | ids in one manifest sidecar or one status request |
+| `max_artifact_manifest_ids` | 4096 | ids in one JSON manifest sidecar (an envelope's delta, or a snapshot's closure sent in a request) or one status request |
+| `max_snapshot_closure_ids` | 1048576 | ids in one snapshot closure (2^20), sent as the sidecar body of section 4.14 when it holds more than 4096 |
+| `max_snapshot_closure_bytes` | 33554432 | largest closure sidecar body: 2^20 ids of 32 bytes; every server accepts a `stageSnapshotClosure` request body this large |
 | `max_epoch_recipients` | 1024 | recipients in one epoch record |
 | `min_json_body_bytes` | 25165824 | every server accepts a JSON request body at least this large (one maximum envelope, base64url, and its sidecar) |
 | `claim_skew_seconds` | 300 | allowed clock difference for a `claimCredential` proof |
@@ -1139,6 +1272,8 @@ protocol-visible consequences:
   server, its parts are discarded and its reservation is released. The expiry is
   fixed when the upload begins (the rule above for announced windows). Seven days is
   the usual default of the object stores servers sit on.
+- **Closure sidecars.** The bytes of a staged closure (section 4.14) count toward
+  `usage` like any stored object, and are deleted with their snapshot.
 - **Collection.** An artifact is collectible only if no active or retained
   snapshot or tail pins it and a newer retained recovery root excludes it. An
   uploaded object that no accepted publication references is collected after
@@ -1194,7 +1329,7 @@ server can produce the failure. C.11 failures that only a client can detect
 | `ProtocolFork` | 409 | An identity matches an accepted envelope but not the whole of it. `details` names the command (section 4.6). Halt it; keep both envelopes. |
 | `NonceTupleReused` | 409 | The same nonce tuple arrived with different bytes. Never retried unchanged. |
 | `ObjectConflict` | 409 | Different bytes for an existing artifact address or snapshot id. |
-| `ArtifactMissing` | 409 | A manifest names an object with no durable receipt. `details.missing` lists the ids. Upload, then retry. |
+| `ArtifactMissing` | 409 | A manifest names an object with no durable receipt. `details.missing` lists the ids: all of them when there are at most 4096, otherwise the first 4096 in ascending order (a closure can hold 2^20 ids, section 4.14). Upload those, then retry; if more are missing the answer lists the next 4096. |
 | `AckBeyondHead` | 409 | The acked `seq` is above the head. |
 | `PartOutOfSequence` | 409 | A snapshot part other than the next one expected. `details.next_part` is the one to send. |
 | `UploadIncomplete` | 409 | A snapshot upload was completed before every part arrived. `details.next_part` is the first missing one. |
@@ -1299,7 +1434,11 @@ parts, the maximum and one byte over, the part-size bounds, a part of the wrong
 size or out of sequence, a retried part, a completion with a missing part or a digest
 that does not match, abort, the decision order of begin, part and complete, the halt
 gate, and a snapshot too large for one request), generated and checked by
-`crates/sync-core/tests/sync_service_snapshot_parts_vectors.rs`. The
+`crates/sync-core/tests/sync_service_snapshot_parts_vectors.rs`. `docs/architecture/vectors/closure-sidecar-v1.json` (`vectors_version` 1) pins the
+closure sidecar body of section 4.14 (the empty closure, 4096 and 4097 ids, 2^20 ids and
+one more, a length that is not whole ids, a body out of order or repeating an id, and the
+closure commitment of each accepted body), generated and checked by
+`crates/sync-core/tests/closure_sidecar.rs`. The
 behavioral contract suite is owned by `personal-cfo-v98vd`: the simulator's
 in-memory sequencer (`personal-cfo-tp2ln`) is the reference implementation, and
 one suite runs against it and against the real server. A disagreement between an
@@ -1327,6 +1466,10 @@ production deploy).
 | 2026-11-03 | `personal-cfo-g3m.36` | addition | Operations `beginSnapshotUpload`, `putSnapshotPart`, `completeSnapshotUpload` and `abortSnapshotUpload` (4.13), which stage a snapshot in parts; errors `UploadNotFound`, `PartOutOfSequence` and `UploadIncomplete`; the optional `getInfo` limits `snapshot_single_request_max_bytes`, `snapshot_part_max_bytes` and `snapshot_upload_expiry_seconds` (7.2); the incomplete-upload expiry of 7.3; the halt gate (4.12) also applies to the three operations that stage; and the second exception to the failure rule of 2.5, the discard of an upload whose container does not match what was declared (4.13). |
 | 2026-11-03 | `personal-cfo-g3m.36` | pre-release amendment | What 7.1's acceptance rule means for a snapshot: a server accepts it through `stageSnapshot` up to its `snapshot_single_request_max_bytes` and above that through the operations of 4.13, so `stageSnapshot` can answer `PayloadTooLarge` (a code it did not list before) for a container over that limit. |
 | 2026-11-03 | `personal-cfo-v98vd` (AC27) | pre-release amendment | The failure name for an epoch record that names a membership record that is neither installed nor in the request is `EpochRecordMissing` (400, a malformed pairing), as 6.1 step 4 already said, and no longer `BadEpochSequence` (409, "fetch the chain and rebuild"), which sent a client with a malformed request into a rebuild loop. The membership-chain verifier named it `BadEpochSequence`, and the public vector `invalid_epoch_naming_an_unknown_head` pinned that name; both are corrected (vault-format.md spec-version 27), and `invalid_grant_without_the_add_it_names` is added (`vectors_version` stays 1: 60 cases). Section 6.1 and the error registry are unchanged. |
+| 2026-11-06 | `personal-cfo-v98vd` (AC30) | pre-release amendment | Section 2.4's list of operations that accept an account credential before the genesis is installed named `stageSnapshot`, `putArtifact` and `installEpoch` only, though 4.13 already gave the four operations that stage in parts the account credential. The list now names those four and `stageSnapshotClosure`. This corrects 2.4 to agree with 4.13 and with the operation table (`auth` is `account/device` for each); it changes no request, response or code. |
+| 2026-11-06 | `personal-cfo-v98vd` (AC30) | addition | Operations `stageSnapshotClosure` and `getSnapshotClosure` (4.14), which stage and return a snapshot's closure as a binary sidecar of up to 2^20 ids; the halt gate (4.12) also applies to `stageSnapshotClosure`; the response member `artifact_count` of `getLatestSnapshot`. |
+| 2026-11-06 | `personal-cfo-v98vd` (AC30) | pre-release amendment | A snapshot's closure may hold up to 2^20 ids, where 4.4 and 4.9 allowed the 4096 of `max_artifact_manifest_ids`: a closure of more than 4096 ids is staged first and the `publishSnapshot` or `installEpoch` request then carries an empty `artifact_manifest` (a request member's meaning); `getLatestSnapshot` returns `artifact_manifest` as `null` for such a closure; `ArtifactMissing` lists at most the first 4096 missing ids; and section 7.1 gains the rows `max_snapshot_closure_ids` and `max_snapshot_closure_bytes`. |
+| 2026-11-11 | `personal-cfo-v98vd` | pre-release amendment | The decision order of the operations that stage a snapshot (`stageSnapshot` 4.9, `beginSnapshotUpload`, `putSnapshotPart` and `completeSnapshotUpload` 4.13, `stageSnapshotClosure` 4.14), and where the halt gate of 4.12 runs: authenticate from the credential alone, then the checks that need no vault state, then the `Forbidden` that needs the vault and the halt gate, then the rest. The common rule of 2.1, that routing checks the path forms before the credential is read, is now stated once and not per operation. 4.13 and 4.14 had put the vault-side `Forbidden` and the halt gate before the checks that need no vault state; 4.9 had no explicit order. No request, response, status or code changed. |
 
 **Why `voids` is a pre-release amendment and not an addition.** A response member
 that a client may ignore is an addition. `voids` cannot be ignored: a void takes a
@@ -1373,3 +1516,52 @@ For `personal-cfo-g3m.36` (the third row), against the same five things:
    none was added: the 5 MiB and 10,000 of 4.13 are stated in that section, not in the
    table. The one rule of 7.1 whose reading is narrowed, that a server MUST accept every
    well-formed object, is the pre-release amendment of the fourth row.
+
+For `personal-cfo-v98vd` AC30 (the last three rows), against the same five things. The
+addition row is the two new operations and one optional response member. The first
+pre-release row (the 2.4 list) is a text correction that changes no request, response,
+code or number, so the five checks pass trivially for it. The second pre-release row is
+what the checks below find:
+
+1. **An existing operation's request:** changed, so this is a pre-release amendment and
+   not an addition. `artifact_manifest` in `publishSnapshot` and `installEpoch` is empty
+   when the closure was staged with `stageSnapshotClosure`; before, it was the whole
+   closure. No member or path was added to either request. A client that never stages a
+   closure sends what it sent before, for a closure of at most 4096 ids.
+2. **An existing member's meaning:** `getLatestSnapshot`'s `artifact_manifest` is `null`
+   for a closure of more than 4096 ids, which the 4096 bound made impossible before, and
+   `ArtifactMissing`'s `missing` is capped at the first 4096 ids. Both are the same
+   member for every closure the old text allowed. This is the second reason the row is a
+   pre-release amendment.
+3. **A status code:** not changed. `SnapshotTooLarge` keeps its `413` and now also
+   answers a closure body of more than 2^20 ids.
+4. **The decision order of sections 5 and 6:** not changed. `installEpoch` step 8 and the
+   `publishSnapshot` check read the closure from the staged bytes instead of the request
+   when there are staged bytes, and make the same checks in the same order.
+5. **A number in section 7.1:** none changed. Two rows were added, and
+   `max_artifact_manifest_ids` keeps 4096; its meaning row is reworded to say it bounds
+   a JSON list, which is what it always bounded.
+
+For `personal-cfo-v98vd` (the 2026-11-11 row), against the same five things. The row is a
+pre-release amendment, valid only before the first production deploy. It changes no request,
+no member of any response, no status code and no number of 7.1. A request that two checks
+would refuse is now refused by the one that needs no vault state; both are `4xx` that a
+client does not retry unchanged, so no client behaves differently. Neither decision order of
+sections 5 and 6 gains, loses or reorders a step: the orders amended are those of 4.9, 4.13 and
+4.14, and the halt gate keeps its rule (it runs before the decisions that read the vault's
+state) and now says where it stands among the stateless checks.
+
+The reason is that a request that can be refused without the vault should not reach it: a
+stateless refusal costs no vault object and cannot bind a `vault_id` to an account (section
+2.4), and the vault-side `Forbidden` is the first thing that needs the vault.
+
+**Why not a larger JSON limit, and why not chunks.** A JSON closure of 2^20 ids is about
+70 MB and a server would parse it whole before checking a byte of it. Raw ids are half the
+size of their hex. They are still 32 MiB, because a `sync_artifact_id` is a 32-byte
+HMAC-SHA256 output (`vault-format.md` C.3), so 2^20 of them do not fit under the 24 MiB
+(`min_json_body_bytes`) that bounds a JSON request; the sidecar is therefore a separate
+request with its own limit in 7.1. The upload in parts of 4.13
+was considered and left out: a closure that large is already extreme (a million artifacts),
+33,554,432 bytes is half the 64 MiB `snapshot_single_request_max_bytes` that 4.1 shows for
+a snapshot, and chunking would add three operations and a state machine for a body that fits
+in one request on every host the protocol targets.

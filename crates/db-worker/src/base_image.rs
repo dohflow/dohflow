@@ -68,6 +68,18 @@ pub fn sync_dir(vault_path: &Path) -> PathBuf {
         .join(SYNC_DIR)
 }
 
+/// The directory under [`SYNC_DIR`] that holds the sealed snapshot saved for an exact-byte
+/// retransmission (`personal-cfo-1cltt.4`, `vault-format.md` C.4 "Saved sealed snapshot").
+pub const SAVED_SNAPSHOTS_DIR: &str = "snapshots";
+
+/// Where the saved sealed snapshots of the vault at `vault_path` live: `sync/snapshots`, one
+/// `<snapshot id as 32 hex digits>.snapshot` file per publish in flight. The directory is the
+/// caller's to create (`std::fs::create_dir_all`) before the first seal.
+#[must_use]
+pub fn saved_snapshots_dir(vault_path: &Path) -> PathBuf {
+    sync_dir(vault_path).join(SAVED_SNAPSHOTS_DIR)
+}
+
 /// Where the base image of the vault at `vault_path` lives.
 #[must_use]
 pub fn base_image_path(vault_path: &Path) -> PathBuf {
@@ -85,6 +97,53 @@ pub fn base_image_temp_path(vault_path: &Path) -> PathBuf {
 #[must_use]
 pub fn pre_rebase_path(vault_path: &Path) -> PathBuf {
     sync_dir(vault_path).join(PRE_REBASE_FILE)
+}
+
+/// Names under [`SYNC_DIR`] that mark a rebase in flight or just swapped, apart from the two files
+/// above: any entry whose name starts with one of these is a rebase journal or scratch vault. The
+/// rebase swap (`personal-cfo-bxsbz.7b`) adds the names it settles on here; the prefix `rebase`
+/// is reserved for it.
+pub const REBASE_ARTIFACT_PREFIXES: &[&str] = &["rebase"];
+
+/// Whether a swap or a rebase is in progress beside the vault at `vault_path`, so that anything
+/// which removes files the database does not name (the orphan-blob sweep) must stand down: a
+/// crashed key rotation leaves new-name blobs that only the re-encrypted copy names, and a crashed
+/// rebase can leave blobs that only its scratch vault, the base image or the pre-rebase copy name.
+///
+/// True while any of these exists: a file of an interrupted rotation beside `vault.db`
+/// (`vault.db.rekey*`, `vault.db.envelope.rekey*`, ADR 0083 §2), the pre-rebase copy, the base
+/// image's capture temp file, or an entry of [`SYNC_DIR`] named by [`REBASE_ARTIFACT_PREFIXES`].
+/// This is the one place that answers the question; a new swap or rebase file is added here.
+#[must_use]
+pub fn swap_or_rebase_in_progress(vault_path: &Path) -> bool {
+    if let (Some(name), Some(dir)) = (
+        vault_path.file_name().and_then(|n| n.to_str()),
+        vault_path.parent().or(Some(Path::new("."))),
+    ) {
+        let rotation = std::fs::read_dir(dir).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                entry.file_name().to_str().is_some_and(|candidate| {
+                    candidate.starts_with(&format!("{name}.rekey"))
+                        || candidate.starts_with(&format!("{name}.envelope.rekey"))
+                })
+            })
+        });
+        if rotation {
+            return true;
+        }
+    }
+    if pre_rebase_path(vault_path).exists() || base_image_temp_path(vault_path).exists() {
+        return true;
+    }
+    std::fs::read_dir(sync_dir(vault_path)).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            entry.file_name().to_str().is_some_and(|candidate| {
+                REBASE_ARTIFACT_PREFIXES
+                    .iter()
+                    .any(|prefix| candidate.starts_with(prefix))
+            })
+        })
+    })
 }
 
 /// The `sync_base.state` column.
@@ -745,7 +804,7 @@ fn export_image(live: &Path, old_dek: &Dek, new_dek: &Dek, dest: &Path) -> Resul
 }
 
 /// Stream `from` to a new file at `to` and sync it.
-fn copy_file_synced(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn copy_file_synced(from: &Path, to: &Path) -> io::Result<()> {
     let mut reader = BufReader::with_capacity(1 << 20, File::open(from)?);
     let file = fs::OpenOptions::new()
         .write(true)
