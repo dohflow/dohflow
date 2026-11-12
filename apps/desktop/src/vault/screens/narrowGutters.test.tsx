@@ -43,9 +43,15 @@ describe("narrow-card gutters", () => {
     expect(main).toHaveClass("@container");
     expect(main.className).not.toMatch(/(^|\s)p-\d/);
     const gutter = main.firstElementChild as HTMLElement;
-    expect(gutter).toHaveClass("p-6", `${NARROW}:p-1`);
-    expect(gutter).toHaveClass("w-full", "max-w-md");
-    expect(gutter.textContent).toBe("content");
+    expect(gutter).toHaveClass("w-full", "p-6", `${NARROW}:p-1`);
+    // The width cap is on its own child with no padding: Tailwind's preflight makes every box
+    // border-box, so padding on the `max-w-md` element would shrink the 28rem column on a desktop
+    // window (04b's finding on 4ff1e593).
+    expect(gutter).not.toHaveClass("max-w-md");
+    const column = gutter.firstElementChild as HTMLElement;
+    expect(column).toHaveClass("mx-auto", "w-full", "max-w-md");
+    expect(column.className).not.toMatch(/(^|\s)(compact:\S+:)?p[xytblr]?-\d/);
+    expect(column.textContent).toBe("content");
   });
 
   it("the card header, the card content and the warning callout each trim their gutter", async () => {

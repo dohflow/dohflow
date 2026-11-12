@@ -4,17 +4,21 @@ import { SAFE_AREA_PADDING } from "@/lib/safeArea";
 
 /// Centered single-card layout shared by the pre-vault screens.
 ///
-/// `main` is a size container so the gutters inside it can give the column its room back: at the
+/// `main` is a size container so the gutters inside it can give the column its room back. At the
 /// largest system text size the screen, card and callout padding nest (each grows a little with the
-/// type) and leave a sliver of a column, so a narrow screen at that size drops the page gutter to a
+/// type) and leave a sliver of a column, so on a narrow screen at that size the page gutter drops to a
 /// hairline and its descendants (the card header and content, the warning callout) trim theirs with
-/// `compact:@max-[15rem]:px-*` (personal-cfo-i93n3.25, Studio F3). The padding sits on the inner element, not on `main`: a
-/// container's own padding is outside what a container query measures. Desktop is unchanged.
+/// `compact:@max-[15rem]:px-*` (personal-cfo-i93n3.25, Studio F3). A container query styles only the
+/// container's descendants, so the page padding sits on a child of `main`, never on `main`. The
+/// card's width cap sits on a further child with no padding of its own: a padded `max-w-md` box is
+/// border-box, and would shrink the 28rem column on a desktop window. Desktop is unchanged.
 export function Screen({ children }: { children: ReactNode }) {
   return (
     <div className={`flex min-h-dvh flex-col bg-background ${SAFE_AREA_PADDING}`}>
       <main className="@container flex flex-1 items-center justify-center">
-        <div className="w-full max-w-md p-6 compact:@max-[15rem]:p-1">{children}</div>
+        <div className="w-full p-6 compact:@max-[15rem]:p-1">
+          <div className="mx-auto w-full max-w-md">{children}</div>
+        </div>
       </main>
     </div>
   );
