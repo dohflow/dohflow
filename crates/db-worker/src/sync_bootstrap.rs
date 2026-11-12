@@ -11,7 +11,9 @@
 //! 2. the vault is carried to this build's schema over the installed rows, and the void ledger
 //!    (`sync_voids`, the snapshot's recorded voids as `seeded` entries) and the applied cursor
 //!    (`sync_position`) are written in one transaction;
-//! 3. the first base image is captured (`sync_base` `Ready` at the root, credentials stripped);
+//! 3. the class-2 read models are derived from the installed class-1 rows (the display read
+//!    model, commitments, recurring instances, Money Inbox), and the first base image is captured
+//!    (`sync_base` `Ready` at the root, credentials stripped);
 //! 4. the file is synced and renamed to the vault path, and the directory is synced.
 //!
 //! **A vault that exists always has its base** (B1): before the rename nothing is at the vault
@@ -161,6 +163,8 @@ pub enum Step {
     Ledger,
     /// The vault is open as a worker.
     Opened,
+    /// The class-2 read models are derived from the installed class-1 state.
+    Derived,
     /// The base image is captured.
     BaseImage,
     /// The temporary file is closed and synced, and not yet renamed.
@@ -358,10 +362,11 @@ pub fn bootstrap_replica(
     #[cfg(test)]
     reached(Step::Ledger)?;
 
-    // 3. Open it as a worker (nothing is seeded) and capture the base. The class-2 read models
-    // start empty: they are never shipped, and the display projection is derived from the
-    // operation log, which a replica does not hold (its derivation on a replica is not this
-    // slice's).
+    // 3. Open it as a worker (nothing is seeded), derive the class-2 read models, and capture the
+    // base. Class 2 is never shipped; the replica derives it from the class-1 rows it installed,
+    // without the operation log it does not hold (personal-cfo-1cltt.8). It is derived here, in
+    // the temporary vault, so a crash before the rename leaves no vault, and the first base image
+    // already sees it.
     let worker = DbWorker::bootstrap_replica_vault(
         temp.clone(),
         conn,
@@ -370,6 +375,9 @@ pub fn bootstrap_replica(
     )?;
     #[cfg(test)]
     reached(Step::Opened)?;
+    worker.rebuild_class_2()?;
+    #[cfg(test)]
+    reached(Step::Derived)?;
     let base = worker.initialize_base_image(root)?;
     #[cfg(test)]
     reached(Step::BaseImage)?;
