@@ -447,8 +447,7 @@ uuid                 = cf5a7fd8-f6b4-8c2f-a9e1-ef4b6ca8e52e
 Changing the label, the field encoding or the bit layout is a payload-schema
 change, as for section 1. File imports, which have no provider identifiers,
 derive their identity the same way from a file fingerprint and a row ordinal under
-their own label, fixed by the import-reshape bead (`personal-cfo-0g528`) with its
-own vector.
+their own label, fixed by section 12 below with its own vector.
 
 #### 10. Correction note (2026-10-19, `personal-cfo-g3m.14`): payload-only ordinals, singleton ids, mint order and the clock scope
 
@@ -633,6 +632,87 @@ uuid             = 8af23603-a0c7-88e6-8234-2e0864d732a8
 
 Changing the label, the field encoding or the bit layout is a payload-schema change, as
 for sections 1, 9 and 10.
+
+#### 12. Exception: file-row identifiers (2026-11-12, `personal-cfo-0g528.3`)
+
+A row of an imported file has no provider identifiers, so section 9's rule for a
+provider transaction cannot name it. Two devices that each import the same file must
+still agree which of its rows are the same row, so the committed row is recorded under
+an identity derived from the file's content fingerprint and the row's ordinal in it
+(ADR 0074 Addendum B item 6; Addendum J). Like sections 9 and 11 it is **not
+command-scoped**: it is never derived from `issued_at`, a `command_id` or an apply
+ordinal, it is computed when the commit command is *constructed*, it is carried in the
+payload, it consumes no ordinal and it is outside the 4,096-id cap. It is **not the
+ledger id** of the row: the ledger id of an imported row stays the one of
+`personal-cfo-0g528.1`, derived from `(source_batch_id, row ordinal)`.
+
+```text
+label    = ASCII "dohflow/file-row-id/v1"                    (22 bytes)
+message  = u8(22) || label
+        || file_fingerprint                                  # 32 raw bytes, the decoded SHA-256 digest
+        || u32_be(row_ordinal)                               # 1..=4294967295
+digest   = HMAC-SHA256(id_key, message)                      # the same per-vault id_key as section 1
+id_bytes = digest[0..16], then
+           byte 6 = (byte 6 & 0x0f) | 0x80                    # UUID version 8
+           byte 8 = (byte 8 & 0x3f) | 0x80                    # RFC 9562 variant
+```
+
+The message is a fixed 59 bytes. `file_fingerprint` is stored as the text
+`sha256:` followed by 64 lowercase hexadecimal characters (the content fingerprint of
+`importer-core`, over the file's raw bytes and nothing else); the derivation takes the
+**32 decoded bytes**. Any other form, including an uppercase digest, a different prefix
+or a NULL fingerprint (a connector batch has none), has no file-row identity: the row is
+imported as before and no identity is recorded. `row_ordinal` is the staging ordinal of
+the row, counted from 1. **It is not a property of the file alone.** A routed import
+skips records that map to no account before it counts, a balance record consumes no
+ordinal, and a parser version may read a row differently, so the ordinal depends on the
+parser version and, for a routed import, on the account map. Two devices that import one
+file under different maps can therefore derive one identity for two different rows;
+that is why a file identity carries a snapshot and is compared, never trusted blindly
+(ADR 0074 Addendum J, item 4). The target account and the routing map are deliberately
+**not** part of the derivation: the same bytes have the same row identities whichever
+account they are imported into.
+
+The id is a UUID version 8: it carries no time, so nothing may rely on `ORDER BY id`
+for the creation order of file-row identities.
+
+*Domain separation.* The derivation shares `id_key` with every other one in `core-ids`,
+so its message space must not overlap theirs, in either direction.
+
+- Sections 9, 10 and 11: their messages begin with the length byte of their label (26,
+  28 and 34: `0x1a`, `0x1c`, `0x22`) and this one with 22 (`0x16`). Each message is a fixed
+  layout from byte 0, so no message of one is a message of another.
+- `content_id`, `keyed_id` and `singleton_id` (the ids of rows whose identity is a
+  natural key): their messages begin with the raw ASCII label, `dohflow/...`, so the
+  first byte is `0x64`, never `0x16`.
+- Section 1 (command-scoped ids): a message is `command_id || u8(tag_len) || tag ||
+  u16_be(ordinal)`, so it has `19 + tag_len` bytes and `tag_len` sits at offset 16. A
+  59-byte section 1 message has `tag_len = 40`. In a file-row message offset 16 is
+  `label[15]`, `w` (`0x77`), so a section 1 reading would need `tag_len = 119` and a
+  message of 138 bytes, not 59. So no file-row message is a section 1 message, and no
+  59-byte section 1 message is a file-row message.
+
+The outputs are UUID version 8, like those of sections 9 and 11, so they are kept apart
+by the message domain, not by the version nibble.
+
+Known-answer vector (normative; hexadecimal is lowercase; `id_key` is vector A's key
+from section 1):
+
+```text
+id_key           = f2f6ac71bc63e3df2f66370676ead3f3b6b677a87c124f190941659224b42149
+file_fingerprint = sha256:2c30d6d4f9c6954bfc4f2e31460da5660e8d4aa9d893b6228eddc467516a6830
+row_ordinal      = 1
+message_hex      = 16646f68666c6f772f66696c652d726f772d69642f76312c30d6d4f9c6954bfc4f2e31460da5660e8d4aa9d893b6228eddc467516a683000000001
+hmac_sha256      = 79dce3d45151cf3ffd85fa970ddb0c8fd5c50b3e38594b74e63366d36b7edd45
+uuid             = 79dce3d4-5151-8f3f-bd85-fa970ddb0c8f
+
+row_ordinal      = 2      (everything else as above)
+hmac_sha256      = bfe31db3c977dd284d37540520195e99c2f542443bfd84acd224913e9b9152b0
+uuid             = bfe31db3-c977-8d28-8d37-540520195e99
+```
+
+Changing the label, the field encoding or the bit layout is a payload-schema change, as
+for sections 1, 9 and 11.
 
 ### Rejected alternatives
 
