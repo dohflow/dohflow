@@ -45,17 +45,23 @@ const COMPARED: &[&str] = &[
     "forecast_quality_scores",
     "risk_flags",
     "forecast_dirty_ranges",
+    "model_registry",
 ];
+
+/// Tables the fixture fills through their write seam on both devices, because no code path of the
+/// forecast writes them: `record_dependency_edges` is called only by tests (the forecast engine
+/// does not attribute its rows yet), and nothing writes `risk_flags` at all. The rows are the same
+/// on both devices by construction, so this exercises the comparison (that a row attributed to the
+/// wrong run or row fails, through [`REFERENCES`]), not a derivation by the bootstrap.
+const SEEDED_THROUGH_A_SEAM: &[&str] = &["forecast_dependency_edges", "risk_flags"];
 
 /// The compared tables the fixture leaves empty on both devices. They are NOT counted as equal: they
 /// are untested here, because nothing the bootstrap or a forecast run does writes them (a caller of
 /// the forecast engine does, or no writer exists yet).
 const UNTESTED: &[&str] = &[
     "money_inbox_read_model",
-    "forecast_dependency_edges",
     "forecast_diffs",
     "forecast_quality_scores",
-    "risk_flags",
     "forecast_dirty_ranges",
 ];
 
@@ -75,6 +81,12 @@ const EXCLUDED: &[(&str, &str, &str)] = &[
         "forecast_input_snapshots",
         "created_at",
         "stamped at capture",
+    ),
+    ("model_registry", "created_at", "stamped at registration"),
+    (
+        "forecast_dependency_edges",
+        "created_at",
+        "stamped when the edge is recorded",
     ),
     (
         "forecast_input_snapshots",
@@ -249,6 +261,55 @@ fn run_the_forecast(worker: &DbWorker) {
         .unwrap();
     assert!(rows > 0);
     assert_eq!(rows, in_the_run, "every forecast row belongs to the run");
+    drop(conn);
+    seed_the_write_seams(worker);
+}
+
+/// Fill the two tables whose only writers are test seams (see [`SEEDED_THROUGH_A_SEAM`]): one edge
+/// from the bill to every forecast row that bill produced, and a risk flag on the run. The ids are
+/// fixed, so they are the same on every device and are compared.
+fn seed_the_write_seams(worker: &DbWorker) {
+    let (run, bill, rows): (Uuid, Uuid, Vec<Uuid>) = {
+        let conn = worker.read_connection().unwrap();
+        let run = conn
+            .query_row("SELECT id FROM forecast_runs", [], |r| r.get(0))
+            .unwrap();
+        let bill = conn
+            .query_row("SELECT id FROM recurring_events LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let rows = conn
+            .prepare("SELECT id FROM forecast_rows WHERE source_id = ?1 ORDER BY date")
+            .unwrap()
+            .query_map([bill], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        (run, bill, rows)
+    };
+    assert!(!rows.is_empty(), "the bill produced forecast rows");
+    let edges: Vec<crate::DependencyEdge> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| crate::DependencyEdge {
+            id: Uuid::from_u128(0x1000 + i as u128),
+            forecast_run_id: run,
+            from_event_id: bill,
+            to_row_id: *row,
+            edge_type: crate::EdgeType::Affects,
+        })
+        .collect();
+    worker.record_dependency_edges(&edges).unwrap();
+    worker
+        .lock()
+        .conn
+        .execute(
+            "INSERT INTO risk_flags
+                (id, forecast_run_id, flag_type, severity, projected_impact_minor, evidence_json,
+                 readiness_required_bps, created_at)
+             VALUES (?1, ?2, 'low_balance', 'warning', -150000, '{}', 0, '2026-06-20T12:00:00+00:00')",
+            rusqlite::params![Uuid::from_u128(0x2000), run],
+        )
+        .unwrap();
 }
 
 fn as_of() -> DateTime<Utc> {
@@ -284,7 +345,7 @@ fn record(
 /// and the snapshot it would publish.
 fn origin() -> (tempfile::TempDir, DbWorker, AccountId, Verified) {
     let (dir, worker) = worker();
-    let (checking, _savings) = seed_golden_vault(&worker);
+    let (checking, savings) = seed_golden_vault(&worker);
     for (cents, at) in [
         (-4_500, day(2)),
         (-1_250, day(9)),
@@ -294,6 +355,21 @@ fn origin() -> (tempfile::TempDir, DbWorker, AccountId, Verified) {
     ] {
         let (m, c) = record(checking, cents, at);
         worker.dispatch(m, c).unwrap();
+    }
+    // Two transfers at the same instant as the transactions on the ninth: each is one transaction
+    // with two user postings, so its two legs tie on every key but the account.
+    for cents in [7_000, 12_500, 3_300, 41_000, 900, 6_100] {
+        worker
+            .dispatch(
+                meta(),
+                WriteCommand::Transfer {
+                    source_account_id: checking,
+                    dest_account_id: savings,
+                    amount: Money::new(cents, Currency::Usd),
+                    occurred_at: day(9),
+                },
+            )
+            .unwrap();
     }
     let verified = verify(
         &export_genesis_plaintext(&worker.read_connection().unwrap(), &ExportInput::default())
@@ -430,7 +506,7 @@ fn same_instant_transactions_order_by_creating_command() {
     let rows = origin.recent_transactions(500).unwrap();
     let on_the_ninth: Vec<i64> = rows
         .iter()
-        .filter(|r| r.occurred_at == day(9))
+        .filter(|r| r.occurred_at == day(9) && r.counter_account_id.is_none())
         .map(|r| r.amount.minor_units())
         .collect();
     // Recorded -1_250, then -2_000, then -310: newest command first.
@@ -479,6 +555,9 @@ fn a_replica_derives_the_class_2_state_its_origin_holds() {
         empty_on_both, UNTESTED,
         "the tables the fixture leaves empty"
     );
+    for table in SEEDED_THROUGH_A_SEAM {
+        assert!(!empty_on_both.contains(table), "{table} is seeded");
+    }
 
     // The live list: every sort mode, row for row and in order.
     for sort in every_sort_mode() {
@@ -627,4 +706,76 @@ fn the_full_display_rebuild_keeps_a_row_for_every_transaction_whatever_the_log_h
         before.len()
     );
     assert_eq!(replica.transaction_display_rows().unwrap(), before);
+}
+
+/// Every page of `sort`, `size` rows at a time, as (transaction, account) pairs.
+fn walk(worker: &DbWorker, sort: TransactionSortOrder, size: u32) -> Vec<(Uuid, Uuid)> {
+    let mut out = Vec::new();
+    let mut offset = 0;
+    loop {
+        let page = worker
+            .transaction_page(&TransactionPageQuery {
+                sort,
+                limit: size,
+                offset,
+                ..TransactionPageQuery::default()
+            })
+            .unwrap();
+        if page.rows.is_empty() {
+            return out;
+        }
+        out.extend(
+            page.rows
+                .iter()
+                .map(|r| (r.transaction_id.as_uuid(), r.account_id.as_uuid())),
+        );
+        offset += size;
+    }
+}
+
+/// A transfer is one transaction with two user postings, so it is two rows that tie on the sort
+/// key, the creating command and the transaction. The account id separates them, so paging a list
+/// that holds transfers shows each leg exactly once, in the same order on an origin and a replica,
+/// whatever the page size.
+#[test]
+fn the_two_legs_of_a_transfer_page_once_each_and_in_the_same_order_on_both_devices() {
+    let (_odir, origin, _checking, verified) = origin();
+    let (_rdir, replica) = replica_of(&origin, &verified);
+    for sort in every_sort_mode() {
+        let whole = walk(&origin, sort, 500);
+        let transfer_legs = whole
+            .iter()
+            .filter(|(txn, _)| whole.iter().filter(|(t, _)| t == txn).count() == 2)
+            .count();
+        assert_eq!(transfer_legs, 12, "{sort:?}: each transfer has two legs");
+        let mut unique = whole.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            whole.len(),
+            "{sort:?}: (transaction, account) is unique"
+        );
+        // The legs of one transfer tie on everything but the account, so the account id orders
+        // them: descending in the newest-first list, ascending in the oldest-first one.
+        let ascending = match sort {
+            TransactionSortOrder::OldestFirst => Some(true),
+            TransactionSortOrder::NewestFirst => Some(false),
+            _ => None,
+        };
+        if let Some(ascending) = ascending {
+            for pair in whole.windows(2).filter(|w| w[0].0 == w[1].0) {
+                assert_eq!(pair[0].1 < pair[1].1, ascending, "{sort:?}: leg order");
+            }
+        }
+        for size in [1, 2, 3] {
+            let paged = walk(&origin, sort, size);
+            assert_eq!(paged, whole, "{sort:?}: pages of {size} on the origin");
+            assert_eq!(
+                walk(&replica, sort, size),
+                whole,
+                "{sort:?}: pages of {size} on the replica"
+            );
+        }
+    }
 }

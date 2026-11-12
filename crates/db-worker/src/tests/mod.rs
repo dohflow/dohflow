@@ -7748,7 +7748,7 @@ fn txn_row_reads_have_no_correlated_subqueries() {
     let recent = format!(
         "SELECT {TXN_ROW_COLUMNS} {TXN_ROW_FROM}
          WHERE lt.voided_at IS NULL
-         ORDER BY lt.occurred_at DESC, lt.operation_id DESC, lt.id DESC
+         ORDER BY lt.occurred_at DESC, lt.operation_id DESC, lt.id DESC, a.id DESC
          LIMIT 200"
     );
     let plan = plan_of(&recent, &[]);
@@ -7770,7 +7770,7 @@ fn txn_row_reads_have_no_correlated_subqueries() {
                 OR lt.id IN (SELECT sl.transaction_id FROM split_lines sl
                               WHERE sl.category_id IN (?, ?)))
            AND lt.occurred_at >= ? AND lt.occurred_at < ?
-         ORDER BY lt.occurred_at DESC, lt.operation_id DESC, lt.id DESC
+         ORDER BY lt.occurred_at DESC, lt.operation_id DESC, lt.id DESC, a.id DESC
          LIMIT ? OFFSET ?"
     );
     let uuid = Uuid::nil();

@@ -177,7 +177,8 @@ const INPUTS_ORDER: &str = "ORDER BY lt.operation_id, lt.id, a.id";
 /// transaction that arrived in its snapshot, projects exactly the rows its origin does
 /// (personal-cfo-1cltt.8). The log supplies only each row's `op_seq` stamp, a device-local
 /// watermark, and a scalar subquery (not a join) keeps a missing log row from dropping the
-/// posting: the stamp is then 0.
+/// posting: the stamp is then 0. The subquery is single-valued because
+/// `operation_log.command_id` is UNIQUE.
 ///
 /// `since_op_seq = Some(cursor)` is the **incremental** read: the postings of the operations this
 /// device logged after `cursor`. That is log-driven by nature, and it holds on a replica because

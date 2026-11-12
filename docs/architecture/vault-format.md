@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=43 -->
+<!-- vault-format: spec-version=44 -->
 <!-- vault-format: schema-version=73 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -272,6 +272,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 44` (personal-cfo-1cltt.8; provisional: it settles at merge): a replica derives its class-2 state from the class-1 rows it installed, before the base is captured; every cursor and watermark is in the device's own op_seq space; transaction lists order by the sort key, then the creating command id, then the transaction id, then the account id. No wire layout, write-set rule, vector, engine_version or schema change.
 - `spec-version = 43` (personal-cfo-1cltt.5, slice C, schema version 73; provisional: it settles at merge) records, in the device-local `sync_genesis` row, **which snapshot the genesis was and the SHA-256 of the container this device sent for it** (`genesis_snapshot_id` and `genesis_container_sha256`), and adds the device-local `operation_log.issued_at` (the instant a command was issued, Unix microseconds, written by `apply` on every row, Sync on or off; NULL before the column), which the genesis-gap replay reads because a command taken before Sync was armed has no outbox row to hold it. The identity columns are written in the transaction that records the genesis as `Published` and before the saved container is dropped (C.8 "The genesis snapshot's id and a resume"): the saved container is the only other place either lives. A bootstrap that reconciles the genesis gap fetches the genesis snapshot and checks it against these, so it never trusts the service's copy of what this device published. A row recorded by an earlier build has neither (NULL). No wire layout, write-set rule, vector or `engine_version` change.
 - `spec-version = 41` (personal-cfo-bxsbz.5, schema version 72) lets a `Bound` `sync_outbox` row carry no
   result. The accepted-envelope record (C.10) already allows an accepted command with no `result_ref`
@@ -2246,12 +2247,14 @@ same class-1 inputs). No derivation reads `operation_log` to decide which rows e
 replica's log holds no row for anything that came in its snapshot. Every cursor and watermark
 (`projection_cursors.last_applied_op_seq`, `transaction_display_rows_read_model.last_projected_op_seq`,
 the commitments and Money Inbox log head, `forecast_input_snapshots.ledger_cutoff_op_seq`) is in the
-device's own `op_seq` space on every device and never a Sync position: a full rebuild sets each to the
-device's current `MAX(op_seq)` (0 on an empty log), and the incremental display path then processes the
+device's own `op_seq` space on every device and never a Sync position: a full rebuild sets each cursor it
+maintains to the device's current `MAX(op_seq)` (0 on an empty log), and a forecast input snapshot records
+`MAX(op_seq)` when it is captured; the incremental display path then processes the
 operations the device logs afterwards, which are every envelope it applies and every command it runs. A
 row's `last_projected_op_seq` is the device's own log position for the transaction's creating command,
 0 where it holds none. Transaction lists order by the sort key, then the creating command's id (a
-UUIDv7, so command order), then the transaction id: class-1 data only, so every device orders the same
+UUIDv7, so command order), then the transaction id, then the account id (a transfer's two legs are
+on different accounts, so the last key separates them): class-1 data only, so every device orders the same
 rows the same way.
 
 ## C.9 Artifact transport
