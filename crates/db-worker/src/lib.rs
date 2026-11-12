@@ -102,6 +102,7 @@ pub mod sync_enable;
 pub mod sync_genesis;
 pub mod sync_genesis_gap;
 pub mod sync_materialize;
+pub mod sync_produce;
 pub mod sync_receive;
 pub mod sync_references;
 pub mod sync_register;
