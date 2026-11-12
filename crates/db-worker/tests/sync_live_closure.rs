@@ -14,7 +14,7 @@ use artifacts::{key_of, publish_attachment, publish_batch, FakeService, Publishe
 use core_ledger::AttachmentId;
 use db_worker::sync_artifacts::create_attachment_from_staged;
 use db_worker::sync_live_closure::{
-    apply_delta, load, rebuild_for_epoch, seed, LiveClosureError, LiveEntry,
+    apply_delta, rebuild_for_epoch, seed, LiveClosureError, LiveEntry,
 };
 use db_worker::sync_receive::{receive_delta, ReceiveError};
 use db_worker::DbWorker;
