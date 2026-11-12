@@ -3577,6 +3577,22 @@ impl DbWorker {
         projection::rebuild(&mut conn)
     }
 
+    /// Rebuild every class-2 read model that has a full-rebuild entry point (the commitments, the
+    /// Money Inbox, the recurring instances and the transaction display) from class-1 state, in
+    /// that order. No rebuild reads the operation log to decide which rows exist, so this is the
+    /// one definition for an origin, a rebase, and a replica's bootstrap (ADR 0074 section 5,
+    /// personal-cfo-1cltt.8). Each model's cursor is set to this device's own `MAX(op_seq)`.
+    ///
+    /// # Errors
+    /// Returns [`DbError`] if a rebuild fails.
+    pub(crate) fn rebuild_class_2(&self) -> Result<(), DbError> {
+        self.rebuild_commitments()?;
+        self.rebuild_money_inbox()?;
+        self.rebuild_recurring_instances()?;
+        self.rebuild_transaction_display()?;
+        Ok(())
+    }
+
     /// Incrementally project new operations into the transaction-display read
     /// model. Returns the number of rows upserted.
     ///
@@ -6884,7 +6900,6 @@ const TXN_ROW_FROM: &str = "FROM ledger_postings lp
          JOIN ledger_transactions lt ON lt.id = lp.transaction_id
          JOIN ledger_accounts la ON la.id = lp.ledger_account_id
          JOIN accounts a ON a.ledger_account_id = la.id
-         JOIN operation_log ol ON ol.command_id = lt.operation_id
          LEFT JOIN transaction_details td ON td.transaction_id = lt.id
          LEFT JOIN transaction_categorizations tc ON tc.transaction_id = lt.id
          LEFT JOIN transaction_reviews tr ON tr.transaction_id = lt.id
@@ -7060,7 +7075,7 @@ fn read_recent_transactions(conn: &Connection, limit: u32) -> Result<Vec<Transac
     let sql = format!(
         "SELECT {TXN_ROW_COLUMNS} {TXN_ROW_FROM}
          WHERE lt.voided_at IS NULL
-         ORDER BY lt.occurred_at DESC, ol.op_seq DESC
+         ORDER BY lt.occurred_at DESC, lt.operation_id DESC, lt.id DESC, a.id DESC
          LIMIT ?1"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -7083,7 +7098,7 @@ fn read_transactions_by_ids(
         let sql = format!(
             "SELECT {TXN_ROW_COLUMNS} {TXN_ROW_FROM}
              WHERE lt.voided_at IS NULL AND lt.id IN ({placeholders})
-             ORDER BY lt.occurred_at DESC, ol.op_seq DESC"
+             ORDER BY lt.occurred_at DESC, lt.operation_id DESC, lt.id DESC, a.id DESC"
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), read_txn_row_tuple)?;
@@ -7094,8 +7109,12 @@ fn read_transactions_by_ids(
     Ok(out)
 }
 
-/// How a transaction page is ordered (personal-cfo-3fdd.1). Every order is total —
-/// ties break on the op-log sequence — so consecutive windows never overlap or skip.
+/// How a transaction page is ordered (personal-cfo-3fdd.1). Every order is total: ties break on
+/// the creating command's id (a UUIDv7, so command order), then the transaction id, then the
+/// account id. All are class-1 data, so every device, a replica included, orders the same rows the
+/// same way. The account id is last because a row is one user posting and a transfer has two, on
+/// different accounts: `(transaction id, account id)` is unique, so consecutive windows never
+/// overlap or skip (personal-cfo-1cltt.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TransactionSortOrder {
     /// Newest first (the default; the recent list's order).
@@ -7113,12 +7132,16 @@ impl TransactionSortOrder {
     /// The ORDER BY column list for this order (fixed strings, never user input).
     const fn order_by(self) -> &'static str {
         match self {
-            Self::NewestFirst => "lt.occurred_at DESC, ol.op_seq DESC",
-            Self::OldestFirst => "lt.occurred_at ASC, ol.op_seq ASC",
+            Self::NewestFirst => "lt.occurred_at DESC, lt.operation_id DESC, lt.id DESC, a.id DESC",
+            Self::OldestFirst => "lt.occurred_at ASC, lt.operation_id ASC, lt.id ASC, a.id ASC",
             // Amount orders keep newest-first between equal amounts, matching the
             // stable client-side sort they replace.
-            Self::AmountDesc => "lp.minor_units DESC, lt.occurred_at DESC, ol.op_seq DESC",
-            Self::AmountAsc => "lp.minor_units ASC, lt.occurred_at DESC, ol.op_seq DESC",
+            Self::AmountDesc => {
+                "lp.minor_units DESC, lt.occurred_at DESC, lt.operation_id DESC, lt.id DESC, a.id DESC"
+            }
+            Self::AmountAsc => {
+                "lp.minor_units ASC, lt.occurred_at DESC, lt.operation_id DESC, lt.id DESC, a.id DESC"
+            }
         }
     }
 }
@@ -7443,7 +7466,7 @@ fn read_duplicate_candidates(
                AND d.matched_entity_type = 'ledger_transaction'
                AND d.matched_entity_id IS NOT NULL
          )
-         ORDER BY lt.occurred_at DESC, ol.op_seq DESC"
+         ORDER BY lt.occurred_at DESC, lt.operation_id DESC, lt.id DESC, a.id DESC"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([staged_transaction_id.as_uuid()], read_txn_row_tuple)?;
