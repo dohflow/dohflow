@@ -12,8 +12,10 @@
 //!
 //! The workspace crates `apply` links are scanned too, by token (their functions are not walked): a
 //! mint in `core-money`, `core-ledger`, `categorization`, `pay-schedule`, `forecast-engine`,
-//! `importer-core` or `sync-core` production source fails; `core-ids` (it DEFINES the mint helpers) and
-//! `job-runtime` are named exceptions, and `vault-crypto` is out of scope because no reachable
+//! `importer-core` or `sync-core` production source fails; `job-runtime` is a named exception, `core-ids`
+//! is scanned file by file with ONE allowed file (`lib.rs`, which DEFINES `monotonic_v7` and the id
+//! macro, and only for those tokens; `personal-cfo-0g528.3`), so `derived.rs` and any new derivation
+//! are scanned like every other crate, and `vault-crypto` is out of scope because no reachable
 //! function mentions it (also asserted).
 
 mod common;
@@ -331,11 +333,71 @@ fn no_reachable_function_mentions_the_crypto_crate() {
     );
 }
 
+/// The one place a linked crate may name a mint token: `(crate, file, the only tokens allowed there,
+/// bead)`. Every token listed must really occur there, or the row is stale.
+const FILE_EXCEPTIONS: &[(&str, &str, &[&str], &str)] = &[(
+    "core-ids",
+    "lib.rs",
+    // `monotonic_v7`, which DEFINES the ordinary-id mint that apply never calls (it derives ids
+    // through `DerivedIds`); the `uuid_id!` macro only calls it.
+    &["new_v7", "ContextV7", "monotonic_v7"],
+    "personal-cfo-0g528.3",
+)];
+
+/// The mint findings in one linked crate's production source, as `file: [tokens]` lines. SQL text is
+/// not scanned here (a linked crate holds no SQL that apply runs). A file with an exception row may
+/// hold exactly its listed tokens and no other, and each listed token must be present.
+fn linked_crate_findings(name: &str, sources: &[Source]) -> Vec<String> {
+    let mut failures = Vec::new();
+    for source in sources {
+        let hits: BTreeSet<String> = mints_in(&source.blanked, &source.raw)
+            .into_iter()
+            .filter(|h| !h.starts_with("SQL "))
+            .collect();
+        let allowed = FILE_EXCEPTIONS
+            .iter()
+            .find(|(c, f, _, _)| *c == name && *f == source.file);
+        let Some((_, _, tokens, bead)) = allowed else {
+            if !hits.is_empty() {
+                failures.push(format!("{name}/src/{}: {hits:?}", source.file));
+            }
+            continue;
+        };
+        let unexpected: Vec<&String> = hits
+            .iter()
+            .filter(|h| !tokens.contains(&h.as_str()))
+            .collect();
+        if !unexpected.is_empty() {
+            failures.push(format!(
+                "{name}/src/{}: {unexpected:?} beyond the tokens {bead} allows there ({tokens:?})",
+                source.file
+            ));
+        }
+        for token in *tokens {
+            if !hits.contains(*token) {
+                failures.push(format!(
+                    "{name}/src/{}: the exception for {token} ({bead}) is stale: remove it",
+                    source.file
+                ));
+            }
+        }
+    }
+    for (c, f, _, bead) in FILE_EXCEPTIONS {
+        if *c == name && !sources.iter().any(|s| s.file == *f) {
+            failures.push(format!(
+                "{name}/src/{f}: the exception row ({bead}) names a file that is gone"
+            ));
+        }
+    }
+    failures
+}
+
 /// The workspace crates apply links, scanned by token over their production source.
 #[test]
 fn the_crates_apply_links_hold_no_mint() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    // (crate, why a mint there is acceptable); an empty reason means none is.
+    // (crate, why a mint ANYWHERE in it is acceptable); an empty reason means none is. `core-ids` is
+    // not here: it has a per-file row in `FILE_EXCEPTIONS` instead of a wholesale exemption.
     let scanned: &[(&str, &str)] = &[
         ("core-money", ""),
         ("core-ledger", ""),
@@ -345,10 +407,7 @@ fn the_crates_apply_links_hold_no_mint() {
         ("importer-core", ""),
         ("importers/importer-core", ""),
         ("sync-core", ""),
-        (
-            "core-ids",
-            "DEFINES the mint helpers (monotonic_v7, the id macro); apply never calls them",
-        ),
+        ("core-ids", ""),
         (
             "job-runtime",
             "durable jobs run outside apply; apply reaches none of it",
@@ -365,26 +424,53 @@ fn the_crates_apply_links_hold_no_mint() {
         if !excuse.is_empty() {
             continue;
         }
-        for source in load(&src) {
-            let hits = mints_in(&source.blanked, &source.raw);
-            let hits: Vec<String> = hits
-                .into_iter()
-                .filter(|h| !h.starts_with("SQL "))
-                .collect();
-            if !hits.is_empty() {
-                failures.push(format!("{name}/src/{}: {hits:?}", source.file));
-            }
-        }
+        failures.extend(linked_crate_findings(name, &load(&src)));
     }
     assert!(
         scanned_any >= 7,
         "the scan found the crates ({scanned_any})"
     );
     assert!(
+        crates.join("core-ids").join("src").is_dir(),
+        "core-ids is scanned, not skipped"
+    );
+    assert!(
         failures.is_empty(),
         "a linked crate holds a mint:\n{}",
         failures.join("\n")
     );
+}
+
+#[test]
+fn a_mint_in_a_core_ids_derivation_is_caught_and_only_lib_rs_is_excused() {
+    // A new derivation that reaches for a random or time-based id is a finding, in derived.rs or in
+    // any file added later.
+    let sources = synthetic(&[
+        ("lib.rs", "pub fn monotonic_v7() { let _ = Uuid::new_v7(Timestamp::now(&ContextV7::new())); }\nmacro_rules! m { () => { Self($crate::monotonic_v7()) } }"),
+        ("derived.rs", "pub fn provider_txn_id() { let _ = Uuid::new_v4(); }"),
+        ("provider.rs", "pub fn p() { let _ = Uuid::now_v7(); let _ = OsRng; }"),
+    ]);
+    let findings = linked_crate_findings("core-ids", &sources);
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    assert!(findings[0].contains("derived.rs") && findings[0].contains("Uuid::new_v4"));
+    assert!(findings[1].contains("provider.rs"));
+
+    // lib.rs may hold its listed tokens and nothing else: a random source there is a finding too.
+    let sources = synthetic(&[(
+        "lib.rs",
+        "pub fn monotonic_v7() { let _ = Uuid::new_v7(Timestamp::now(&ContextV7::new())); }\nfn bad() { let _ = Uuid::new_v4(); }",
+    )]);
+    let findings = linked_crate_findings("core-ids", &sources);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("Uuid::new_v4") && findings[0].contains("beyond"));
+
+    // A row whose token is gone is stale, and another crate's lib.rs gets no excuse.
+    let sources = synthetic(&[("lib.rs", "pub fn monotonic_v7() {}")]);
+    assert!(linked_crate_findings("core-ids", &sources)
+        .iter()
+        .any(|f| f.contains("stale")));
+    let sources = synthetic(&[("lib.rs", "pub fn f() { let _ = Uuid::new_v4(); }")]);
+    assert_eq!(linked_crate_findings("sync-core", &sources).len(), 1);
 }
 
 #[test]
