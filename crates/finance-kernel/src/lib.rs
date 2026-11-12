@@ -3136,11 +3136,13 @@ impl Kernel {
     }
 
     /// Remove `sync/pre-rebase.db`, the vault a rebase swap replaced, which the swap keeps until
-    /// the next accepted push (ADR 0074 decision 2; personal-cfo-bxsbz.7). The push path calls this
-    /// once the service has accepted a push after the swap: from then on the rebased vault is the
-    /// device's history and the previous one is only a full copy of the data (connector credentials
-    /// included) that must not linger. Returns whether a copy existed. A missing copy is not an
-    /// error, and nothing else under `sync/` is touched.
+    /// the next accepted push (ADR 0074 decision 2; personal-cfo-bxsbz.7). The caller is the sync
+    /// push path, which is not wired yet (its bead, per planning's 2026-11-11 ruling on
+    /// personal-cfo-bxsbz.7): it must call this once the service has accepted a push after the swap,
+    /// because from then on the rebased vault is the device's history and the previous one is only
+    /// a full copy of the data (connector credentials included) that must not linger. Until then
+    /// the copy stays. Returns whether a copy existed. A missing copy is not an error, and nothing
+    /// else under `sync/` is touched.
     ///
     /// # Errors
     /// [`KernelError::Vault`] if the file cannot be removed or the directory cannot be synced.

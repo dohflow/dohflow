@@ -4324,6 +4324,132 @@ mod overlay {
             .unwrap();
     }
 
+    /// The end-to-end cost of a rebase on a vault the size of the golden fixture (personal-cfo-
+    /// bxsbz.7 AC3; 04b #354 F3): every step from the capture to the finished files, with a pulled
+    /// envelope and local commands to replay. The swap's own file protocol is measured by the
+    /// kernel's `measure_the_swap_cost` at the matching file size. Run with
+    /// `cargo test --release -p db-worker --lib measure_the_rebase_end_to_end -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn measure_the_rebase_end_to_end_on_the_golden_fixture() {
+        use std::time::Instant;
+        const LOCAL: usize = 50;
+        for transactions in [1_000_usize, 3_000] {
+            let w = world_with(|live| {
+                let account = AccountId::new();
+                live.dispatch(meta(), liquid_account_cmd(account, Currency::Usd, 0))
+                    .unwrap();
+                for i in 0..transactions {
+                    live.dispatch(
+                        meta(),
+                        WriteCommand::RecordTransaction {
+                            transaction_id: core_ledger::TransactionId::new(),
+                            account_id: account,
+                            amount: Money::new(-(100 + (i as i64 * 37) % 9_000), Currency::Usd),
+                            occurred_at: chrono::Utc::now(),
+                        },
+                    )
+                    .unwrap();
+                }
+            });
+            drift(&w);
+            for i in 0..LOCAL {
+                executor::issue(
+                    &w.live,
+                    meta(),
+                    WriteCommand::RecordTransaction {
+                        transaction_id: core_ledger::TransactionId::new(),
+                        account_id: w.account,
+                        amount: Money::new(-(100 + i as i64), Currency::Usd),
+                        occurred_at: chrono::Utc::now(),
+                    },
+                );
+            }
+            let device_b = other_device(&w.live, &w.dir);
+            let sealed = seal(device_b.worker(), &meta(), &other_account());
+            w.live.checkpoint_truncate().unwrap();
+            let size = std::fs::metadata(w.live.db_path()).unwrap().len();
+
+            let mut steps: Vec<(&str, std::time::Duration)> = Vec::new();
+            let mut lap = Instant::now();
+            let mut mark = |name: &'static str| {
+                steps.push((name, lap.elapsed()));
+                lap = Instant::now();
+            };
+            let image = w.live.capture_preservation().unwrap();
+            mark("capture");
+            let mut scratch = w.live.rollback_to(5, &w.scratch).unwrap();
+            mark("rollback (base copy + scratch)");
+            scratch.apply_pulled(&[sealed.pulled(6)]).unwrap();
+            mark("apply pulled");
+            let executed = scratch.rebase_local(image.local()).unwrap();
+            mark("rebase local");
+            scratch.overlay_class3(&image).unwrap();
+            mark("overlay class 3");
+            scratch.apply_pulled_class3_effects().unwrap();
+            mark("pulled class-3 effects");
+            let inputs = scratch.into_swap().unwrap();
+            mark("into_swap (new base, hashes)");
+            w.live.begin_swap(&image).unwrap();
+            mark("begin_swap (freeze, checkpoint)");
+            w.live.abort_swap().unwrap();
+            let total: std::time::Duration = steps.iter().map(|(_, d)| *d).sum();
+            println!(
+                "rebase end to end, {transactions} transactions + {LOCAL} local commands, live \
+                 vault {} KB, {} commands replayed, scratch {} KB: total {total:?}",
+                size / 1024,
+                executed.replayed.len(),
+                std::fs::metadata(&inputs.scratch_path).unwrap().len() / 1024
+            );
+            for (name, took) in &steps {
+                println!("    {name}: {took:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn begin_swap_puts_the_state_back_when_the_checkpoint_is_busy_and_the_worker_stays_usable() {
+        // 04b #354 F4 (the #308 O1 revert): a reader that holds a read transaction from before the
+        // `Rebasing` write keeps the log from being truncated, so the checkpoint is busy and the
+        // freeze must be undone, not left half-recorded.
+        let w = world();
+        drift(&w);
+        let image = w.live.capture_preservation().unwrap();
+        let reader = w.live.read_connection().unwrap();
+        reader.execute_batch("BEGIN;").unwrap();
+        let _: i64 = reader
+            .query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))
+            .unwrap();
+
+        let refused = w.live.begin_swap(&image);
+
+        assert!(
+            matches!(refused, Err(RebaseError::Db(DbError::CheckpointBusy))),
+            "{refused:?}"
+        );
+        let state = |w: &World| {
+            w.live
+                .lock()
+                .conn
+                .query_row("SELECT state FROM sync_base", [], |r| r.get::<_, String>(0))
+                .unwrap()
+        };
+        assert_eq!(state(&w), "Ready", "the record was put back");
+        // The worker was not frozen and the swap can be tried again once the reader is gone.
+        w.live
+            .dispatch(
+                meta(),
+                liquid_account_cmd(AccountId::new(), Currency::Usd, 1),
+            )
+            .unwrap();
+        reader.execute_batch("COMMIT;").unwrap();
+        drop(reader);
+        let image = w.live.capture_preservation().unwrap();
+        w.live.begin_swap(&image).unwrap();
+        assert_eq!(state(&w), "Rebasing");
+        w.live.abort_swap().unwrap();
+    }
+
     #[test]
     fn begin_swap_refuses_a_vault_whose_base_is_not_ready_and_changes_nothing() {
         // 04b's #308 F1: the swap restores the base the rebase rolled back to, so a base that is

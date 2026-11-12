@@ -215,6 +215,18 @@ fn roll_back(paths: &SwapPaths) -> Result<(), KernelError> {
     fsync_dir(paths.dir())
 }
 
+/// Whether the rebuilt vault and the new base image are both waiting under `sync/` and hash to the
+/// values the journal carries. A missing file is a mismatch, not an error.
+fn working_files_match(paths: &SwapPaths, journal: &Journal) -> Result<bool, KernelError> {
+    let matches = |path: PathBuf, expected: &str| -> Result<bool, KernelError> {
+        Ok(path.is_file() && sha256_hex(&path)? == expected)
+    };
+    Ok(
+        matches(paths.working(&journal.scratch), &journal.scratch_sha256)?
+            && matches(paths.working(&journal.new_base), &journal.new_base_sha256)?,
+    )
+}
+
 /// Whether the files on disk agree with a `committed` journal. Every check is "already applied, or
 /// ready to apply", so the same test holds at every apply step and a contradiction is reported
 /// instead of guessed at.
@@ -454,8 +466,18 @@ fn prepare_inner(
     write_journal(paths, &journal)?;
     crash(stop, CrashPoint::PreparingJournalWritten)?;
 
+    // The rebuilt vault and the new base were hashed when the rebase finished them, and the journal
+    // is about to attest those hashes. Verify the files still match before the commit point
+    // (04b #354 F1): a damaged file, a scratch rebuilt at the same path after `abandon_rebase`, or
+    // inputs left over from an earlier rebase would otherwise be installed under a hash they do not
+    // have, a state recovery would call a contradiction. A mismatch is refused here, before any
+    // rename, and `prepare_and_commit` undoes the journal and the working files.
+    if !working_files_match(paths, &journal)? {
+        return Err(KernelError::RebaseNotReady);
+    }
+
     // The old live vault is whole (checkpointed, the worker closed): this is the file the journal
-    // names. The rebuilt vault and the new base were hashed when the rebase finished them.
+    // names.
     journal.old_live_sha256 = Some(sha256_hex(&paths.db)?);
     journal.state = JournalState::Prepared;
     write_journal(paths, &journal)?;
@@ -744,6 +766,97 @@ mod protocol_tests {
         );
     }
 
+    /// What a refused swap must leave: the old vault and its data, the old base image, no journal
+    /// and no working file, and a vault that unlocks and stays healthy (04b #354 F1).
+    fn assert_refused_and_nothing_swapped(
+        controller: &mut VaultController,
+        path: &Path,
+        inputs: &SwapInputs,
+        base_before: &str,
+    ) {
+        let paths = SwapPaths::new(path);
+        assert_eq!(controller.state(), VaultState::Unlocked);
+        assert_no_swap_files(path);
+        assert!(!paths.pre_rebase.exists(), "nothing was moved aside");
+        assert_eq!(
+            hash(&paths.base),
+            base_before,
+            "the base image is as it was"
+        );
+        assert_ne!(
+            hash(&paths.db),
+            crate::rebase_swap::hex(&inputs.scratch_sha256),
+            "the rebuilt vault was not installed"
+        );
+        assert_eq!(
+            base_status(controller),
+            BaseImageStatus::Ready { base_seq: BASE_SEQ }
+        );
+        assert_eq!(
+            controller
+                .kernel()
+                .unwrap()
+                .get_setting(AFTER_BASE)
+                .unwrap()
+                .as_deref(),
+            Some("x")
+        );
+        assert!(controller.health_check().unwrap().is_healthy());
+        controller.lock().unwrap();
+        controller.unlock(PASSWORD).unwrap();
+        assert!(controller.health_check().unwrap().is_healthy());
+    }
+
+    #[test]
+    fn a_rebuilt_vault_or_new_base_changed_after_into_swap_is_refused_before_anything_is_swapped() {
+        // 04b #354 F1: the journal attests the hashes `into_swap` took, so the files must still
+        // have them when the swap commits. Damage each in turn, and a missing file too.
+        for target in ["scratch", "new base", "scratch missing", "new base missing"] {
+            let (_dir, path, mut controller) = seeded();
+            let (inputs, image) = rebuilt(&controller);
+            let base_before = hash(&SwapPaths::new(&path).base);
+            let file = if target.starts_with("scratch") {
+                &inputs.scratch_path
+            } else {
+                &inputs.new_base_path
+            };
+            if target.ends_with("missing") {
+                fs::remove_file(file).unwrap();
+            } else {
+                let mut bytes = fs::read(file).unwrap();
+                bytes[100] ^= 0xff;
+                fs::write(file, &bytes).unwrap();
+            }
+
+            let error = controller.swap_rebased(&inputs, &image).unwrap_err();
+
+            assert!(
+                matches!(error, KernelError::RebaseNotReady),
+                "{target}: {error:?}"
+            );
+            assert_refused_and_nothing_swapped(&mut controller, &path, &inputs, &base_before);
+        }
+    }
+
+    #[test]
+    fn inputs_left_over_from_an_earlier_rebase_are_refused_the_same_way() {
+        // A scratch vault rebuilt at the same path after `abandon_rebase` has different bytes than
+        // the `SwapInputs` of the first rebase hashed.
+        let (_dir, path, mut controller) = seeded();
+        let (stale, image) = rebuilt(&controller);
+        let base_before = hash(&SwapPaths::new(&path).base);
+        assert!(controller.kernel().unwrap().abandon_rebase().unwrap() >= 2);
+        let (fresh, _) = rebuilt(&controller);
+        // The same file names, different content (every vault has its own salt and nonces).
+        assert_eq!(stale.scratch_path, fresh.scratch_path);
+        assert_ne!(stale.scratch_sha256, fresh.scratch_sha256);
+
+        let error = controller.swap_rebased(&stale, &image).unwrap_err();
+
+        assert!(matches!(error, KernelError::RebaseNotReady), "{error:?}");
+        assert_refused_and_nothing_swapped(&mut controller, &path, &stale, &base_before);
+    }
+
     /// The point a swap that stopped there leaves the files at, and what recovery must do with it.
     const POINTS: [(CrashPoint, bool); 9] = [
         (CrashPoint::Frozen, false),
@@ -884,6 +997,54 @@ mod protocol_tests {
         assert!(paths.journal.exists(), "the journal is kept");
         assert!(scratch.exists() && paths.db.exists() && inputs.new_base_path.exists());
         assert!(!paths.pre_rebase.exists(), "nothing was moved");
+    }
+
+    #[test]
+    fn a_damaged_old_vault_is_a_contradiction_wherever_the_interrupted_apply_left_it() {
+        // 04b #354 F2: the old live vault is `vault.db` until it is moved aside and
+        // `sync/pre-rebase.db` after. A committed journal names its hash, and a file that no longer
+        // has it must not be rolled forward over (the rebuilt vault would replace a vault recovery
+        // can no longer vouch for being the one the journal kept).
+        for (point, damaged_is_pre_rebase) in [
+            (CrashPoint::Committed, false),
+            (CrashPoint::OldSideFilesRemoved, false),
+            (CrashPoint::OldLiveKept, true),
+        ] {
+            let (_dir, path, mut controller) = seeded();
+            let (inputs, image) = rebuilt(&controller);
+            let paths = SwapPaths::new(&path);
+            controller
+                .swap_rebased_with(&inputs, &image, Some(point))
+                .unwrap_err();
+            drop(controller);
+            let old = if damaged_is_pre_rebase {
+                &paths.pre_rebase
+            } else {
+                &paths.db
+            };
+            let mut bytes = fs::read(old).unwrap();
+            bytes[100] ^= 0xff;
+            fs::write(old, &bytes).unwrap();
+
+            let reopened = VaultController::open(&path);
+
+            assert_eq!(
+                reopened.rebase_recovery(),
+                RebaseRecovery::Contradiction,
+                "{point:?}"
+            );
+            assert_eq!(reopened.state(), VaultState::CorruptNeedsRecovery);
+            assert!(paths.journal.exists(), "{point:?}: the journal is kept");
+            assert!(
+                inputs.scratch_path.exists() && inputs.new_base_path.exists(),
+                "{point:?}: the rebuilt files were not touched"
+            );
+            assert_ne!(
+                hash(&paths.base),
+                crate::rebase_swap::hex(&inputs.new_base_sha256),
+                "{point:?}: the new base was not installed"
+            );
+        }
     }
 
     #[test]
@@ -1158,7 +1319,7 @@ mod protocol_tests {
             finish_swap(&db, None).unwrap();
             let total = started.elapsed();
             println!(
-                "swap protocol at {megabytes} MB: journal + old-live hash + commit {prepared:?}, \
+                "swap protocol at {megabytes} MB: journal + file hashes + commit {prepared:?}, \
                  apply (renames, syncs, cleanup) {:?}, total {total:?}",
                 total - prepared
             );
