@@ -17,13 +17,13 @@ use sync_core::snapshot::{verify, Verified};
 use sync_core::status::EngineVersion;
 use uuid::Uuid;
 
-use super::{meta, seed_golden_vault, worker};
+use super::{liquid_subtype_cmd, meta, seed_golden_vault, worker};
 use crate::logical_export::{export_genesis_plaintext, ExportInput};
 use crate::rebase::StepContext;
 use crate::sync_bootstrap::{bootstrap_replica, ReplicaSource};
 use crate::{
-    AccountId, CommandMeta, DbWorker, Frequency, TransactionPageQuery, TransactionSortOrder,
-    WriteCommand,
+    AccountId, AccountSubtype, CommandMeta, DbWorker, Frequency, TransactionPageQuery,
+    TransactionSortOrder, WriteCommand,
 };
 
 /// The class-2 tables compared row for row between an origin and a replica.
@@ -31,10 +31,12 @@ const COMPARED: &[&str] = &[
     "transaction_display_rows_read_model",
     "commitments",
     "recurring_event_instances",
-    // The part of the inbox derived from class-1 state (the change journal's snooze and dismiss)
-    // is compared; the part derived from staged imports is class 3, so it is empty on a fresh
-    // replica and on this origin alike (no import is staged here), and is not what is compared.
+    // The stored inbox table is the staging-derived part (class 3 input): the change journal's
+    // snooze and dismiss only touch staged items, so with nothing staged this compares nothing and
+    // the table is in UNTESTED. The class-1 part is derived on read and is compared through
+    // `money_inbox_list()` (see `assert_the_inbox_lists_are_equal`).
     "money_inbox_read_model",
+    "read_model_checksums",
     "forecast_input_snapshots",
     "forecast_runs",
     "forecast_rows",
@@ -47,6 +49,14 @@ const COMPARED: &[&str] = &[
     "forecast_dirty_ranges",
     "model_registry",
 ];
+
+/// Class-2 tables the comparison names and does not compare, each with its reason.
+const NAMED_EXCLUDED_TABLES: &[(&str, &str)] = &[(
+    "recurring_suggestion_suppressions",
+    "AC12: class 2 in the manifest but written by a user command (DismissRecurringSuggestion), so it \
+     cannot be derived from class-1 rows; its classification is a separate decision \
+     (personal-cfo-5ymg8.10) and this change does not touch the table",
+)];
 
 /// Tables the fixture fills through their write seam on both devices, because no code path of the
 /// forecast writes them: `record_dependency_edges` is called only by tests (the forecast engine
@@ -113,6 +123,16 @@ const EXCLUDED: &[(&str, &str, &str)] = &[
         "forecast_runs",
         "assumptions_hash",
         "is the input snapshot's content_hash",
+    ),
+    (
+        "read_model_checksums",
+        "computed_at",
+        "stamped when the checksum is computed",
+    ),
+    (
+        "read_model_checksums",
+        "current_checksum",
+        "the display checksum folds last_projected_op_seq (this device's op_seq space); each device's stored checksum is instead asserted equal to a fresh recomputation on that device (`assert_the_checksums_are_fresh`)",
     ),
     // Minted per capture, run and row with `Uuid::now_v7()` (forecast_persist.rs), or derived from
     // such ids: device-local. Every row is compared through its other columns, and every column that
@@ -239,6 +259,91 @@ fn assert_class_2_equal(left: &DbWorker, right: &DbWorker, what: &str) {
     }
 }
 
+/// The tables `rebuild_class_2` derives, which a bootstrap must leave filled on its own: compared
+/// BEFORE any forecast or other read that would derive them again.
+const THE_REBUILT_TABLES: &[&str] = &[
+    "transaction_display_rows_read_model",
+    "commitments",
+    "recurring_event_instances",
+];
+
+fn assert_the_rebuilt_tables_equal(origin: &DbWorker, replica: &DbWorker, what: &str) {
+    let (o, r) = (
+        origin.read_connection().unwrap(),
+        replica.read_connection().unwrap(),
+    );
+    for table in THE_REBUILT_TABLES {
+        let (a, b) = (dump(&o, table), dump(&r, table));
+        assert!(!b.is_empty(), "{what}: {table} is empty on the replica");
+        assert_eq!(a, b, "{what}: {table}");
+    }
+}
+
+/// The Money Inbox's class-1 part is derived when the list is read (stale balances, unreviewed and
+/// low-confidence transactions). It is what a screen shows, so it is compared, and not vacuous.
+fn assert_the_inbox_lists_are_equal(origin: &DbWorker, replica: &DbWorker, what: &str) {
+    let (a, b) = (
+        format!("{:?}", origin.money_inbox_list().unwrap()),
+        format!("{:?}", replica.money_inbox_list().unwrap()),
+    );
+    assert_eq!(a, b, "{what}: the Money Inbox list");
+    assert_ne!(a, "[]", "{what}: the Money Inbox list is not vacuous");
+}
+
+/// Each device's stored checksum equals a fresh recomputation on that device. (The checksums are
+/// not compared across devices: the display checksum folds this device's op_seq stamps in.)
+fn assert_the_checksums_are_fresh(worker: &DbWorker, what: &str) {
+    let conn = worker.read_connection().unwrap();
+    let stored: Vec<(String, i64)> = conn
+        .prepare("SELECT read_model_name, current_checksum FROM read_model_checksums")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(!stored.is_empty(), "{what}: no checksum is stored");
+    for (name, value) in stored {
+        let fresh = match name.as_str() {
+            "transaction_display" => crate::projection::checksum(&conn).unwrap(),
+            "commitments" => crate::commitments::checksum(&conn).unwrap(),
+            "money_inbox" => crate::money_inbox::checksum(&conn).unwrap(),
+            other => panic!("{what}: an unknown read model {other}"),
+        };
+        assert_eq!(
+            value, fresh as i64,
+            "{what}: the stored {name} checksum is stale"
+        );
+    }
+}
+
+/// Every class-2 table the manifest lists is either compared or named, and nothing else is: a new
+/// class-2 table cannot slip past the comparison.
+#[test]
+fn every_class_2_table_is_compared_or_named() {
+    let manifest = include_str!("../../table_classes.toml");
+    let mut class_2: Vec<&str> = Vec::new();
+    for block in manifest.split("[[table]]").skip(1) {
+        let field = |key: &str| {
+            block.lines().find_map(|l| {
+                l.strip_prefix(key)?
+                    .strip_prefix(" = \"")?
+                    .strip_suffix('"')
+            })
+        };
+        if field("class") == Some("2") {
+            class_2.push(field("table").expect("a table name"));
+        }
+    }
+    let mut accounted: Vec<&str> = COMPARED
+        .iter()
+        .copied()
+        .chain(NAMED_EXCLUDED_TABLES.iter().map(|(t, _)| *t))
+        .collect();
+    class_2.sort_unstable();
+    accounted.sort_unstable();
+    assert_eq!(class_2, accounted, "class-2 tables vs the comparison");
+}
+
 /// Persist a forecast run at the fixed as-of date, then score it against the instances and backtest
 /// it. Exactly one run exists afterwards, and every forecast row belongs to it, so the rows are
 /// compared within their run.
@@ -358,15 +463,51 @@ fn origin() -> (tempfile::TempDir, DbWorker, AccountId, Verified) {
     }
     // Two transfers at the same instant as the transactions on the ninth: each is one transaction
     // with two user postings, so its two legs tie on every key but the account.
-    for cents in [7_000, 12_500, 3_300, 41_000, 900, 6_100] {
+    for (i, cents) in [7_000, 12_500, 3_300, 41_000, 900, 6_100]
+        .into_iter()
+        .enumerate()
+    {
+        // Half run the other way, so the order the postings were written in is not the account order.
+        let (source_account_id, dest_account_id) = if i % 2 == 0 {
+            (checking, savings)
+        } else {
+            (savings, checking)
+        };
         worker
             .dispatch(
                 meta(),
                 WriteCommand::Transfer {
-                    source_account_id: checking,
-                    dest_account_id: savings,
+                    source_account_id,
+                    dest_account_id,
                     amount: Money::new(cents, Currency::Usd),
                     occurred_at: day(9),
+                },
+            )
+            .unwrap();
+    }
+    // Two accounts created in the opposite order to their ids (the higher id first), so the order
+    // their rows were written in is not their id order, and transfers between them.
+    let (high, low) = (
+        AccountId::from_uuid(Uuid::from_u128(u128::MAX - 3)),
+        AccountId::from_uuid(Uuid::from_u128(3)),
+    );
+    for (id, name) in [(high, "High id"), (low, "Low id")] {
+        worker
+            .dispatch(
+                meta(),
+                liquid_subtype_cmd(id, name, Some(AccountSubtype::Checking), 0),
+            )
+            .unwrap();
+    }
+    for (source, dest) in [(high, low), (low, high)] {
+        worker
+            .dispatch(
+                meta(),
+                WriteCommand::Transfer {
+                    source_account_id: source,
+                    dest_account_id: dest,
+                    amount: Money::new(2_500, Currency::Usd),
+                    occurred_at: day(11),
                 },
             )
             .unwrap();
@@ -513,6 +654,43 @@ fn same_instant_transactions_order_by_creating_command() {
     assert_eq!(on_the_ninth, [-310, -2_000, -1_250]);
 }
 
+/// A transaction whose id sorts against its command's order is still ordered by the command: the
+/// id only breaks a tie the command leaves (AC10).
+#[test]
+fn a_transaction_id_that_sorts_against_command_order_does_not_decide_the_order() {
+    let (_dir, origin, checking, _verified) = origin();
+    // The first command makes the transaction with the HIGHER id; the second the lower.
+    for id in [u128::MAX - 7, 7] {
+        origin
+            .dispatch(
+                meta(),
+                WriteCommand::RecordTransaction {
+                    transaction_id: TransactionId::from_uuid(Uuid::from_u128(id)),
+                    account_id: checking,
+                    amount: Money::new(-1, Currency::Usd),
+                    occurred_at: day(10),
+                },
+            )
+            .unwrap();
+    }
+    let ids = |sort| -> Vec<u128> {
+        origin
+            .transaction_page(&TransactionPageQuery {
+                sort,
+                limit: 500,
+                ..TransactionPageQuery::default()
+            })
+            .unwrap()
+            .rows
+            .iter()
+            .filter(|r| r.occurred_at == day(10))
+            .map(|r| r.transaction_id.as_uuid().as_u128())
+            .collect()
+    };
+    assert_eq!(ids(TransactionSortOrder::NewestFirst), [7, u128::MAX - 7]);
+    assert_eq!(ids(TransactionSortOrder::OldestFirst), [u128::MAX - 7, 7]);
+}
+
 /// AC3, AC9, AC11, AC12, AC13: a replica born from the origin's genesis holds the same class-2
 /// state and shows the same screens, in the same order.
 #[test]
@@ -535,12 +713,20 @@ fn a_replica_derives_the_class_2_state_its_origin_holds() {
         "the cursor is the replica's own MAX(op_seq): 0 on an empty log"
     );
 
-    // The origin's own derivation, a full rebuild of what it holds, is the reference.
+    // The origin's own derivation, a full rebuild of what it holds, is the reference. The tables the
+    // bootstrap derives are compared first, before any forecast or other read derives them again.
     origin.rebuild_class_2().unwrap();
+    assert_the_rebuilt_tables_equal(&origin, &replica, "straight after the bootstrap");
+    assert_the_inbox_lists_are_equal(&origin, &replica, "straight after the bootstrap");
+    assert_the_checksums_are_fresh(&replica, "straight after the bootstrap");
     for worker in [&origin, &replica] {
         run_the_forecast(worker);
     }
     assert_class_2_equal(&origin, &replica, "bootstrap");
+    assert_the_inbox_lists_are_equal(&origin, &replica, "after the forecast");
+    for worker in [&origin, &replica] {
+        assert_the_checksums_are_fresh(worker, "after the forecast");
+    }
     // The comparison is not vacuous: a compared table holds rows on both devices, or it is named
     // in UNTESTED (and so not counted as equal).
     let mut empty_on_both = Vec::new();
@@ -672,14 +858,34 @@ fn a_replica_and_its_origin_converge_after_further_commands_including_genesis_ro
         pull(&replica, 4 + i64::try_from(i).unwrap(), m, command);
     }
 
+    // Before any full rebuild: the display model the incremental path left, and the commitments
+    // each command's own apply refreshed.
     origin.project_transaction_display_incremental().unwrap();
     replica.project_transaction_display_incremental().unwrap();
+    {
+        let (o, r) = (
+            origin.read_connection().unwrap(),
+            replica.read_connection().unwrap(),
+        );
+        for table in ["transaction_display_rows_read_model", "commitments"] {
+            assert_eq!(
+                dump(&o, table),
+                dump(&r, table),
+                "before a rebuild: {table}"
+            );
+        }
+    }
+    assert_the_inbox_lists_are_equal(&origin, &replica, "before a rebuild");
     origin.rebuild_class_2().unwrap();
     replica.rebuild_class_2().unwrap();
     for worker in [&origin, &replica] {
         run_the_forecast(worker);
     }
     assert_class_2_equal(&origin, &replica, "after further commands");
+    assert_the_inbox_lists_are_equal(&origin, &replica, "after further commands");
+    for worker in [&origin, &replica] {
+        assert_the_checksums_are_fresh(worker, "after further commands");
+    }
     for sort in every_sort_mode() {
         assert_eq!(
             all_pages(&origin, sort),
@@ -747,7 +953,7 @@ fn the_two_legs_of_a_transfer_page_once_each_and_in_the_same_order_on_both_devic
             .iter()
             .filter(|(txn, _)| whole.iter().filter(|(t, _)| t == txn).count() == 2)
             .count();
-        assert_eq!(transfer_legs, 12, "{sort:?}: each transfer has two legs");
+        assert_eq!(transfer_legs, 16, "{sort:?}: each transfer has two legs");
         let mut unique = whole.clone();
         unique.sort();
         unique.dedup();
