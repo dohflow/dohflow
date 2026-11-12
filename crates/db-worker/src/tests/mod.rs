@@ -12,6 +12,7 @@ mod settings_upgrade;
 mod snapshot_install;
 mod sync_bootstrap;
 mod sync_local_state;
+mod sync_produce;
 
 use super::*;
 use core_ledger::{AccountFlags, CashflowRole};

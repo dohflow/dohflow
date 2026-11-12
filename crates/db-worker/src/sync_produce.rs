@@ -36,13 +36,13 @@ use sync_core::source_batch::{SourceBatch, SourceBatchError};
 use thiserror::Error;
 use vault_crypto::batch_part_storage_id_raw;
 use vault_crypto::sync_artifact::{first_artifact_id, Fixity};
-use vault_crypto::sync_artifact_flow::{publish, PublishError};
+use vault_crypto::sync_artifact_flow::{publish, PublishError, Published};
 use vault_crypto::sync_envelope::EpochKey;
 
 use crate::attachments::crypto_fields;
 use crate::sync_artifacts::{self, ArtifactKind as MappedKind, Mapping, MappingError};
 use crate::sync_materialize::{load_batch, load_records, load_runs, MaterializeError};
-use crate::{DbError, DbWorker};
+use crate::{DbError, DbWorker, WorkerState};
 
 /// One produced artifact: what a snapshot's closure and an envelope's delta name, and what the
 /// device keeps beside it.
@@ -82,8 +82,10 @@ pub enum ProduceError {
     /// The mapping could not be recorded.
     #[error("the mapping could not be recorded: {0}")]
     Mapping(#[from] MappingError),
-    /// The vault could not be read, or an attachment's bytes could not be read and decrypted.
-    #[error("the vault could not be read: {0}")]
+    /// The vault could not be read, an attachment's bytes could not be read and decrypted, or the
+    /// worker does not accept writes ([`DbError::WorkerUnavailable`]): nothing was published from
+    /// it, or nothing more was.
+    #[error("the vault could not be used: {0}")]
     Db(#[from] DbError),
     /// This vault holds no attachment with that id.
     #[error("the vault holds no such attachment")]
@@ -124,16 +126,37 @@ impl DbWorker {
         key: &EpochKey,
         batch_id: &[u8; 16],
     ) -> Result<Vec<ProducedArtifact>, ProduceError> {
+        self.produce_batch_with(key, batch_id, &mut |plaintext| {
+            publish(transport, key, plaintext, Fixity::First)
+        })
+    }
+
+    /// The pipeline of [`Self::produce_batch_artifacts`] with the put left to `put_part`: seal and
+    /// put one part, answer the published receipt. It refuses before the first put when the worker
+    /// does not accept writes (nothing is published from a vault that refuses them), reads the
+    /// batch's rows in one read transaction (so they are one view, not three), and records each
+    /// part's mapping and receipt in one transaction through [`DbWorker::write_sync_state`], which
+    /// refuses an unhealthy worker as every other Sync writer does.
+    pub(crate) fn produce_batch_with(
+        &self,
+        key: &EpochKey,
+        batch_id: &[u8; 16],
+        put_part: &mut dyn FnMut(&TransportPlaintext<'_>) -> Result<Published, PublishError>,
+    ) -> Result<Vec<ProducedArtifact>, ProduceError> {
+        self.require_healthy()?;
         let dek = self.dek().map_err(ProduceError::Key)?;
         let batch = {
             let conn = self
                 .read_connection()
                 .map_err(|e| ProduceError::Rows(e.into()))?;
-            let row = load_batch(&conn, batch_id)?.ok_or(ProduceError::NotFound)?;
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| ProduceError::Db(e.into()))?;
+            let row = load_batch(&tx, batch_id)?.ok_or(ProduceError::NotFound)?;
             SourceBatch {
                 batch: row,
-                runs: load_runs(&conn, batch_id)?,
-                records: load_records(&conn, batch_id)?,
+                runs: load_runs(&tx, batch_id)?,
+                records: load_records(&tx, batch_id)?,
             }
         };
         let mut produced = Vec::new();
@@ -144,17 +167,12 @@ impl DbWorker {
                 index: part.index,
                 count: part.count,
             };
-            let published = publish(
-                transport,
-                key,
-                &TransportPlaintext {
-                    artifact_id: id,
-                    kind: ArtifactKind::SourceBatchPart,
-                    logical_metadata: &part.logical_metadata,
-                    blob: &part.blob,
-                },
-                Fixity::First,
-            )?;
+            let published = put_part(&TransportPlaintext {
+                artifact_id: id,
+                kind: ArtifactKind::SourceBatchPart,
+                logical_metadata: &part.logical_metadata,
+                blob: &part.blob,
+            })?;
             let ciphertext_sha256 = published.receipt.ciphertext_sha256;
             self.record_produced(
                 key,
@@ -216,6 +234,21 @@ impl DbWorker {
         key: &EpochKey,
         attachment_id: &[u8; 16],
     ) -> Result<ProducedArtifact, ProduceError> {
+        self.produce_attachment_with(key, attachment_id, &mut |plaintext| {
+            publish(transport, key, plaintext, Fixity::First)
+        })
+    }
+
+    /// The pipeline of [`Self::produce_attachment_artifact`] with the put left to `put_part`; it
+    /// refuses before the put when the worker does not accept writes, and records the mapping and
+    /// receipt in one transaction, as [`Self::produce_batch_with`] does.
+    pub(crate) fn produce_attachment_with(
+        &self,
+        key: &EpochKey,
+        attachment_id: &[u8; 16],
+        put_part: &mut dyn FnMut(&TransportPlaintext<'_>) -> Result<Published, PublishError>,
+    ) -> Result<ProducedArtifact, ProduceError> {
+        self.require_healthy()?;
         let id = AttachmentId::from_uuid(uuid::Uuid::from_bytes(*attachment_id));
         let (storage_id, mime_type) = {
             let conn = self.read_connection()?;
@@ -244,17 +277,12 @@ impl DbWorker {
                 uuid::Uuid::from_bytes(*attachment_id).hyphenated()
             ),
         };
-        let published = publish(
-            transport,
-            key,
-            &TransportPlaintext {
-                artifact_id,
-                kind: ArtifactKind::Attachment,
-                logical_metadata: metadata.as_bytes(),
-                blob: &bytes,
-            },
-            Fixity::First,
-        )?;
+        let published = put_part(&TransportPlaintext {
+            artifact_id,
+            kind: ArtifactKind::Attachment,
+            logical_metadata: metadata.as_bytes(),
+            blob: &bytes,
+        })?;
         let ciphertext_sha256 = published.receipt.ciphertext_sha256;
         self.record_produced(
             key,
@@ -345,16 +373,24 @@ impl DbWorker {
         Ok(())
     }
 
-    /// Record a produced artifact's mapping and the service's receipt for it.
+    /// Refuse when the worker does not accept writes (a restore in progress, or a panic that left
+    /// it needing recovery), as every Sync writer does.
+    fn require_healthy(&self) -> Result<(), ProduceError> {
+        let state = self.lock().state;
+        if state == WorkerState::Healthy {
+            Ok(())
+        } else {
+            Err(ProduceError::Db(DbError::WorkerUnavailable(state)))
+        }
+    }
+
+    /// Record a produced artifact's mapping and the service's receipt for it, in one transaction.
     fn record_produced(&self, key: &EpochKey, mapping: &Mapping) -> Result<(), ProduceError> {
-        let guard = self.lock();
-        sync_artifacts::record(&guard.conn, mapping, None)?;
-        sync_artifacts::record_receipt(
-            &guard.conn,
-            key.key_epoch(),
-            &mapping.artifact_id,
-            &chrono::Utc::now().to_rfc3339(),
-        )?;
-        Ok(())
+        let now = chrono::Utc::now().to_rfc3339();
+        self.write_sync_state(|tx| -> Result<(), ProduceError> {
+            sync_artifacts::record(tx, mapping, None)?;
+            sync_artifacts::record_receipt(tx, key.key_epoch(), &mapping.artifact_id, &now)?;
+            Ok(())
+        })
     }
 }
