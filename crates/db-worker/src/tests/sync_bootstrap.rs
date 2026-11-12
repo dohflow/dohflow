@@ -363,6 +363,7 @@ fn a_crash_at_any_step_leaves_no_vault_and_a_clean_second_attempt_ends_ready() {
         Step::Installed,
         Step::Ledger,
         Step::Opened,
+        Step::Derived,
         Step::BaseImage,
         Step::Synced,
     ] {

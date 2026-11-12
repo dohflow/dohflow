@@ -17,7 +17,9 @@
 //!    closure is seeded, foreign keys come back on and `foreign_key_check` must find nothing, and the
 //!    installed state is proved equal to the snapshot, table for table (a snapshot with no closure
 //!    was proved inside the install, as before);
-//! 4. the first base image is captured (`sync_base` `Ready` at the root, credentials stripped);
+//! 4. the class-2 read models are derived from the installed class-1 rows (the display read
+//!    model, commitments, recurring instances, Money Inbox), and the first base image is captured
+//!    (`sync_base` `Ready` at the root, credentials stripped);
 //! 5. the file is synced and renamed to the vault path, and the directory is synced.
 //!
 //! **The commit point is the rename.** Any failure before it discards the build, the spool of
@@ -252,6 +254,8 @@ pub enum Step {
     Ledger,
     /// The vault is open as a worker.
     Opened,
+    /// The class-2 read models are derived from the installed class-1 state.
+    Derived,
     /// The base image is captured.
     BaseImage,
     /// The temporary file is closed and synced, and not yet renamed.
@@ -486,7 +490,11 @@ pub fn bootstrap_replica(
     #[cfg(test)]
     reached(Step::Ledger)?;
 
-    // 3. Open it as a worker (nothing is seeded), then the closure.
+    // 3. Open it as a worker (nothing is seeded), then the closure, then derive the class-2 read
+    // models and capture the base. Class 2 is never shipped; the replica derives it from the class-1
+    // rows it installed, without the operation log it does not hold (personal-cfo-1cltt.8). It is
+    // derived here, in the temporary vault, so a crash before the rename leaves no vault, and the
+    // first base image already sees it.
     let worker = DbWorker::bootstrap_replica_vault(
         temp.clone(),
         conn,
@@ -515,6 +523,9 @@ pub fn bootstrap_replica(
             .unwrap_or(-1);
         seen.set(Some(on == 1));
     });
+    worker.rebuild_class_2()?;
+    #[cfg(test)]
+    reached(Step::Derived)?;
     let base = worker.initialize_base_image(root)?;
     #[cfg(test)]
     reached(Step::BaseImage)?;
