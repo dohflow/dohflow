@@ -351,6 +351,13 @@ pub(crate) fn class_three_tables_handled() -> Vec<&'static str> {
             POSITION.table,
             "sync_outbox",
             "projection_cursors",
+            // The live closure (C.9) is neither overlaid nor read from the live vault: the base
+            // image carries it at the accepted base, each pulled envelope's apply brings it forward
+            // on the scratch (before the local replay, while the outbox is empty), and the replay
+            // never writes it. The scratch's table is therefore the accepted closure at the new
+            // head, and the swap takes it as it stands. Listing it in `OVERLAID` would be wrong:
+            // `drop_inherited` would empty it and the live vault's copy would replace it.
+            "sync_live_closure",
         ])
         .collect()
 }
