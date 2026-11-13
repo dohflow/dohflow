@@ -137,6 +137,7 @@ pub fn imported(n: u128, account_id: AccountId, amount: Money) -> WriteCommand {
         transaction_date: None,
         category_id: None,
         forced: false,
+        identity: None,
     }
 }
 
@@ -763,6 +764,7 @@ pub fn scenarios() -> Vec<Step> {
                     transaction_date,
                     category_id,
                     forced,
+                    identity: None,
                 },
                 _ => unreachable!("imported builds a CommitImportedTransaction"),
             },
@@ -795,6 +797,7 @@ pub fn scenarios() -> Vec<Step> {
                     transaction_date,
                     category_id,
                     forced,
+                    identity: None,
                 },
                 _ => unreachable!("imported builds a CommitImportedTransaction"),
             },
@@ -835,6 +838,7 @@ pub fn scenarios() -> Vec<Step> {
                     transaction_date,
                     category_id: Some(category(96)),
                     forced,
+                    identity: None,
                 },
                 _ => unreachable!("imported builds a CommitImportedTransaction"),
             },
@@ -865,6 +869,7 @@ pub fn scenarios() -> Vec<Step> {
                     transaction_date,
                     category_id,
                     forced,
+                    identity: None,
                 },
                 _ => unreachable!("imported builds a CommitImportedTransaction"),
             },

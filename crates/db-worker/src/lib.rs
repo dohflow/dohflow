@@ -71,6 +71,7 @@ mod forecast_backtest;
 mod forecast_events;
 mod forecast_overrides;
 mod forecast_persist;
+mod import_identity;
 mod import_identity_backfill;
 mod ingestion;
 mod jobs;
@@ -120,6 +121,7 @@ pub use attachments::AttachmentMeta;
 pub use backup_history::{BackupHistoryEntry, BackupHistoryKind};
 pub use categories::CategoryView;
 pub use commitments::CommitmentView;
+pub use import_identity::{ImportIdentityClaim, ImportIdentityComponents};
 pub use money_inbox::MoneyInboxItem;
 pub use staged_import::StagedDecision;
 
@@ -134,7 +136,7 @@ pub const CURRENT_SCHEMA_VERSION: i64 = migrations::CURRENT_VERSION;
 /// same write-set hash from the same command, which is what lets a replica verify a write set.
 /// It is bumped by hand, in the same change, whenever a change makes `apply` write something
 /// different for an unchanged payload; a mismatch tells a client to update before it continues.
-pub const ENGINE_VERSION: &str = "dohflow-engine-4";
+pub const ENGINE_VERSION: &str = "dohflow-engine-5";
 pub use forecast::{
     AccountAvailability, AccountHistoryView, AccountSeriesView, CapabilityUnlock, CardCycleView,
     CardStatementForecastView, CardStatementHistoryView, CashAvailability, CashFlowHistory,
@@ -813,6 +815,13 @@ pub enum WriteCommand {
         category_id: Option<CategoryId>,
         /// The person's "import anyway" override of a flagged row, recorded in the decision trail.
         forced: bool,
+        /// The cross-device identity the row claims (`personal-cfo-0g528.3`, ADR 0074 Addendum J
+        /// item 3), or `None` for a row without one (a LunchFlow row, or a row from before identity),
+        /// which keeps the path it always had. **Engine-version rule:** a command with an identity
+        /// applies under `dohflow-engine-5`: apply recomputes the id, binds it to the row, and
+        /// decides by what `import_identities` holds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<ImportIdentityClaim>,
     },
     /// Snooze a Money Inbox item until `until` (ADR 0014 §7, personal-cfo-ci71): a
     /// soft action recorded in `change_journal_entries` and re-applied to the read
@@ -8313,6 +8322,7 @@ fn apply_command(
             transaction_date,
             category_id,
             forced,
+            identity,
         } => apply::ingestion_cmds::apply_commit_imported_transaction(
             &tx,
             meta,
@@ -8327,6 +8337,7 @@ fn apply_command(
             transaction_date,
             category_id,
             forced,
+            identity,
         )?,
         WriteCommand::SnoozeInboxItem { item_id, until } => {
             apply::inbox::apply_snooze_inbox_item(&tx, meta, &mut ids, item_id, until)?

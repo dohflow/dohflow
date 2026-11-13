@@ -191,6 +191,8 @@ fn plan_staged(
             .and_then(|text| NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()),
         category_id: category_id.map(core_ledger::CategoryId::from_uuid),
         forced: force,
+        // The planner claims no identity yet (S3b part 3b gives it one for a SimpleFIN or file row).
+        identity: None,
     };
     Ok(StagedPlan::Commit(Box::new(PlannedCommit {
         staged_id,

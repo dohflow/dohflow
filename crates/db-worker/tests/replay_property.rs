@@ -586,6 +586,7 @@ fn fixed_sequence(pair: &mut Pair) {
         transaction_date: None,
         category_id: None,
         forced,
+        identity: None,
     };
     pair.apply("import commit", import(false));
     pair.apply("import commit again (a no-op)", import(false));
