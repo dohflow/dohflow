@@ -199,26 +199,7 @@ impl DbWorker {
     /// # Errors
     /// A [`ProduceError`] if the vault cannot be read.
     pub fn closure_sources(&self) -> Result<ClosureSources, ProduceError> {
-        let conn = self.read_connection()?;
-        let ids = |sql: &str| -> Result<Vec<[u8; 16]>, ProduceError> {
-            let mut stmt = conn.prepare(sql).map_err(DbError::from)?;
-            let rows = stmt
-                .query_map([], |r| r.get::<_, Vec<u8>>(0))
-                .map_err(DbError::from)?;
-            let mut out = Vec::new();
-            for row in rows {
-                let bytes = row.map_err(DbError::from)?;
-                out.push(<[u8; 16]>::try_from(bytes).map_err(|_| ProduceError::BadStorageId)?);
-            }
-            Ok(out)
-        };
-        Ok(ClosureSources {
-            attachments: ids("SELECT id FROM attachments ORDER BY id")?,
-            batches: ids("SELECT DISTINCT r.source_batch_id
-                   FROM source_provenance_links l
-                   JOIN source_records r ON r.id = l.source_record_id
-                  ORDER BY r.source_batch_id")?,
-        })
+        closure_sources_in(&self.read_connection()?)
     }
 
     /// Publish the attachment `attachment_id` as one class-1b artifact under `key`'s epoch, and
@@ -393,4 +374,36 @@ impl DbWorker {
             Ok(())
         })
     }
+}
+
+/// The attachments and batches a snapshot at the state `conn` reads would carry: every attachment
+/// row, and every batch a provenance link reaches through one of its records (never the mere
+/// presence of batch rows). **The one reachability rule**: a genesis closure is made of it
+/// ([`DbWorker::closure_sources`]) and the live closure's prune removes what it no longer holds
+/// ([`crate::sync_live_closure::apply_delta`]); neither has a copy.
+///
+/// # Errors
+/// A [`ProduceError`] if the vault cannot be read.
+pub(crate) fn closure_sources_in(
+    conn: &rusqlite::Connection,
+) -> Result<ClosureSources, ProduceError> {
+    let ids = |sql: &str| -> Result<Vec<[u8; 16]>, ProduceError> {
+        let mut stmt = conn.prepare(sql).map_err(DbError::from)?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, Vec<u8>>(0))
+            .map_err(DbError::from)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let bytes = row.map_err(DbError::from)?;
+            out.push(<[u8; 16]>::try_from(bytes).map_err(|_| ProduceError::BadStorageId)?);
+        }
+        Ok(out)
+    };
+    Ok(ClosureSources {
+        attachments: ids("SELECT id FROM attachments ORDER BY id")?,
+        batches: ids("SELECT DISTINCT r.source_batch_id
+               FROM source_provenance_links l
+               JOIN source_records r ON r.id = l.source_record_id
+              ORDER BY r.source_batch_id")?,
+    })
 }

@@ -30,6 +30,10 @@ const ALLOWED: &[&str] = &[
     // Receiving a delta wraps the ids of the envelope's verified delta manifest as service addresses
     // to fetch (personal-cfo-0g528.2).
     "crates/db-worker/src/sync_receive.rs",
+    // The live closure wraps the ids it reads back out of its own table (each was a verified service
+    // address when it was stored) as the `ArtifactId`s a `LiveClosure` is keyed by
+    // (personal-cfo-1cltt.7).
+    "crates/db-worker/src/sync_live_closure.rs",
     // 6b adds the commitment derivations here, and vault-crypto adds the tag and domain
     // derivations; list each file when it lands.
 ];
