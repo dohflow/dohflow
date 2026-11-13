@@ -33,6 +33,10 @@ const NONCE_LEN: usize = 12;
 /// separation: bump the suffix only if the addressing scheme changes.
 const ADDR_INFO: &[u8] = b"personal-cfo/attachment-addressing/v1";
 
+/// HKDF `info` for the source-batch-part addressing subkey (`vault-format.md` C.3 "Artifact
+/// addresses"): the same derivation from the DEK as the attachment subkey, with this string.
+const BATCH_ADDR_INFO: &[u8] = b"personal-cfo/source-batch-addressing/v1";
+
 /// The opaque on-disk blob name: hex of `HMAC-SHA256(addr_subkey, plaintext)`.
 /// Deterministic for a given vault + plaintext (so dedup works), but reveals
 /// nothing about the plaintext without the DEK-derived subkey.
@@ -45,6 +49,35 @@ impl StorageId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The 32 raw bytes the hex string is the lowercase form of: the `storage_id_raw` that
+    /// `sync_artifact_id` is keyed over (`vault-format.md` C.3), never the text. `None` if the
+    /// string is not 64 lowercase hex digits.
+    #[must_use]
+    pub fn raw(&self) -> Option<[u8; 32]> {
+        raw_of_hex(&self.0)
+    }
+}
+
+/// The 32 raw bytes of a storage id's lowercase hex form (the attachments table holds the text), or
+/// `None` if it is not 64 lowercase hex digits.
+#[must_use]
+pub fn raw_of_hex(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0_u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        let pair = hex.get(2 * i..2 * i + 2)?;
+        if !pair
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return None;
+        }
+        *byte = u8::from_str_radix(pair, 16).ok()?;
+    }
+    Some(out)
 }
 
 /// A per-attachment content key. Like [`Dek`]/[`crate::Kek`] it is backed by
@@ -98,25 +131,47 @@ pub struct EncryptedBlob {
 /// Derive the content-addressing subkey from the DEK via HKDF-SHA256. No salt is
 /// used: the DEK is already a uniformly-random 256-bit key, so HKDF-Extract adds
 /// nothing, and `ADDR_INFO` provides domain separation from any other DEK use.
-fn addressing_subkey(dek: &Dek) -> [u8; 32] {
+fn addressing_subkey(dek: &Dek, info: &[u8]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(None, dek.expose_bytes());
     let mut subkey = [0u8; 32];
-    hk.expand(ADDR_INFO, &mut subkey)
+    hk.expand(info, &mut subkey)
         .expect("32 bytes is within HKDF-SHA256's 255*32 output limit");
     subkey
+}
+
+/// `HMAC-SHA256(subkey derived under `info`, data)`, the 32 raw address bytes.
+fn address_of(dek: &Dek, info: &[u8], data: &[u8]) -> [u8; 32] {
+    let mut subkey = addressing_subkey(dek, info);
+    let mut mac =
+        <Hmac<Sha256> as Mac>::new_from_slice(&subkey).expect("HMAC accepts a key of any length");
+    mac.update(data);
+    let tag = mac.finalize().into_bytes();
+    subkey.zeroize();
+    tag.into()
+}
+
+/// The 32 raw bytes of an attachment's address, `HMAC-SHA256(addr_subkey, plaintext)`, of which the
+/// local [`StorageId`] is the lowercase hex form (ADR 0023). It is the `storage_id_raw` that a
+/// Sync artifact id is keyed over (`vault-format.md` C.3); the hex string itself is never hashed.
+#[must_use]
+pub fn storage_id_raw(dek: &Dek, plaintext: &[u8]) -> [u8; 32] {
+    address_of(dek, ADDR_INFO, plaintext)
+}
+
+/// The 32 raw bytes of a source batch part's address, `HMAC-SHA256(addr_subkey_batch, blob)`
+/// (`vault-format.md` C.3, C.9), where `addr_subkey_batch` is derived from the DEK as the
+/// attachment subkey is, with the info string `personal-cfo/source-batch-addressing/v1`. The blob
+/// is the part's canonical JSON bytes.
+#[must_use]
+pub fn batch_part_storage_id_raw(dek: &Dek, part_blob: &[u8]) -> [u8; 32] {
+    address_of(dek, BATCH_ADDR_INFO, part_blob)
 }
 
 /// Compute the keyed-hash [`StorageId`] for `plaintext` under `dek`. Deterministic
 /// per vault + plaintext (enables dedup); requires the unlocked DEK.
 #[must_use]
 pub fn storage_id(dek: &Dek, plaintext: &[u8]) -> StorageId {
-    let mut subkey = addressing_subkey(dek);
-    let mut mac =
-        <Hmac<Sha256> as Mac>::new_from_slice(&subkey).expect("HMAC accepts a key of any length");
-    mac.update(plaintext);
-    let tag = mac.finalize().into_bytes();
-    subkey.zeroize();
-    StorageId(to_hex(&tag))
+    StorageId(to_hex(&storage_id_raw(dek, plaintext)))
 }
 
 /// Generate a fresh random content key from the OS CSPRNG.
@@ -292,7 +347,7 @@ mod tests {
             "fresh per-backup salts derive distinct backup KEKs"
         );
 
-        let mut attachment_key = addressing_subkey(&dek);
+        let mut attachment_key = addressing_subkey(&dek, ADDR_INFO);
         assert_ne!(
             backup_a.expose_bytes().as_slice(),
             attachment_key.as_slice(),
@@ -325,5 +380,62 @@ mod tests {
             decrypt_blob(&key, &blob),
             Err(VaultCryptoError::KeyUnwrap)
         ));
+    }
+}
+
+#[cfg(test)]
+mod address_vectors {
+    use super::*;
+
+    /// A DEK of the bytes `1..=32`.
+    fn dek() -> Dek {
+        let bytes: Vec<u8> = (1..=32).collect();
+        Dek::from_slice(&bytes).expect("32 bytes")
+    }
+
+    fn hex_of(bytes: &[u8; 32]) -> String {
+        to_hex(bytes)
+    }
+
+    /// The C.3 addresses, from values computed by an independent implementation (Python's `hmac`
+    /// and a hand-written RFC 5869 HKDF-SHA256 with no salt): the attachment and the source-batch
+    /// subkeys are the same derivation under two info strings, and each address is the HMAC of the
+    /// data under its subkey. A change of either info string, the salt, or the order breaks these.
+    #[test]
+    fn the_attachment_and_batch_part_addresses_are_the_c3_ones() {
+        let dek = dek();
+        assert_eq!(
+            hex_of(&storage_id_raw(&dek, b"")),
+            "62707e3468f0fd501cad8a9b22c88c4abf0db73edd8b05892ab03665acdeaeb1"
+        );
+        assert_eq!(
+            hex_of(&storage_id_raw(&dek, br#"{"records":[]}"#)),
+            "ea541ca0875125d056db22141d65588d3c03baca4d82ce437b519d7eb4d9edf3"
+        );
+        assert_eq!(
+            hex_of(&batch_part_storage_id_raw(&dek, b"")),
+            "f727982c46b1d8c899d51b1c25ad03420a48296d80ed8e8b2ef8dfd346378e66"
+        );
+        assert_eq!(
+            hex_of(&batch_part_storage_id_raw(&dek, br#"{"records":[]}"#)),
+            "12b8ec94b2eb6d1b4bc3db956bad74bca5030d6f7979820051d201448134d5ad"
+        );
+    }
+
+    /// The same bytes under the two subkeys give two addresses (domain separation), and the local
+    /// `StorageId` is the lowercase hex of the raw bytes, which decode back.
+    #[test]
+    fn the_two_subkeys_separate_domains_and_the_storage_id_is_the_hex_of_the_raw_address() {
+        let dek = dek();
+        let data = b"the same bytes";
+        assert_ne!(
+            storage_id_raw(&dek, data),
+            batch_part_storage_id_raw(&dek, data)
+        );
+        let id = storage_id(&dek, data);
+        assert_eq!(id.as_str(), hex_of(&storage_id_raw(&dek, data)));
+        assert_eq!(id.raw(), Some(storage_id_raw(&dek, data)));
+        assert_eq!(raw_of_hex(&"A".repeat(64)), None, "lowercase only");
+        assert_eq!(raw_of_hex("abc"), None);
     }
 }
