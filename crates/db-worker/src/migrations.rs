@@ -2895,6 +2895,90 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Version 77 (personal-cfo-0g528.3, S3b part 2; provisional: it moves if another migration lands
+    // first). `dedupe_decisions` becomes a class-1 table (ADR 0074 Addendum J item 6), keyed to what the
+    // decision is about instead of to a device-local staging row: `transaction_id` (the committed
+    // ledger transaction) and `identity_id` (its import identity), both nullable because a decision
+    // from before this migration may have neither. `staged_transaction_id` and the `flagged` decision
+    // leave the table: a *flagged* decision is advisory state about a staging row, so it moves to two
+    // class-3 columns on that row (`flag_reason`, `flag_matched_transaction_id`), which never
+    // replicate. The old table is renamed and converted row by row by `dedupe_reshape` (the post-step),
+    // which then drops it. The migration REFUSES on a vault where Sync is armed, like 76: the
+    // conversion writes class-1 rows outside a command. Down rebuilds the old shape: a flagged row
+    // returns from its staged row (its decision id is the staged row's id), a committed row returns
+    // with the staged row that committed its transaction, when there is one.
+    Migration {
+        version: 77,
+        name: "dedupe_decisions_keyed_to_transactions",
+        up: "DROP INDEX idx_dedupe_decisions_batch;
+             DROP INDEX idx_dedupe_decisions_staged;
+             ALTER TABLE dedupe_decisions RENAME TO dedupe_decisions_legacy;
+             ALTER TABLE staged_transactions ADD COLUMN flag_reason TEXT;
+             ALTER TABLE staged_transactions ADD COLUMN flag_matched_transaction_id BLOB
+                 CHECK (flag_matched_transaction_id IS NULL
+                        OR length(flag_matched_transaction_id) = 16);
+             CREATE TABLE dedupe_decisions (
+                 id                  BLOB    PRIMARY KEY,
+                 source_batch_id     BLOB    NOT NULL REFERENCES source_batches(id),
+                 layer               TEXT    NOT NULL CHECK (layer IN ('file', 'transaction')),
+                 identity_id         BLOB    REFERENCES import_identities(identity_id),
+                 transaction_id      BLOB    REFERENCES ledger_transactions(id),
+                 matched_entity_type TEXT,
+                 matched_entity_id   BLOB,
+                 decision            TEXT    NOT NULL CHECK (decision IN (
+                     'committed', 'skipped', 'merged')),
+                 reason              TEXT    NOT NULL,
+                 decided_at          TEXT    NOT NULL
+             );
+             CREATE INDEX idx_dedupe_decisions_batch ON dedupe_decisions (source_batch_id);
+             CREATE INDEX idx_dedupe_decisions_transaction ON dedupe_decisions (transaction_id);
+             CREATE INDEX idx_dedupe_decisions_identity ON dedupe_decisions (identity_id);",
+        down: Some(
+            "CREATE TABLE dedupe_decisions_old (
+                 id                    BLOB    PRIMARY KEY,
+                 source_batch_id       BLOB    NOT NULL REFERENCES source_batches(id),
+                 layer                 TEXT    NOT NULL CHECK (layer IN (
+                     'file', 'transaction')),
+                 staged_transaction_id BLOB    REFERENCES staged_transactions(id),
+                 matched_entity_type   TEXT,
+                 matched_entity_id     BLOB,
+                 decision              TEXT    NOT NULL CHECK (decision IN (
+                     'committed', 'skipped', 'merged', 'flagged')),
+                 reason                TEXT    NOT NULL,
+                 decided_at            TEXT    NOT NULL
+             );
+             INSERT INTO dedupe_decisions_old
+                 (id, source_batch_id, layer, staged_transaction_id, matched_entity_type,
+                  matched_entity_id, decision, reason, decided_at)
+             SELECT dd.id, dd.source_batch_id, dd.layer,
+                    (SELECT st.id FROM staged_transactions st
+                      WHERE st.committed_transaction_id = dd.transaction_id
+                      ORDER BY st.created_at, st.id LIMIT 1),
+                    dd.matched_entity_type, dd.matched_entity_id, dd.decision, dd.reason, dd.decided_at
+               FROM dedupe_decisions dd;
+             INSERT INTO dedupe_decisions_old
+                 (id, source_batch_id, layer, staged_transaction_id, matched_entity_type,
+                  matched_entity_id, decision, reason, decided_at)
+             SELECT st.id, sr.source_batch_id, 'transaction', st.id,
+                    CASE WHEN st.flag_matched_transaction_id IS NULL
+                         THEN NULL ELSE 'ledger_transaction' END,
+                    st.flag_matched_transaction_id, 'flagged', st.flag_reason, st.created_at
+               FROM staged_transactions st
+               JOIN source_records sr ON sr.id = st.source_record_id
+              WHERE st.flag_reason IS NOT NULL;
+             DROP INDEX idx_dedupe_decisions_batch;
+             DROP INDEX idx_dedupe_decisions_transaction;
+             DROP INDEX idx_dedupe_decisions_identity;
+             DROP TABLE dedupe_decisions;
+             ALTER TABLE dedupe_decisions_old RENAME TO dedupe_decisions;
+             CREATE INDEX idx_dedupe_decisions_batch ON dedupe_decisions (source_batch_id);
+             CREATE INDEX idx_dedupe_decisions_staged ON dedupe_decisions (staged_transaction_id);
+             ALTER TABLE staged_transactions DROP COLUMN flag_matched_transaction_id;
+             ALTER TABLE staged_transactions DROP COLUMN flag_reason;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// The migrations that write class-1 rows outside a command (a backfill): `(version, what it writes)`.
@@ -2910,8 +2994,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
 ///
 /// A later migration that backfills class-1 rows adds its row here, and the rule is standing: once
 /// Sync is user-reachable a backfill of class-1 rows is a command with a materialized payload.
-pub(crate) const CLASS_1_WRITING_MIGRATIONS: &[(i64, &str)] =
-    &[(76, "the import identity backfill")];
+pub(crate) const CLASS_1_WRITING_MIGRATIONS: &[(i64, &str)] = &[
+    (76, "the import identity backfill"),
+    (77, "the dedupe decision conversion"),
+];
 
 /// The first marked migration above `schema` and at or below this build's schema, if any.
 pub(crate) fn first_row_writing_migration_after(schema: i64) -> Option<i64> {
@@ -2943,6 +3029,7 @@ type PostUp = fn(&rusqlite::Connection) -> rusqlite::Result<()>;
 const POST_UP: &[(i64, PostUp)] = &[
     (61, crate::households::migrate_up),
     (76, crate::import_identity_backfill::migrate_up),
+    (77, crate::dedupe_reshape::migrate_up),
 ];
 
 const fn max_version() -> i64 {
@@ -3366,7 +3453,8 @@ mod tests {
         }
         assert_eq!(super::first_row_writing_migration_after(0), Some(76));
         assert_eq!(super::first_row_writing_migration_after(75), Some(76));
-        assert_eq!(super::first_row_writing_migration_after(76), None);
+        assert_eq!(super::first_row_writing_migration_after(76), Some(77));
+        assert_eq!(super::first_row_writing_migration_after(77), None);
     }
 
     /// The set is contiguous `1..=CURRENT_VERSION` and every non-baseline
@@ -4507,8 +4595,8 @@ mod tests {
         );
         assert!(origin.is_ok(), "an unchanged cursor is not a move back");
 
-        // 70 to 76 sit above 69: stepping to 68 reverts all eight.
-        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 8);
+        // 70 to 77 sit above 69: stepping to 68 reverts all nine.
+        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 9);
         assert!(
             objects(&conn).is_empty(),
             "down drops both tables and every trigger"
@@ -4547,8 +4635,8 @@ mod tests {
                 "sync_artifacts"
             ]
         );
-        // 71 to 76 sit above 70: stepping to 69 reverts all seven.
-        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 7);
+        // 71 to 77 sit above 70: stepping to 69 reverts all eight.
+        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 8);
         assert!(objects(&conn).is_empty());
         apply(&mut conn, MIGRATIONS).unwrap();
         let rows: i64 = conn
@@ -4674,8 +4762,8 @@ mod tests {
         assert!(insert("something_else", 16, 3).is_err());
         assert!(insert("import_discarded", 15, 3).is_err());
         assert!(insert("import_discarded", 16, -1).is_err());
-        // 72 to 76 sit above 71: stepping to 70 reverts all six.
-        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 6);
+        // 72 to 77 sit above 71: stepping to 70 reverts all seven.
+        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 7);
         let left: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%sync_notices%'",
@@ -4755,7 +4843,7 @@ mod tests {
 
         // 73 (the genesis identity), 74 (the live closure), 75 (shared blobs) and 76 (import
         // identities) sit above 72: step past them first.
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 4);
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 5);
         assert_eq!(migrate_down(&mut conn, 71).unwrap(), 1);
 
         let rows: i64 = conn
@@ -4804,7 +4892,7 @@ mod tests {
         outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "NULL").unwrap();
         outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
 
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 4);
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 5);
         assert!(migrate_down(&mut conn, 71).is_err());
 
         let applied: i64 = conn
@@ -4928,7 +5016,7 @@ mod tests {
     fn v75_lets_rows_share_a_blob_and_carries_every_row_over() {
         let mut conn = Connection::open_in_memory().unwrap();
         // Up to 74: the unique constraint is still there.
-        apply(&mut conn, &MIGRATIONS[..MIGRATIONS.len() - 2]).unwrap();
+        apply(&mut conn, &MIGRATIONS[..MIGRATIONS.len() - 3]).unwrap();
         let attach = |conn: &Connection, id: u8, sid: &str| {
             conn.execute(
                 "INSERT INTO attachments (id, storage_id, wrapped_content_key, content_key_nonce,
@@ -5157,7 +5245,7 @@ mod tests {
             .unwrap();
         assert_eq!(index, 1);
 
-        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 3);
+        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 4);
         let tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'sync_live_closure%'",

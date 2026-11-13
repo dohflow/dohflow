@@ -369,6 +369,20 @@ fn dump(worker: &DbWorker) -> String {
           ORDER BY sb.source_name, dd.decision, dd.reason, 6",
         6,
     );
+    // A flag is the staged row's own reason and counterpart (class 3), since a flagged decision is not
+    // a row of the class-1 decisions table.
+    section(
+        "staged flags",
+        "SELECT sb.source_name, st.commit_status, st.flag_reason,
+                (SELECT td.memo FROM transaction_details td
+                  WHERE td.transaction_id = st.flag_matched_transaction_id)
+           FROM staged_transactions st
+           JOIN source_records sr ON sr.id = st.source_record_id
+           JOIN source_batches sb ON sb.id = sr.source_batch_id
+          WHERE st.flag_reason IS NOT NULL
+          ORDER BY sb.source_name, st.flag_reason, 4",
+        4,
+    );
     section(
         "staged_transactions",
         "SELECT sb.source_name, sr.source_hash, st.description, st.commit_status,

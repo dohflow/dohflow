@@ -18,7 +18,7 @@
 //! connection costs about 75 ms to key with a passphrase, and an import decides thousands of rows. The
 //! lock is held for the plan alone and released before the command is dispatched.
 
-use chrono::{NaiveDate, Utc};
+use chrono::NaiveDate;
 use core_ledger::StagedTransactionId;
 use rusqlite::{params, Connection};
 use uuid::Uuid;
@@ -54,7 +54,6 @@ struct PlannedCommit {
 /// A row to flag for review.
 struct PlannedFlag {
     staged_id: Uuid,
-    batch_id: Uuid,
     reason: &'static str,
     matched: Option<Uuid>,
     /// Whether the row is a suspected duplicate (as opposed to a row the ledger cannot accept).
@@ -123,7 +122,6 @@ fn plan_staged(
     let flag = |reason: &'static str, matched: Option<Uuid>, suspected_duplicate: bool| {
         StagedPlan::Flag(PlannedFlag {
             staged_id,
-            batch_id,
             reason,
             matched,
             suspected_duplicate,
@@ -267,56 +265,43 @@ impl DbWorker {
             }
             StagedPlan::Flag(flag) => {
                 if !flag.already_flagged {
-                    self.record_flag(&meta, &flag)?;
+                    self.record_flag(&flag)?;
                 }
                 Ok(StagedDecision::Flagged)
             }
         }
     }
 
-    /// Flag a staged row for the Money Inbox, with the decision that says why. Device-local: the
-    /// decision names the staged row, which only this device has. One transaction, so a flagged row
-    /// always has its decision. Transitional: the decision becomes a command with
-    /// personal-cfo-5ymg8.6.
-    fn record_flag(&self, meta: &CommandMeta, flag: &PlannedFlag) -> Result<(), DbError> {
+    /// Flag a staged row for the Money Inbox, with the reason it was flagged and the committed
+    /// counterpart when there is one, both recorded on the staged row (class 3). Device-local: a flag
+    /// is advisory state about a staging row, which only this device has, never a replicated decision.
+    /// One statement, so a flagged row always has its reason.
+    fn record_flag(&self, flag: &PlannedFlag) -> Result<(), DbError> {
         let guard = self.lock();
-        let vault_id: Uuid = guard.conn.query_row(
-            "SELECT vault_id FROM vault_metadata WHERE singleton = 1",
-            [],
-            |r| r.get(0),
-        )?;
-        let id = core_ids::DerivedIdKey::for_vault(&vault_id).content_id(
-            "import.dedupe-decision",
-            &[flag.staged_id.as_bytes(), b"flagged"],
-        )?;
-        let tx = guard.conn.unchecked_transaction()?;
-        ingestion::record_dedupe_decision(
-            &tx,
-            id,
-            &ingestion::NewDedupeDecision {
-                source_batch_id: flag.batch_id,
-                layer: "transaction",
-                staged_transaction_id: Some(flag.staged_id),
-                matched_entity_type: flag.matched.map(|_| "ledger_transaction"),
-                matched_entity_id: flag.matched,
-                decision: "flagged",
-                reason: flag.reason,
-            },
-            &crate::apply::issued_at_text(meta),
-        )?;
         if flag.suspected_duplicate {
-            ingestion::flag_staged_duplicate(&tx, flag.staged_id)?;
+            ingestion::flag_staged_duplicate(
+                &guard.conn,
+                flag.staged_id,
+                flag.reason,
+                flag.matched,
+            )?;
         } else {
-            ingestion::flag_staged_for_review(&tx, flag.staged_id)?;
+            ingestion::flag_staged_for_review(
+                &guard.conn,
+                flag.staged_id,
+                flag.reason,
+                flag.matched,
+            )?;
         }
-        tx.commit()?;
         Ok(())
     }
 
     /// Skip a staged row without committing it: the Money Inbox "skip" resolution (ADR 0014 §7,
     /// personal-cfo-asqy) and the silent skip of a certain connector duplicate. Marks the row
-    /// `skipped` and records the decision; no ledger write, and nothing replicates. Skipping a row
-    /// that is already skipped does nothing. The Money Inbox is not rebuilt.
+    /// `skipped`; no ledger write, and nothing replicates. No decision row is written: a `skipped`
+    /// decision names no transaction, and the staged row's status is the record until
+    /// personal-cfo-5ymg8.6 makes the skip a command. Skipping a row that is already skipped does
+    /// nothing. The Money Inbox is not rebuilt.
     ///
     /// # Errors
     /// [`DbError::InvalidCommand`] for a staged row that does not exist or is already committed;
@@ -331,37 +316,7 @@ impl DbWorker {
         if staged.commit_status == "skipped" {
             return Ok(());
         }
-        let batch_id: Uuid = guard.conn.query_row(
-            "SELECT source_batch_id FROM source_records WHERE id = ?1",
-            [staged.source_record_id],
-            |r| r.get(0),
-        )?;
-        let vault_id: Uuid = guard.conn.query_row(
-            "SELECT vault_id FROM vault_metadata WHERE singleton = 1",
-            [],
-            |r| r.get(0),
-        )?;
-        let id = core_ids::DerivedIdKey::for_vault(&vault_id).content_id(
-            "import.dedupe-decision",
-            &[staged.id.as_bytes(), b"skipped"],
-        )?;
-        let tx = guard.conn.unchecked_transaction()?;
-        ingestion::mark_staged_skipped(&tx, staged.id)?;
-        ingestion::record_dedupe_decision(
-            &tx,
-            id,
-            &ingestion::NewDedupeDecision {
-                source_batch_id: batch_id,
-                layer: "transaction",
-                staged_transaction_id: Some(staged.id),
-                matched_entity_type: None,
-                matched_entity_id: None,
-                decision: "skipped",
-                reason: "user skipped",
-            },
-            &Utc::now().to_rfc3339(),
-        )?;
-        tx.commit()?;
+        ingestion::mark_staged_skipped(&guard.conn, staged.id)?;
         Ok(())
     }
 }

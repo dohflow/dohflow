@@ -213,8 +213,8 @@ fn apply_change_journal(conn: &Connection) -> Result<(), DbError> {
 }
 
 /// Generator: one item per flagged staged transaction (ADR 0014 §2/§3). Joins the
-/// source batch (for the filename) + the flagged `dedupe_decisions` reason + the
-/// suspected committed counterpart: the match the decision recorded, else (for a
+/// source batch (for the filename) + the staged row's own flag reason + the
+/// suspected committed counterpart: the match the flag recorded, else (for a
 /// flag recorded before decisions named it) a committed row with the same
 /// fingerprint **in the same account**; never a voided transaction
 /// (personal-cfo-yl5).
@@ -223,16 +223,11 @@ fn generate_imported_waiting_commit(conn: &Connection) -> Result<u64, DbError> {
         "SELECT s.id, s.posted_at, s.amount_minor, s.currency,
                 s.normalized_merchant, s.description, s.proposed_account_id,
                 s.created_at, sb.source_name, a.name,
-                (SELECT d.reason FROM dedupe_decisions d
-                  WHERE d.staged_transaction_id = s.id AND d.decision = 'flagged'
-                  ORDER BY d.decided_at DESC LIMIT 1),
+                s.flag_reason,
                 COALESCE(
-                  (SELECT d.matched_entity_id FROM dedupe_decisions d
-                    JOIN ledger_transactions lt ON lt.id = d.matched_entity_id
-                    WHERE d.staged_transaction_id = s.id AND d.decision = 'flagged'
-                      AND d.matched_entity_type = 'ledger_transaction'
-                      AND lt.voided_at IS NULL
-                    ORDER BY d.decided_at DESC LIMIT 1),
+                  (SELECT lt.id FROM ledger_transactions lt
+                    WHERE lt.id = s.flag_matched_transaction_id
+                      AND lt.voided_at IS NULL),
                   (SELECT c.committed_transaction_id FROM staged_transactions c
                     JOIN ledger_transactions lt ON lt.id = c.committed_transaction_id
                     WHERE c.txn_fingerprint = s.txn_fingerprint

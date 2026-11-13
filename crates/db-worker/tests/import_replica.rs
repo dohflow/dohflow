@@ -201,12 +201,12 @@ fn canonical_rows(conn: &Connection) -> String {
             writeln!(out, "{line}").unwrap();
         }
     }
-    // The committed decisions are about the transaction; the flagged ones name a staging row and stay
-    // on the device that flagged them (class 4 until personal-cfo-5ymg8.6).
+    // The committed decisions are about the transaction, keyed by it; a flag is the staged row's own
+    // class-3 column and stays on the device that flagged it.
     writeln!(out, "[dedupe_decisions committed]").unwrap();
     let mut stmt = conn
         .prepare(
-            "SELECT id, source_batch_id, layer, staged_transaction_id, decision, reason, decided_at
+            "SELECT id, source_batch_id, layer, transaction_id, decision, reason, decided_at
                FROM dedupe_decisions WHERE decision = 'committed' ORDER BY id",
         )
         .unwrap();

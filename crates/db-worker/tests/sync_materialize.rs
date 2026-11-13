@@ -1256,7 +1256,7 @@ fn the_sweep_also_stands_down_while_a_rebase_is_in_progress() {
 // ---- staging under a batch that is replaced (foreign keys are on) -----------------------------------
 
 /// Put an import in progress under `batch`: a staged transaction and balance per record, a staged
-/// account, and a dedupe decision that references both the batch and a staged transaction. The
+/// account, and a flag on the staged transaction. The
 /// merchant, description and amount are sentinels the log must never show.
 fn stage_import(vault: &Vault, batch: [u8; 16], records: &[[u8; 16]]) {
     let conn = vault.worker.read_connection().unwrap();
@@ -1282,15 +1282,11 @@ fn stage_import(vault: &Vault, batch: [u8; 16], records: &[[u8; 16]]) {
             rusqlite::params![[tag, 2_u8].repeat(8), record.as_slice()],
         )
         .unwrap();
+        // A flagged row's reason is on the staged row itself (class 3), and goes with it.
         conn.execute(
-            "INSERT INTO dedupe_decisions
-                 (id, source_batch_id, layer, staged_transaction_id, decision, reason, decided_at)
-             VALUES (?1, ?2, 'transaction', ?3, 'flagged', 'r', 't')",
-            rusqlite::params![
-                [tag, 3_u8].repeat(8),
-                batch.as_slice(),
-                [tag, 1_u8].repeat(8)
-            ],
+            "UPDATE staged_transactions
+                SET commit_status = 'flagged', flag_reason = 'r' WHERE id = ?1",
+            rusqlite::params![[tag, 1_u8].repeat(8)],
         )
         .unwrap();
     }
@@ -1303,7 +1299,7 @@ fn stage_import(vault: &Vault, batch: [u8; 16], records: &[[u8; 16]]) {
 }
 
 /// The staging rows (class 3 and the class-4 decisions) that belong to `batch`.
-fn staging_of(vault: &Vault, batch: [u8; 16]) -> [i64; 4] {
+fn staging_of(vault: &Vault, batch: [u8; 16]) -> [i64; 3] {
     let conn = vault.worker.read_connection().unwrap();
     let count = |sql: &str| -> i64 {
         conn.query_row(sql, [batch.as_slice()], |r| r.get(0))
@@ -1319,7 +1315,6 @@ fn staging_of(vault: &Vault, batch: [u8; 16]) -> [i64; 4] {
                  (SELECT id FROM source_records WHERE source_batch_id = ?1)",
         ),
         count("SELECT COUNT(*) FROM staged_accounts WHERE source_batch_id = ?1"),
-        count("SELECT COUNT(*) FROM dedupe_decisions WHERE source_batch_id = ?1"),
     ]
 }
 
@@ -1370,7 +1365,7 @@ fn an_identical_re_reference_with_staging_present_changes_nothing() {
         .unwrap();
     stage_import(&vault, [0xb1; 16], &[[1; 16], [2; 16]]);
     let before = everything(&vault);
-    assert_eq!(staging_of(&vault, [0xb1; 16]), [2, 2, 1, 2]);
+    assert_eq!(staging_of(&vault, [0xb1; 16]), [2, 2, 1]);
 
     // The same envelope delivered again, or an honest producer re-referencing the batch.
     let discarded = vault
@@ -1434,12 +1429,11 @@ fn a_changed_or_dropped_row_discards_that_batchs_staging_and_only_that_batchs() 
                 discarded[0].staged_transactions,
                 discarded[0].staged_balances,
                 discarded[0].staged_accounts,
-                discarded[0].dedupe_decisions
             ],
-            [2, 2, 1, 2],
+            [2, 2, 1],
             "{variant}: ALL of the batch's staging, so a half-import cannot be committed"
         );
-        assert_eq!(staging_of(&vault, [0xb1; 16]), [0, 0, 0, 0], "{variant}");
+        assert_eq!(staging_of(&vault, [0xb1; 16]), [0, 0, 0], "{variant}");
         assert_eq!(
             staging_of(&vault, [0xb9; 16]),
             other_before,
@@ -1481,7 +1475,7 @@ fn a_changed_or_dropped_row_discards_that_batchs_staging_and_only_that_batchs() 
             notices[0].source_name.as_deref(),
             Some("private-statement-march.csv")
         );
-        assert_eq!(notices[0].discarded_count, 7);
+        assert_eq!(notices[0].discarded_count, 5);
     }
 }
 
@@ -1514,7 +1508,7 @@ fn a_batch_that_loses_a_record_to_another_loses_its_staging_too() {
         discarded[0].batch_id, [0xb1; 16],
         "the batch that lost the record"
     );
-    assert_eq!(staging_of(&vault, [0xb1; 16]), [0, 0, 0, 0]);
+    assert_eq!(staging_of(&vault, [0xb1; 16]), [0, 0, 0]);
     assert_eq!(foreign_key_violations(&vault), 0);
     let notices = vault.worker.sync_notices().unwrap();
     assert_eq!(notices.len(), 1);
@@ -1619,7 +1613,6 @@ fn the_log_line_carries_counts_and_nothing_the_user_typed_or_imported() {
         "staged_transactions=2",
         "staged_balances=2",
         "staged_accounts=1",
-        "dedupe_decisions=2",
     ] {
         assert!(logged.contains(field), "{field} in {logged}");
     }
@@ -1724,8 +1717,8 @@ fn committed_decision(vault: &Vault, batch: [u8; 16]) {
         .unwrap()
         .execute(
             "INSERT INTO dedupe_decisions
-                 (id, source_batch_id, layer, staged_transaction_id, decision, reason, decided_at)
-             VALUES (?1, ?2, 'transaction', NULL, 'committed', 'imported', 't')",
+                 (id, source_batch_id, layer, decision, reason, decided_at)
+             VALUES (?1, ?2, 'transaction', 'committed', 'imported', 't')",
             rusqlite::params![[0xc0_u8, batch[0]].repeat(8), batch.as_slice()],
         )
         .unwrap();
@@ -1738,7 +1731,7 @@ fn committed_decisions(vault: &Vault, batch: [u8; 16]) -> i64 {
         .unwrap()
         .query_row(
             "SELECT COUNT(*) FROM dedupe_decisions
-              WHERE source_batch_id = ?1 AND staged_transaction_id IS NULL",
+              WHERE source_batch_id = ?1",
             [batch.as_slice()],
             |r| r.get(0),
         )
@@ -1787,10 +1780,6 @@ fn a_committed_dedupe_decision_is_replicated_data_and_survives_the_discard() {
         .materialize_batch(1, &parts_v2(), &forged, &none)
         .unwrap();
     assert_eq!(discarded.len(), 1);
-    assert_eq!(
-        discarded[0].dedupe_decisions, 2,
-        "counts only the staging's decisions"
-    );
     assert_eq!(committed_decisions(&importing, [0xb1; 16]), 1);
     assert_eq!(foreign_key_violations(&importing), 0);
     // And the two replicas hold the same replicated decisions.

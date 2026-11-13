@@ -64,6 +64,7 @@ mod write_set_tests;
 pub use connectors::{ConnectorConnectionRow, ConnectorFeed, ConnectorLinkRow};
 mod commitments;
 mod debt;
+mod dedupe_reshape;
 mod forecast;
 mod forecast_actualize;
 mod forecast_backtest;
@@ -133,7 +134,7 @@ pub const CURRENT_SCHEMA_VERSION: i64 = migrations::CURRENT_VERSION;
 /// same write-set hash from the same command, which is what lets a replica verify a write set.
 /// It is bumped by hand, in the same change, whenever a change makes `apply` write something
 /// different for an unchanged payload; a mismatch tells a client to update before it continues.
-pub const ENGINE_VERSION: &str = "dohflow-engine-3";
+pub const ENGINE_VERSION: &str = "dohflow-engine-4";
 pub use forecast::{
     AccountAvailability, AccountHistoryView, AccountSeriesView, CapabilityUnlock, CardCycleView,
     CardStatementForecastView, CardStatementHistoryView, CashAvailability, CashFlowHistory,
@@ -1657,6 +1658,10 @@ pub enum DbError {
         /// What armed the vault.
         case: &'static str,
     },
+    /// A batch that has committed rows was asked to be discarded: its committed decision and its
+    /// provenance links name the batch, so discarding it would leave them dangling.
+    #[error("a batch with committed rows cannot be discarded")]
+    BatchHasCommittedRows,
     /// The worker is not in a state that accepts writes.
     #[error("worker unavailable for writes: {0:?}")]
     WorkerUnavailable(WorkerState),
@@ -7472,11 +7477,10 @@ fn read_duplicate_candidates(
                AND c.commit_status = 'committed'
                AND c.committed_transaction_id IS NOT NULL
              UNION
-             SELECT d.matched_entity_id
-             FROM dedupe_decisions d
-             WHERE d.staged_transaction_id = ?1 AND d.decision = 'flagged'
-               AND d.matched_entity_type = 'ledger_transaction'
-               AND d.matched_entity_id IS NOT NULL
+             SELECT s2.flag_matched_transaction_id
+             FROM staged_transactions s2
+             WHERE s2.id = ?1 AND s2.commit_status = 'flagged'
+               AND s2.flag_matched_transaction_id IS NOT NULL
          )
          ORDER BY lt.occurred_at DESC, lt.operation_id DESC, lt.id DESC, a.id DESC"
     );

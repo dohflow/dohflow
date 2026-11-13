@@ -1566,11 +1566,31 @@ mod old_backup_settings_tests {
             // outbox's issue time, 68 the counter register and the genesis, 69 the void ledger and
             // the applied cursor, 70 the artifact mapping, 71 the Sync notices, 72 lets a bound outbox
             // row have no result, 73 the genesis snapshot's identity, 74 the live closure, 75 the
-            // shared-blob index).
+            // shared-blob index, 76 the import identity tables, 77 the dedupe decisions' new shape).
             let conn = kernel.worker.read_connection().unwrap();
             conn.execute_batch(
                 "UPDATE settings SET key = substr(key, 6) WHERE key LIKE 'user.%';
-                 DELETE FROM schema_migrations WHERE version IN (64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76);
+                 DELETE FROM schema_migrations WHERE version IN (64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77);
+                 DROP INDEX idx_dedupe_decisions_batch;
+                 DROP INDEX idx_dedupe_decisions_transaction;
+                 DROP INDEX idx_dedupe_decisions_identity;
+                 DROP TABLE dedupe_decisions;
+                 CREATE TABLE dedupe_decisions (
+                     id                    BLOB    PRIMARY KEY,
+                     source_batch_id       BLOB    NOT NULL REFERENCES source_batches(id),
+                     layer                 TEXT    NOT NULL CHECK (layer IN ('file', 'transaction')),
+                     staged_transaction_id BLOB    REFERENCES staged_transactions(id),
+                     matched_entity_type   TEXT,
+                     matched_entity_id     BLOB,
+                     decision              TEXT    NOT NULL CHECK (decision IN (
+                         'committed', 'skipped', 'merged', 'flagged')),
+                     reason                TEXT    NOT NULL,
+                     decided_at            TEXT    NOT NULL
+                 );
+                 CREATE INDEX idx_dedupe_decisions_batch ON dedupe_decisions (source_batch_id);
+                 CREATE INDEX idx_dedupe_decisions_staged ON dedupe_decisions (staged_transaction_id);
+                 ALTER TABLE staged_transactions DROP COLUMN flag_matched_transaction_id;
+                 ALTER TABLE staged_transactions DROP COLUMN flag_reason;
                  DROP INDEX idx_import_identities_transaction;
                  DROP INDEX idx_import_dispositions_subject;
                  DROP TABLE import_dispositions;
