@@ -99,6 +99,15 @@ bead = "personal-cfo-0g528"
 note = "Class 1b import provenance; reshaped by SYNC-2c."
 
 [[site]]
+module = "import_identity_backfill.rs"
+table = "import_identities"
+class = "1"
+statements = 2
+status = "allowed"
+bead = "personal-cfo-0g528.3"
+note = "migration 76's backfill (one INSERT per kind): writes the identities of what the vault imported before cross-device identity existed. Not a command: it runs once, inside the migration's transaction, and the migration refuses before it writes anything on a vault where Sync is armed (a sync_base or sync_genesis row), because a class-1 write outside a command reaches no other device; on a vault that never enabled Sync a later genesis carries the rows to every replica (ADR 0074 Addendum J item 7). After launch a backfill is a command."
+
+[[site]]
 module = "households.rs"
 table = "household_members"
 class = "1"

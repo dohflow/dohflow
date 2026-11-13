@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=48 -->
-<!-- vault-format: schema-version=75 -->
+<!-- vault-format: spec-version=49 -->
+<!-- vault-format: schema-version=76 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -272,6 +272,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 49` (personal-cfo-0g528.3, S3b part 1, schema version 76; provisional: it settles at merge) adds the two class-1 tables of ADR 0074 Addendum J (B.2 `import_identities`, `import_dispositions`): the cross-device identity of a committed import row, with the snapshot a later commit of it is compared against, and the decisions about an identity or a file. Both are in both formats and carry no class-3 reference. The migration **refuses, atomically and before it writes anything, on a vault that holds a `sync_base` or a `sync_genesis` row**, because it backfills identities for what the vault imported before, and a write to class-1 rows outside a command is in no log row and no envelope; a vault that never enabled Sync backfills, and a later genesis carries the rows to every replica. A replica **refuses a snapshot below that migration** (C.8). No wire layout, write-set rule, vector or `engine_version` change; the tables stay empty of new rows until the commit rule of a later part.
 - `spec-version = 48` (personal-cfo-0g528.2, AC9, schema version 75; provisional: it settles at merge) lets two attachments share one blob. The same bytes attached on two devices are two attachment ids (ADR 0013's random ids stand), and on a receiver they have one `StorageId_B`, so `attachments.storage_id` stops being unique and a blob is owned by the **set** of `attachments` rows and staged mappings that name it: written once, never overwritten, removed only with the last name, and by one rule everywhere a blob is removed. C.9 now says what a receiver does when a blob under the name is already held (check it, reuse it, stage a copy of the holder's crypto fields), the lookup of an attachment by its bytes returns the lowest id, and a rotation renames a shared blob once. A local fault replaces the refusal: a held blob that does not decrypt to the bytes, or is missing, is never a stage-9(b) verdict. No wire layout, write-set rule, vector or `engine_version` change.
 - `spec-version = 47` (personal-cfo-1cltt.7, slice D2; provisional: it settles at merge) changes the C.8 "Replica bootstrap" install normatively for a snapshot that carries a class-1b closure: the installer's single transaction becomes a build in which the closure is fetched, verified and materialized before the vault exists (a verified part waiting for its siblings is spooled as ciphertext), the `attachments` rows are created from the snapshot's row and the staged crypto, foreign keys are checked over the whole database at the end, and the re-export proof moves after the materialization; a failure is deterministic, transient or local. No wire layout, write-set rule, vector, `engine_version` or schema change.
 - `spec-version = 46` (personal-cfo-1cltt.7, slice D1, schema version 74; provisional: it settles at merge) adds the SQLite home of the live closure (B.2 `sync_live_closure`, C.9): derived, class 3, excluded from both formats, written only where the vault's class-1 state equals its accepted state (an accepted envelope's apply; the push path, which brings the table to the accepted head in the transaction that empties the outbox, because an own envelope is not applied when its push is accepted; the seed at bootstrap; the rebuild at a key epoch), never by a local command or a local-command replay. No wire layout, write-set rule, vector or `engine_version` change.
@@ -635,6 +636,8 @@ therefore requires reviewing this inventory.
 | `households` | 1 | include | include | The vault's one household row: name, household timezone (the field `SetHouseholdTimezone` changes), an optional platform household link (null with no account). Its id is derived from the vault id and is for local use only: it is never sent to the platform service. |
 | `household_members` | 1 | include | include | Household seats: display name, role (primary or partner; display and ownership metadata, NOT access control; no viewer role in v1), an optional platform member link, and a `deleted_at` tombstone. Exactly one live primary. |
 | `profiles` | 1 | include | include | Per-member non-secret display preferences (initials, color). No secret-bearing column. |
+| `import_dispositions` | 1 | include | include | A decision about an import identity or a file (ADR 0074 Addendum J): `skipped`, `import_anyway`, `provider_revision`, `file_row_conflict` or `restore_question`, `pending` or `resolved`, with the generation it answers. `subject_id` is an identity id, or for a restore question the file's question id. A resolved restore question carries an `outcome` (`restored`, `dismissed` or `import_anyway`) and, for `import_anyway`, the claimant's `claimed_source_batch_id`; `kind` is never rewritten, and `detail` is display and audit only (apply never reads it). Names no class-3 row. Written by apply only. |
+| `import_identities` | 1 | include | include | The cross-device identity of a committed import row (ADR 0074 Addendum J): `kind` `provider` (the derived id of ADR 0013-A section 9 over `connection_id`, `provider_account_key` and `provider_txn_id`) or `file` (section 12 over the decoded file fingerprint and `row_ordinal`), mapped to the `transaction_id` committed for it, with a snapshot (`account_id`, `amount_minor`, `currency`, `posted_date`, and for a provider row `provider_description`) that a later commit of the same identity is compared against. The primary key is the derived id; each kind has its own components and `UNIQUE` constraint, and a `CHECK` ties each kind to exactly its columns. A void keeps the row. |
 | `income_sources` | 1 | include | include | Canonical user intent. |
 | `recurring_events` | 1 | include | include | Canonical user intent. |
 | `recurring_event_tags` | 1 | include | include | Canonical user intent. |
@@ -2219,7 +2222,12 @@ build does not replicate, or omits one it does, is refused whole. A snapshot tha
 non-empty closure, an attachment row) is refused by the installer on its own and built whole by the
 bootstrap: its proof moves to the end of the build, after the closure is materialized. A snapshot of a **newer** schema is update-required and never installed; one of
 an equal or older schema installs by migrating the new vault to the snapshot's version first and to the
-build's afterwards, so no migration ever runs over rows it was not written for.
+build's afterwards, so no migration ever runs over rows it was not written for. **A snapshot below a row-writing migration is
+refused up front:** a snapshot of a schema below a migration that writes class-1 rows outside a command
+(a backfill; the build lists them in one place, and the armed-vault refusal reads the same list) is
+refused before anything is created, as a deterministic failure that names the snapshot's schema and that
+migration, because the migration would run over the installed rows and write class-1 rows that no log
+row explains. At spec 49 that migration is 76 (ADR 0074 Addendum J item 7).
 
 **The closure.** A snapshot's closure is every class-1b artifact its rows depend on, and a replica
 fetches **all** of it before it exists, because a manifest binds no id to a logical row: only opening

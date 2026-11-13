@@ -437,6 +437,53 @@ fn fetch_transactions_filters_when_the_server_ignores_the_account_param() {
     );
 }
 
+/// The contract the cross-device import identity backfill rests on (personal-cfo-0g528.3, ADR 0074
+/// Addendum J item 7): a committed record's normalized payload alone gives back what the adapter
+/// mapped. The backfill reads `account_key` (the identity's account component), `posted` (read as a
+/// UTC date: the planner's posted date) and `description` (the provider description) from it, and
+/// `external_id` as the provider transaction id. If the adapter ever maps these from anything else,
+/// this fails and the backfill's snapshot must change with it, in the same change.
+#[test]
+fn a_records_normalized_payload_gives_back_what_the_import_identity_backfill_reads() {
+    let body = set_json(&[account_json(
+        "ACT-1",
+        &format!(
+            "{},{}",
+            // 1_772_582_400 is 2026-03-04T00:00:00Z; a time late in a day must not roll the date.
+            txn_json("TXN-1", 1_772_582_400, "-12.34"),
+            txn_json("TXN-2", 1_772_668_799, "7.00")
+        ),
+    )]);
+    let since = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+    let transport = FixtureTransport::queue(vec![(200, body)]);
+    let records = mk_adapter(&transport)
+        .fetch_transactions(&conn(), "ACT-1", Some(since))
+        .unwrap();
+    assert_eq!(records.len(), 2);
+    for record in &records {
+        let parsed = record.transaction.as_ref().unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&record.normalized_json).unwrap();
+        assert_eq!(
+            payload["account_key"].as_str(),
+            parsed.external_account.as_deref()
+        );
+        assert_eq!(
+            record.external_id.as_deref(),
+            payload["txn_id"].as_str(),
+            "the provider transaction id is the record's external id"
+        );
+        let posted = payload["posted"].as_i64().unwrap();
+        let date = chrono::DateTime::from_timestamp(posted, 0)
+            .unwrap()
+            .date_naive();
+        assert_eq!(date, parsed.posted_date);
+        assert_eq!(
+            payload["description"].as_str(),
+            parsed.description.as_deref()
+        );
+    }
+}
+
 #[test]
 fn non_fatal_provider_errors_become_warnings_and_bad_records_are_never_silent() {
     let since = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();

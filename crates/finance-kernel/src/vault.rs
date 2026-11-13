@@ -1570,7 +1570,11 @@ mod old_backup_settings_tests {
             let conn = kernel.worker.read_connection().unwrap();
             conn.execute_batch(
                 "UPDATE settings SET key = substr(key, 6) WHERE key LIKE 'user.%';
-                 DELETE FROM schema_migrations WHERE version IN (64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75);
+                 DELETE FROM schema_migrations WHERE version IN (64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76);
+                 DROP INDEX idx_import_identities_transaction;
+                 DROP INDEX idx_import_dispositions_subject;
+                 DROP TABLE import_dispositions;
+                 DROP TABLE import_identities;
                  DROP INDEX idx_attachments_storage_id;
                  DROP INDEX sync_live_closure_logical;
                  DROP TABLE sync_live_closure;
