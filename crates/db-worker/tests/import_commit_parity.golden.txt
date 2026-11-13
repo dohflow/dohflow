@@ -31,8 +31,6 @@ ledger_transaction | created_from | sync-1 | simplefin-2 | 1
 multi.csv | transaction | committed | unique | - | -
 multi.csv | transaction | committed | unique | - | -
 odd-rows.csv | transaction | committed | unique | - | -
-odd-rows.csv | transaction | flagged | not imported: its currency differs from the account's currency | - | -
-odd-rows.csv | transaction | flagged | not imported: the amount is zero | - | -
 restore.csv | transaction | committed | unique | - | -
 statement-june.csv | transaction | committed | unique | - | -
 statement-june.csv | transaction | committed | unique | - | -
@@ -40,16 +38,15 @@ statement-june.csv | transaction | committed | unique | - | -
 statement-june.csv | transaction | committed | unique | - | -
 statement-june.csv | transaction | committed | unique | - | -
 statement-june.csv | transaction | committed | user import-anyway override | - | -
-statement-june.csv | transaction | flagged | duplicate of an already-committed transaction | ledger_transaction | Corner Cafe
 statement-june.ofx | transaction | committed | unique | - | -
-statement-june.ofx | transaction | flagged | same date and amount already recorded from another source | ledger_transaction | Corner Cafe
-statement-june.ofx | transaction | skipped | user skipped | - | -
 sync-1 | transaction | committed | unique | - | -
 sync-1 | transaction | committed | unique | - | -
-sync-1 | transaction | flagged | same date and amount already recorded from another source | ledger_transaction | Employer
-sync-2 | transaction | skipped | user skipped | - | -
-sync-2 | transaction | skipped | user skipped | - | -
-sync-2 | transaction | skipped | user skipped | - | -
+[staged flags]
+odd-rows.csv | flagged | not imported: its currency differs from the account's currency | -
+odd-rows.csv | flagged | not imported: the amount is zero | -
+statement-june.csv | committed | duplicate of an already-committed transaction | Corner Cafe
+statement-june.ofx | skipped | same date and amount already recorded from another source | Corner Cafe
+sync-1 | flagged | same date and amount already recorded from another source | Employer
 [staged_transactions]
 multi.csv | csv-1 | Transfer In | committed | unique | 1
 multi.csv | csv-2 | Newsstand | committed | unique | 1

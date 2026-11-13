@@ -243,7 +243,7 @@ pub(crate) fn apply_commit_imported_transaction(
     }
     // A forced commit is the person's "import anyway" override of a suspected duplicate; record that
     // intent in the audit trail. The decision is about the transaction, not the device-local staging
-    // row, so it carries no staged id.
+    // row: it is keyed by the transaction (it carries no staged id).
     ingestion::record_dedupe_decision(
         tx,
         ids.content(
@@ -253,7 +253,8 @@ pub(crate) fn apply_commit_imported_transaction(
         &ingestion::NewDedupeDecision {
             source_batch_id: batch_id,
             layer: "transaction",
-            staged_transaction_id: None,
+            transaction_id: Some(transaction_id.as_uuid()),
+            identity_id: None,
             matched_entity_type: None,
             matched_entity_id: None,
             decision: "committed",
@@ -548,21 +549,12 @@ pub(crate) fn apply_commit_staged(
             // The decision names the committed counterpart, as the
             // cross-source layer does, so review reads what was decided rather
             // than re-deriving it (personal-cfo-yl5).
-            ingestion::record_dedupe_decision(
+            ingestion::flag_staged_duplicate(
                 tx,
-                ids.keyed("dedupe-decision", &[staged.id.as_bytes(), b"flagged"])?,
-                &ingestion::NewDedupeDecision {
-                    source_batch_id: batch_id,
-                    layer: "transaction",
-                    staged_transaction_id: Some(staged.id),
-                    matched_entity_type: Some("ledger_transaction"),
-                    matched_entity_id: Some(matched_txn),
-                    decision: "flagged",
-                    reason: "duplicate of an already-committed transaction",
-                },
-                &crate::apply::issued_at_text(meta),
+                staged.id,
+                "duplicate of an already-committed transaction",
+                Some(matched_txn),
             )?;
-            ingestion::flag_staged_duplicate(tx, staged.id)?;
             staged.id
         } else if let Some((reason, matched_txn)) = cross_source_reason(tx, &staged, force)? {
             // Cross-source heuristic (ADR 0014 §3 addendum, personal-cfo-tevp):
@@ -571,21 +563,7 @@ pub(crate) fn apply_commit_staged(
             // same real-world transaction is caught on account+date+amount and
             // FLAGGED for review — same-source rows are exempt (the source
             // itself vouches distinct rows are distinct transactions).
-            ingestion::record_dedupe_decision(
-                tx,
-                ids.keyed("dedupe-decision", &[staged.id.as_bytes(), b"flagged"])?,
-                &ingestion::NewDedupeDecision {
-                    source_batch_id: batch_id,
-                    layer: "transaction",
-                    staged_transaction_id: Some(staged.id),
-                    matched_entity_type: Some("ledger_transaction"),
-                    matched_entity_id: Some(matched_txn),
-                    decision: "flagged",
-                    reason,
-                },
-                &crate::apply::issued_at_text(meta),
-            )?;
-            ingestion::flag_staged_duplicate(tx, staged.id)?;
+            ingestion::flag_staged_duplicate(tx, staged.id, reason, Some(matched_txn))?;
             staged.id
         } else {
             let target = match commit_target(tx, &staged)? {
@@ -596,21 +574,7 @@ pub(crate) fn apply_commit_staged(
                 // §2, personal-cfo-pxi.9). An explicit commit (import anyway)
                 // still refuses it, and the whole command rolls back.
                 Err(problem) if !*force => {
-                    ingestion::record_dedupe_decision(
-                        tx,
-                        ids.keyed("dedupe-decision", &[staged.id.as_bytes(), b"flagged"])?,
-                        &ingestion::NewDedupeDecision {
-                            source_batch_id: batch_id,
-                            layer: "transaction",
-                            staged_transaction_id: Some(staged.id),
-                            matched_entity_type: None,
-                            matched_entity_id: None,
-                            decision: "flagged",
-                            reason: problem.reason(),
-                        },
-                        &crate::apply::issued_at_text(meta),
-                    )?;
-                    ingestion::flag_staged_for_review(tx, staged.id)?;
+                    ingestion::flag_staged_for_review(tx, staged.id, problem.reason(), None)?;
                     money_inbox::rebuild_in(tx, &crate::apply::issued_at_text(meta))?;
                     return Ok(staged.id);
                 }
@@ -706,7 +670,8 @@ pub(crate) fn apply_commit_staged(
                 &ingestion::NewDedupeDecision {
                     source_batch_id: batch_id,
                     layer: "transaction",
-                    staged_transaction_id: Some(staged.id),
+                    transaction_id: Some(txn_id.as_uuid()),
+                    identity_id: None,
                     matched_entity_type: None,
                     matched_entity_id: None,
                     decision: "committed",
@@ -729,7 +694,7 @@ pub(crate) fn apply_commit_staged(
 pub(crate) fn apply_skip_staged(
     tx: &Connection,
     meta: &CommandMeta,
-    ids: &core_ids::DerivedIds,
+    _ids: &core_ids::DerivedIds,
     staged_transaction_id: &StagedTransactionId,
 ) -> Result<Uuid, DbError> {
     let entity_id = {
@@ -738,26 +703,10 @@ pub(crate) fn apply_skip_staged(
         if staged.commit_status == "committed" {
             return Err(staged_cannot_be_skipped());
         }
-        let batch_id: Uuid = tx.query_row(
-            "SELECT source_batch_id FROM source_records WHERE id = ?1",
-            [staged.source_record_id],
-            |r| r.get(0),
-        )?;
+        // The skip is recorded on the staged row alone (class 3): a `skipped` decision names no
+        // transaction and would be a class-1 row no other device can use, until
+        // personal-cfo-5ymg8.6 makes the skip a command.
         ingestion::mark_staged_skipped(tx, staged.id)?;
-        ingestion::record_dedupe_decision(
-            tx,
-            ids.keyed("dedupe-decision", &[staged.id.as_bytes(), b"skipped"])?,
-            &ingestion::NewDedupeDecision {
-                source_batch_id: batch_id,
-                layer: "transaction",
-                staged_transaction_id: Some(staged.id),
-                matched_entity_type: None,
-                matched_entity_id: None,
-                decision: "skipped",
-                reason: "user skipped",
-            },
-            &crate::apply::issued_at_text(meta),
-        )?;
         // The skipped row is no longer flagged, so the next rebuild drops it.
         money_inbox::rebuild_in(tx, &crate::apply::issued_at_text(meta))?;
         staged.id

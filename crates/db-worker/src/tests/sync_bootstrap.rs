@@ -331,11 +331,15 @@ fn a_snapshot_of_a_newer_schema_is_update_required_and_writes_nothing() {
 fn a_snapshot_below_a_row_writing_migration_is_refused_before_anything_is_created() {
     let (_origin_dir, origin, verified) = origin();
     let (version, own) = (engine(), engine());
-    let marked = *crate::migrations::CLASS_1_WRITING_MIGRATIONS
+    let marked_versions: Vec<i64> = crate::migrations::CLASS_1_WRITING_MIGRATIONS
         .iter()
-        .map(|(v, _)| v)
+        .map(|(v, _)| *v)
+        .collect();
+    let marked = *marked_versions
+        .iter()
         .min()
         .expect("a marked migration exists");
+    let latest = *marked_versions.iter().max().unwrap();
     for below in [marked - 1, 1] {
         // A snapshot exported at that schema: it lacks the tables the marked migration added.
         let older = with_voids_without(
@@ -368,9 +372,36 @@ fn a_snapshot_below_a_row_writing_migration_is_refused_before_anything_is_create
         assert!(!path.exists());
         no_stray_files(&path);
     }
-    // A snapshot AT the marked schema or above carries the rows already, so it is not refused for
-    // this reason.
-    let at = with_voids(&verified, &[], marked.unsigned_abs());
+    // A snapshot of a schema between two marked migrations is refused for the next one.
+    for between in marked_versions.iter().copied().filter(|v| *v != latest) {
+        let next = *marked_versions
+            .iter()
+            .filter(|v| **v > between)
+            .min()
+            .unwrap();
+        let older = with_voids_without(
+            &verified,
+            &[],
+            between.unsigned_abs(),
+            TABLES_ADDED_BY_THE_LATEST_MIGRATION,
+        );
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("vault.db");
+        let err = bootstrap_replica(
+            &path,
+            &dek(),
+            &source(&origin, &older, 3, &version, &own, &[]),
+        )
+        .expect_err("refused");
+        assert!(
+            matches!(&err, BootstrapError::SnapshotBelowRowWritingMigration { migration, .. }
+                if *migration == next),
+            "{err:?}"
+        );
+    }
+    // A snapshot AT the latest marked schema or above carries the rows already, so it is not refused
+    // for this reason.
+    let at = with_voids(&verified, &[], latest.unsigned_abs());
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("vault.db");
     let born = bootstrap_replica(&path, &dek(), &source(&origin, &at, 3, &version, &own, &[]));

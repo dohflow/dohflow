@@ -937,7 +937,8 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 1, "a refused down drops no row");
         conn.execute("DELETE FROM import_dispositions", []).unwrap();
+        // The refused down left the vault at 76 (77's own down had already run); now it can go.
         assert_eq!(migrate_down(&mut conn, 75).unwrap(), 1);
-        assert_eq!(apply(&mut conn, MIGRATIONS).unwrap(), 1, "and up again");
+        assert_eq!(apply(&mut conn, MIGRATIONS).unwrap(), 2, "and up again");
     }
 }

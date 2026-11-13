@@ -5749,14 +5749,24 @@ fn a_duplicate_fingerprint_is_flagged_not_committed() {
         )
         .unwrap();
     assert_eq!(status, "flagged");
+    // A flag is the staged row's own reason (class 3), not a row of the class-1 decisions table.
     let flagged: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM dedupe_decisions WHERE decision = 'flagged'",
+            "SELECT COUNT(*) FROM staged_transactions
+              WHERE commit_status = 'flagged' AND flag_reason IS NOT NULL",
             [],
             |r| r.get(0),
         )
         .unwrap();
     assert_eq!(flagged, 1);
+    let decisions: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM dedupe_decisions WHERE decision NOT IN ('committed')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(decisions, 0, "no flagged decision row exists");
 
     // The flag names its committed counterpart (personal-cfo-yl5), as the
     // cross-source layer does, rather than leaving review to re-derive it.
@@ -5767,17 +5777,165 @@ fn a_duplicate_fingerprint_is_flagged_not_committed() {
             |r| r.get(0),
         )
         .unwrap();
-    let (layer, matched_type, matched_id): (String, Option<String>, Option<Uuid>) = conn
+    let (reason, matched_id): (Option<String>, Option<Uuid>) = conn
         .query_row(
-            "SELECT layer, matched_entity_type, matched_entity_id FROM dedupe_decisions
-              WHERE decision = 'flagged' AND staged_transaction_id = ?1",
+            "SELECT flag_reason, flag_matched_transaction_id FROM staged_transactions
+              WHERE id = ?1",
             rusqlite::params![second.as_uuid()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(layer, "transaction", "no new historical layer name");
-    assert_eq!(matched_type.as_deref(), Some("ledger_transaction"));
+    assert_eq!(
+        reason.as_deref(),
+        Some("duplicate of an already-committed transaction")
+    );
     assert_eq!(matched_id, Some(committed_txn));
+}
+
+/// personal-cfo-0g528.3, C9: the decisions apply writes under this engine, and what migration 77 makes of
+/// the shape the engine before it wrote. Apply keys every committed decision by its transaction (the
+/// planner's `CommitImportedTransaction` and the retired `CommitStaged`'s replay alike); a flag is the
+/// staged row's own columns; a skip writes no decision row. Then the vault goes down to schema 76, its
+/// rows are put into the form the engine before the reshape wrote (a committed decision that came from
+/// `CommitImportedTransaction` names no staged row), and it goes up again: the class-1 decisions and the
+/// staged flags are the same as the replay left them.
+#[test]
+fn apply_keys_every_committed_decision_and_migration_77_gives_the_replayed_state() {
+    let (_dir, worker) = worker();
+    let account = sample_account();
+    let account_id = account.id();
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::CreateAccount {
+                account: Box::new(account),
+                opening_balance: None,
+            },
+        )
+        .unwrap();
+    // The planner's path: a unique commit, then a duplicate that is flagged, then skipped.
+    let x = stage_a_transaction(&worker, account_id, -1100, "fp-x");
+    let y = stage_a_transaction(&worker, account_id, -1100, "fp-x");
+    worker.commit_staged(meta(), x, false).unwrap();
+    worker.commit_staged(meta(), y, false).unwrap();
+    worker.skip_staged(y).unwrap();
+    // The retired command's replay: a unique commit, a duplicate flagged, then skipped.
+    let z = stage_a_transaction(&worker, account_id, -2200, "fp-z");
+    let w = stage_a_transaction(&worker, account_id, -2200, "fp-z");
+    for staged in [z, w] {
+        worker
+            .dispatch(
+                meta(),
+                WriteCommand::CommitStaged {
+                    staged_transaction_id: staged,
+                    force: false,
+                },
+            )
+            .unwrap();
+    }
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::SkipStaged {
+                staged_transaction_id: w,
+            },
+        )
+        .unwrap();
+
+    type Decisions = Vec<(Uuid, Option<Uuid>, Option<Uuid>, String, String)>;
+    type Flags = Vec<(Uuid, Option<String>, Option<Uuid>, String)>;
+    let read = |worker: &DbWorker| -> (Decisions, Flags) {
+        let conn = worker.read_connection().unwrap();
+        let decisions = conn
+            .prepare(
+                "SELECT id, transaction_id, identity_id, decision, reason FROM dedupe_decisions
+                  ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let flags = conn
+            .prepare(
+                "SELECT id, flag_reason, flag_matched_transaction_id, commit_status
+                   FROM staged_transactions ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        (decisions, flags)
+    };
+    let committed_of = |worker: &DbWorker, staged: StagedTransactionId| -> Uuid {
+        worker
+            .read_connection()
+            .unwrap()
+            .query_row(
+                "SELECT committed_transaction_id FROM staged_transactions WHERE id = ?1",
+                [staged.as_uuid()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let (decisions, flags) = read(&worker);
+    let (x_txn, z_txn) = (committed_of(&worker, x), committed_of(&worker, z));
+    // Two decisions, both committed, each keyed by its own transaction; no flagged or skipped row.
+    let mut keys: Vec<Option<Uuid>> = decisions.iter().map(|d| d.1).collect();
+    keys.sort();
+    let mut expected = vec![Some(x_txn), Some(z_txn)];
+    expected.sort();
+    assert_eq!(
+        keys, expected,
+        "every committed decision is keyed by its transaction"
+    );
+    assert!(decisions
+        .iter()
+        .all(|d| d.3 == "committed" && d.2.is_none()));
+    // The flags are on the staged rows, with their counterpart, and the skip is their status.
+    for (staged, matched) in [(y, x_txn), (w, z_txn)] {
+        let row = flags.iter().find(|f| f.0 == staged.as_uuid()).unwrap();
+        assert_eq!(
+            row.1.as_deref(),
+            Some("duplicate of an already-committed transaction")
+        );
+        assert_eq!(row.2, Some(matched));
+        assert_eq!(row.3, "skipped");
+    }
+
+    // The engine before the reshape: down, then the planner's committed decision names no staged row.
+    {
+        let mut guard = worker.lock();
+        migrations::migrate_down(&mut guard.conn, 76).unwrap();
+        let vault_id: Uuid = guard
+            .conn
+            .query_row(
+                "SELECT vault_id FROM vault_metadata WHERE singleton = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let id = core_ids::DerivedIdKey::for_vault(&vault_id)
+            .content_id("import.dedupe-decision", &[x_txn.as_bytes(), b"committed"])
+            .unwrap();
+        let patched = guard
+            .conn
+            .execute(
+                "UPDATE dedupe_decisions SET staged_transaction_id = NULL WHERE id = ?1",
+                [id],
+            )
+            .unwrap();
+        assert_eq!(patched, 1, "the planner's decision has the derived id");
+        migrations::apply(&mut guard.conn, migrations::MIGRATIONS).unwrap();
+    }
+    assert_eq!(
+        read(&worker),
+        (decisions, flags),
+        "the class-1 state after migration 77 is the state the replay left"
+    );
 }
 
 /// Counterpart reads follow the flagging rule (personal-cfo-yl5): only a
@@ -6266,30 +6424,21 @@ fn skip_clears_a_flagged_duplicate_without_a_ledger_write() {
         )
         .unwrap();
     assert_eq!(status, "skipped");
-    // The audit trail keeps both decisions for the row: the flag, then the
-    // user's skip (personal-cfo-yl5).
-    let decisions: Vec<(String, String)> = conn
-        .prepare(
-            "SELECT decision, reason FROM dedupe_decisions
-              WHERE staged_transaction_id = ?1 ORDER BY decided_at, id",
+    // The skip is the staged row's status alone (no `skipped` decision row until
+    // personal-cfo-5ymg8.6 makes the skip a command), and the flag it answered stays on the row.
+    let (reason, decisions): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT flag_reason, (SELECT COUNT(*) FROM dedupe_decisions WHERE decision = 'skipped')
+               FROM staged_transactions WHERE id = ?1",
+            rusqlite::params![second.as_uuid()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .unwrap()
-        .query_map(rusqlite::params![second.as_uuid()], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
-        .unwrap()
-        .collect::<Result<_, _>>()
         .unwrap();
     assert_eq!(
-        decisions,
-        vec![
-            (
-                "flagged".to_owned(),
-                "duplicate of an already-committed transaction".to_owned()
-            ),
-            ("skipped".to_owned(), "user skipped".to_owned()),
-        ]
+        reason.as_deref(),
+        Some("duplicate of an already-committed transaction")
     );
+    assert_eq!(decisions, 0, "a user skip writes no decision row");
 }
 
 /// byxe: a committed import carries its source detail onto the transactions

@@ -426,7 +426,6 @@ impl DbWorker {
                 staged_transactions = import.staged_transactions,
                 staged_balances = import.staged_balances,
                 staged_accounts = import.staged_accounts,
-                dedupe_decisions = import.dedupe_decisions,
                 "sync: an import in progress was discarded because a received batch replaced its rows"
             );
         }
@@ -483,18 +482,13 @@ pub struct DiscardedImport {
     pub staged_balances: usize,
     /// `staged_accounts` removed.
     pub staged_accounts: usize,
-    /// `dedupe_decisions` removed.
-    pub dedupe_decisions: usize,
 }
 
 impl DiscardedImport {
     /// How many staging rows were removed in all.
     #[must_use]
     pub const fn rows(&self) -> usize {
-        self.staged_transactions
-            + self.staged_balances
-            + self.staged_accounts
-            + self.dedupe_decisions
+        self.staged_transactions + self.staged_balances + self.staged_accounts
     }
 }
 
@@ -610,26 +604,17 @@ pub(crate) fn load_records(
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-/// Remove all of a batch's staging (an import still being reviewed on this device), children first
-/// (`dedupe_decisions` references `staged_transactions`), and say what went. A committed dedupe
-/// decision (no staged transaction) is replicated data and stays. `None` if the device holds no
-/// staging for the batch, so a replica that only holds committed rows gets no notice.
+/// Remove all of a batch's staging (an import still being reviewed on this device), and say what went.
+/// A flagged row's reason lives on the staged row, so it goes with it. A `dedupe_decisions` row is a
+/// class-1 decision about a committed transaction: replicated data, which this device-local discard
+/// never touches. `None` if the device holds no staging for the batch, so a replica that only holds
+/// committed rows gets no notice.
 fn discard_staging(
     tx: &rusqlite::Transaction<'_>,
     batch: &[u8; 16],
     source_name: Option<String>,
 ) -> Result<Option<DiscardedImport>, MaterializeError> {
     let by_record = "SELECT id FROM source_records WHERE source_batch_id = ?1";
-    // Only the decisions about this batch's *staged transactions*. A decision with no staged id is a
-    // committed one that `CommitImportedTransaction`'s apply writes on every replica: replicated
-    // data, which this device-local discard must never touch.
-    let dedupe_decisions = tx.execute(
-        &format!(
-            "DELETE FROM dedupe_decisions WHERE staged_transaction_id IN
-                 (SELECT id FROM staged_transactions WHERE source_record_id IN ({by_record}))"
-        ),
-        params![batch.as_slice()],
-    )?;
     let staged_transactions = tx.execute(
         &format!("DELETE FROM staged_transactions WHERE source_record_id IN ({by_record})"),
         params![batch.as_slice()],
@@ -648,7 +633,6 @@ fn discard_staging(
         staged_transactions,
         staged_balances,
         staged_accounts,
-        dedupe_decisions,
     };
     Ok((import.rows() > 0).then_some(import))
 }

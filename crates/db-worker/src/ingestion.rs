@@ -133,11 +133,15 @@ pub(crate) struct NewDedupeDecision<'a> {
     pub source_batch_id: Uuid,
     /// `file` or `transaction`.
     pub layer: &'a str,
-    /// The staged transaction this decision is about (`None` for file-level).
-    pub staged_transaction_id: Option<Uuid>,
+    /// The committed ledger transaction this decision is about (`None` for a file-level decision, or
+    /// a decision from before the key existed).
+    pub transaction_id: Option<Uuid>,
+    /// The import identity it is about, when it has one.
+    pub identity_id: Option<Uuid>,
     pub matched_entity_type: Option<&'a str>,
     pub matched_entity_id: Option<Uuid>,
-    /// `committed` / `skipped` / `merged` / `flagged`.
+    /// `committed` / `skipped` / `merged`. A *flagged* decision is not a row of this class-1 table: it
+    /// is the staged row's own `flag_reason` and `flag_matched_transaction_id` (class 3).
     pub decision: &'a str,
     pub reason: &'a str,
 }
@@ -204,7 +208,8 @@ pub(crate) struct DedupeDecision {
     pub id: Uuid,
     pub source_batch_id: Uuid,
     pub layer: String,
-    pub staged_transaction_id: Option<Uuid>,
+    pub transaction_id: Option<Uuid>,
+    pub identity_id: Option<Uuid>,
     pub matched_entity_type: Option<String>,
     pub matched_entity_id: Option<Uuid>,
     pub decision: String,
@@ -430,14 +435,15 @@ pub(crate) fn record_dedupe_decision(
 ) -> Result<Uuid, DbError> {
     conn.execute(
         "INSERT INTO dedupe_decisions
-            (id, source_batch_id, layer, staged_transaction_id, matched_entity_type,
+            (id, source_batch_id, layer, transaction_id, identity_id, matched_entity_type,
              matched_entity_id, decision, reason, decided_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             id,
             dec.source_batch_id,
             dec.layer,
-            dec.staged_transaction_id,
+            dec.transaction_id,
+            dec.identity_id,
             dec.matched_entity_type,
             dec.matched_entity_id,
             dec.decision,
@@ -490,16 +496,34 @@ pub(crate) fn link_provenance(
 /// Discard a batch and **all** its staged rows — atomically, child rows first.
 /// TRUNCATE-safe: removes only staging data (ADR 0008 §1), never canonical
 /// accounts / ledger / balances. Returns the number of rows removed.
+///
+/// A batch that has committed rows is refused: a committed row's provenance link and its
+/// `dedupe_decisions` row (class 1) name the batch and its source records, so discarding it would leave
+/// them dangling (`personal-cfo-0g528.3`). A flagged row's reason lives on the staged row, so it goes
+/// with the staging and no decision is deleted here.
 pub(crate) fn discard_batch(conn: &Connection, batch_id: Uuid) -> Result<u64, DbError> {
+    let committed: bool = conn.query_row(
+        "SELECT EXISTS (
+             SELECT 1 FROM staged_transactions st
+               JOIN source_records sr ON sr.id = st.source_record_id
+              WHERE sr.source_batch_id = ?1
+                AND (st.commit_status = 'committed' OR st.committed_transaction_id IS NOT NULL))
+         OR EXISTS (SELECT 1 FROM dedupe_decisions WHERE source_batch_id = ?1)
+         OR EXISTS (
+             SELECT 1 FROM source_provenance_links pl
+               JOIN source_records sr ON sr.id = pl.source_record_id
+              WHERE sr.source_batch_id = ?1 AND pl.entity_type = 'ledger_transaction')",
+        params![batch_id],
+        |r| r.get(0),
+    )?;
+    if committed {
+        return Err(DbError::BatchHasCommittedRows);
+    }
     let tx = conn.unchecked_transaction()?;
     let mut removed: u64 = 0;
     removed += tx.execute(
         "DELETE FROM source_provenance_links WHERE source_record_id IN
             (SELECT id FROM source_records WHERE source_batch_id = ?1)",
-        params![batch_id],
-    )? as u64;
-    removed += tx.execute(
-        "DELETE FROM dedupe_decisions WHERE source_batch_id = ?1",
         params![batch_id],
     )? as u64;
     removed += tx.execute(
@@ -850,13 +874,21 @@ pub(crate) fn mark_staged_committed(
 }
 
 /// Flag a staged transaction as a suspected duplicate — not committed, not dropped
-/// (ADR 0014 §3). It surfaces in the Money Inbox for the user to skip or import.
-pub(crate) fn flag_staged_duplicate(conn: &Connection, staged_id: Uuid) -> Result<(), DbError> {
+/// (ADR 0014 §3). It surfaces in the Money Inbox for the user to skip or import. The reason, and the
+/// committed counterpart when there is one, are recorded on the staged row itself (class 3,
+/// device-local): a flag is advisory state about a staging row, never a replicated decision.
+pub(crate) fn flag_staged_duplicate(
+    conn: &Connection,
+    staged_id: Uuid,
+    reason: &str,
+    matched_transaction_id: Option<Uuid>,
+) -> Result<(), DbError> {
     conn.execute(
         "UPDATE staged_transactions
-            SET commit_status = 'flagged', dedupe_status = 'suspected_duplicate'
+            SET commit_status = 'flagged', dedupe_status = 'suspected_duplicate',
+                flag_reason = ?2, flag_matched_transaction_id = ?3
           WHERE id = ?1",
-        params![staged_id],
+        params![staged_id, reason, matched_transaction_id],
     )?;
     Ok(())
 }
@@ -864,10 +896,17 @@ pub(crate) fn flag_staged_duplicate(conn: &Connection, staged_id: Uuid) -> Resul
 /// Flag a staged transaction for review **without** calling it a duplicate:
 /// the row cannot be committed as it stands (personal-cfo-pxi.9), so it waits
 /// in the Money Inbox. `dedupe_status` is left as it was.
-pub(crate) fn flag_staged_for_review(conn: &Connection, staged_id: Uuid) -> Result<(), DbError> {
+pub(crate) fn flag_staged_for_review(
+    conn: &Connection,
+    staged_id: Uuid,
+    reason: &str,
+    matched_transaction_id: Option<Uuid>,
+) -> Result<(), DbError> {
     conn.execute(
-        "UPDATE staged_transactions SET commit_status = 'flagged' WHERE id = ?1",
-        params![staged_id],
+        "UPDATE staged_transactions
+            SET commit_status = 'flagged', flag_reason = ?2, flag_matched_transaction_id = ?3
+          WHERE id = ?1",
+        params![staged_id, reason, matched_transaction_id],
     )?;
     Ok(())
 }
@@ -889,7 +928,7 @@ pub(crate) fn list_dedupe_decisions_for_batch(
     batch_id: Uuid,
 ) -> Result<Vec<DedupeDecision>, DbError> {
     let mut stmt = conn.prepare(
-        "SELECT id, source_batch_id, layer, staged_transaction_id,
+        "SELECT id, source_batch_id, layer, transaction_id, identity_id,
                 matched_entity_type, matched_entity_id, decision, reason, decided_at
            FROM dedupe_decisions WHERE source_batch_id = ?1
           ORDER BY decided_at, id",
@@ -899,12 +938,13 @@ pub(crate) fn list_dedupe_decisions_for_batch(
             id: r.get(0)?,
             source_batch_id: r.get(1)?,
             layer: r.get(2)?,
-            staged_transaction_id: r.get(3)?,
-            matched_entity_type: r.get(4)?,
-            matched_entity_id: r.get(5)?,
-            decision: r.get(6)?,
-            reason: r.get(7)?,
-            decided_at: r.get(8)?,
+            transaction_id: r.get(3)?,
+            identity_id: r.get(4)?,
+            matched_entity_type: r.get(5)?,
+            matched_entity_id: r.get(6)?,
+            decision: r.get(7)?,
+            reason: r.get(8)?,
+            decided_at: r.get(9)?,
         })
     })?;
     let mut out = Vec::new();
@@ -1063,26 +1103,13 @@ mod tests {
             },
         )
         .unwrap();
-        record_dedupe_decision(
-            &conn,
-            Uuid::now_v7(),
-            &NewDedupeDecision {
-                source_batch_id: batch,
-                layer: "transaction",
-                staged_transaction_id: Some(staged),
-                matched_entity_type: None,
-                matched_entity_id: None,
-                decision: "committed",
-                reason: "unique",
-            },
-            &chrono::Utc::now().to_rfc3339(),
-        )
-        .unwrap();
+        // A flagged row's reason lives on the staged row, so it is removed with it.
+        flag_staged_for_review(&conn, staged, "needs a look", None).unwrap();
         link_provenance(
             &conn,
             Uuid::now_v7(),
             &NewProvenanceLink {
-                entity_type: "ledger_transaction",
+                entity_type: "account",
                 entity_id: Uuid::now_v7(),
                 source_record_id: record,
                 relationship: "created_from",
@@ -1099,14 +1126,13 @@ mod tests {
             "staged_transactions",
             "staged_accounts",
             "staged_balances",
-            "dedupe_decisions",
             "source_provenance_links",
         ] {
             assert_eq!(count(&conn, table), 1, "{table} should have a staged row");
         }
 
         let removed = discard_batch(&conn, batch).unwrap();
-        assert_eq!(removed, 8, "8 staging rows (incl. the batch) removed");
+        assert_eq!(removed, 7, "7 staging rows (incl. the batch) removed");
 
         // No staging trace remains…
         for table in [
@@ -1116,7 +1142,6 @@ mod tests {
             "staged_transactions",
             "staged_accounts",
             "staged_balances",
-            "dedupe_decisions",
             "source_provenance_links",
         ] {
             assert_eq!(
@@ -1133,6 +1158,109 @@ mod tests {
         );
         assert!(integrity_ok(&conn));
         assert!(read_batch(&conn, batch).unwrap().is_none());
+    }
+
+    /// A batch that has committed rows is never discarded (personal-cfo-0g528.3): a committed decision
+    /// and the provenance link of a committed transaction name the batch and its records, and nothing
+    /// is removed when the discard is refused.
+    #[test]
+    fn a_batch_with_committed_rows_is_not_discarded() {
+        for how in ["decision", "provenance", "staged"] {
+            let conn = migrated();
+            seed_account(&conn);
+            let batch = create_source_batch(
+                &conn,
+                Uuid::now_v7(),
+                &NewSourceBatch {
+                    source_type: "csv",
+                    source_name: None,
+                    file_fingerprint: None,
+                    parser_version: None,
+                    connector_connection_id: None,
+                },
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .unwrap();
+            let record = insert_source_record(
+                &conn,
+                Uuid::now_v7(),
+                &NewSourceRecord {
+                    source_batch_id: batch,
+                    external_id: Some("row-1"),
+                    source_hash: "sha256:row1",
+                    normalized_json: "{}",
+                    parse_confidence_bps: None,
+                },
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .unwrap();
+            let staged = stage_transaction(
+                &conn,
+                &NewStagedTransaction {
+                    source_record_id: record,
+                    proposed_account_id: None,
+                    posted_at: "2026-06-20",
+                    transaction_date: None,
+                    amount_minor: -1,
+                    currency: "USD",
+                    normalized_merchant: None,
+                    description: None,
+                    imported_category: None,
+                    txn_fingerprint: "fp",
+                    row_ordinal: 1,
+                },
+            )
+            .unwrap();
+            match how {
+                "decision" => {
+                    record_dedupe_decision(
+                        &conn,
+                        Uuid::now_v7(),
+                        &NewDedupeDecision {
+                            source_batch_id: batch,
+                            layer: "transaction",
+                            transaction_id: None,
+                            identity_id: None,
+                            matched_entity_type: None,
+                            matched_entity_id: None,
+                            decision: "committed",
+                            reason: "unique",
+                        },
+                        &chrono::Utc::now().to_rfc3339(),
+                    )
+                    .unwrap();
+                }
+                "provenance" => {
+                    link_provenance(
+                        &conn,
+                        Uuid::now_v7(),
+                        &NewProvenanceLink {
+                            entity_type: "ledger_transaction",
+                            entity_id: Uuid::now_v7(),
+                            source_record_id: record,
+                            relationship: "created_from",
+                        },
+                        &chrono::Utc::now().to_rfc3339(),
+                    )
+                    .unwrap();
+                }
+                _ => {
+                    conn.execute(
+                        "UPDATE staged_transactions SET commit_status = 'committed' WHERE id = ?1",
+                        [staged],
+                    )
+                    .unwrap();
+                }
+            }
+            let error = discard_batch(&conn, batch).unwrap_err();
+            assert!(
+                matches!(&error, DbError::BatchHasCommittedRows),
+                "{how}: {error:?}"
+            );
+            for table in ["source_batches", "source_records", "staged_transactions"] {
+                assert_eq!(count(&conn, table), 1, "{how}: {table} is untouched");
+            }
+        }
     }
 
     /// Both dedupe layers are recorded with their reason and replayable per batch.
@@ -1159,7 +1287,8 @@ mod tests {
             &NewDedupeDecision {
                 source_batch_id: batch,
                 layer: "file",
-                staged_transaction_id: None,
+                transaction_id: None,
+                identity_id: None,
                 matched_entity_type: Some("source_batch"),
                 matched_entity_id: Some(Uuid::now_v7()),
                 decision: "skipped",
@@ -1174,10 +1303,11 @@ mod tests {
             &NewDedupeDecision {
                 source_batch_id: batch,
                 layer: "transaction",
-                staged_transaction_id: None,
+                transaction_id: None,
+                identity_id: None,
                 matched_entity_type: Some("ledger_transaction"),
                 matched_entity_id: Some(Uuid::now_v7()),
-                decision: "flagged",
+                decision: "merged",
                 reason: "possible duplicate of committed txn",
             },
             &chrono::Utc::now().to_rfc3339(),
@@ -1190,7 +1320,7 @@ mod tests {
         assert_eq!(decisions[0].decision, "skipped");
         assert!(decisions[0].reason.contains("already imported"));
         assert_eq!(decisions[1].layer, "transaction");
-        assert_eq!(decisions[1].decision, "flagged");
+        assert_eq!(decisions[1].decision, "merged");
     }
 
     /// Provenance is FK-strict at the app layer: a link to a non-existent
