@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=44 -->
+<!-- vault-format: spec-version=45 -->
 <!-- vault-format: schema-version=73 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -272,6 +272,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 45` (personal-cfo-1cltt.7, slice B; provisional: it settles at merge) replaces the sentence of C.9 "Bounds by object type" that said a client refuses a closure above the service's advertised maximum until the service accepts a closure sidecar of that size: a closure of more than 4096 ids is staged with `stageSnapshotClosure` and the request carries an empty list (sync-service-protocol 4.14), and a bootstrap reads a closure back with `getSnapshotClosure` and checks its commitment itself. No wire layout, write-set rule, vector, engine_version or schema change.
 - `spec-version = 44` (personal-cfo-1cltt.8; provisional: it settles at merge): a replica derives its class-2 state from the class-1 rows it installed, before the base is captured; every cursor and watermark is in the device's own op_seq space; transaction lists order by the sort key, then the creating command id, then the transaction id, then the account id. No wire layout, write-set rule, vector, engine_version or schema change.
 - `spec-version = 43` (personal-cfo-1cltt.5, slice C, schema version 73; provisional: it settles at merge) records, in the device-local `sync_genesis` row, **which snapshot the genesis was and the SHA-256 of the container this device sent for it** (`genesis_snapshot_id` and `genesis_container_sha256`), and adds the device-local `operation_log.issued_at` (the instant a command was issued, Unix microseconds, written by `apply` on every row, Sync on or off; NULL before the column), which the genesis-gap replay reads because a command taken before Sync was armed has no outbox row to hold it. The identity columns are written in the transaction that records the genesis as `Published` and before the saved container is dropped (C.8 "The genesis snapshot's id and a resume"): the saved container is the only other place either lives. A bootstrap that reconciles the genesis gap fetches the genesis snapshot and checks it against these, so it never trusts the service's copy of what this device published. A row recorded by an earlier build has neither (NULL). No wire layout, write-set rule, vector or `engine_version` change.
 - `spec-version = 41` (personal-cfo-bxsbz.5, schema version 72) lets a `Bound` `sync_outbox` row carry no
@@ -2375,9 +2376,12 @@ is live are never touched. Both kinds of replica end with equal class-1 state.
 
 *Bounds by object type.* An envelope's delta holds at most 4096 ids: a longer list does not decode, so
 the envelope is invalid at stage 7. A snapshot's closure holds at most 2^20: a longer one is refused by
-the snapshot opener (and at export) with `SnapshotTooLarge`. Until the service accepts a closure
-sidecar of that size (`personal-cfo-v98vd`), a client refuses a closure above the service's advertised
-maximum with the same error **before** the compare-and-swap and never publishes a partial list of pins.
+the snapshot opener (and at export) with `SnapshotTooLarge`. A closure of more than 4096 ids is not
+sent in the request: it is staged as a closure sidecar (sync-service-protocol 4.14) after the snapshot
+and before it is published or installed, and the request then carries an empty list; a closure of 4096
+ids or fewer stays in the request. A retry stages the same bytes again. A replica that bootstraps from
+a snapshot reads its closure back with `getSnapshotClosure` and checks its commitment against the
+header (field 17) itself, never trusting the service's bytes.
 
 *The binding.* The fixed-plaintext rule binds honest producers; the ciphertext binding binds the rest.
 Every artifact the delta (or a snapshot's closure) names is named with the `ciphertext_sha256` of its
