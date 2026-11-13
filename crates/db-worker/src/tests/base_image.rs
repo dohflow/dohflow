@@ -868,3 +868,352 @@ fn vouching_for_the_existing_base_does_not_hold_the_writer() {
         "{error:?}"
     );
 }
+
+// ---- the rebase swap's rules for the base image (personal-cfo-bxsbz.7) ----
+
+use crate::base_image::{
+    rebase_journal_path, rebase_scratch_path, remove_rebase_artifacts, REBASE_SCRATCH_FILE,
+};
+
+fn set_state(worker: &DbWorker, state: &str) {
+    worker
+        .lock()
+        .conn
+        .execute("UPDATE sync_base SET state = ?1", [state])
+        .unwrap();
+}
+
+/// What an unfinished rebase leaves under `sync/`: the scratch vault, the new base image, a trial
+/// copy and the runner-lock sidecars, beside the files that are not the rebase's.
+fn plant_rebase_files(vault: &std::path::Path) -> Vec<PathBuf> {
+    let sync = crate::base_image::sync_dir(vault);
+    std::fs::create_dir_all(sync.join("snapshots")).unwrap();
+    std::fs::write(sync.join("snapshots").join("a.snapshot"), b"sealed").unwrap();
+    let files: Vec<PathBuf> = [
+        REBASE_SCRATCH_FILE,
+        "rebase-scratch.db.runner.lock",
+        "rebase-scratch.post-pull.db",
+        "rebase-scratch.trial-1.db",
+        "rebase-scratch.trial-1.db-wal",
+    ]
+    .iter()
+    .map(|name| sync.join(name))
+    .collect();
+    for file in &files {
+        std::fs::write(file, b"a copy of the vault").unwrap();
+    }
+    files
+}
+
+#[test]
+fn a_rebasing_record_with_no_journal_goes_back_to_ready_and_the_working_files_go() {
+    let (_dir, worker) = worker();
+    worker.initialize_base_image(7).unwrap();
+    let path = worker.path.clone();
+    let leftovers = plant_rebase_files(&path);
+    let pre_rebase = pre_rebase_path(&path);
+    std::fs::write(&pre_rebase, b"the previous vault").unwrap();
+    let base_before = sha256_file(&base_image_path(&path)).unwrap();
+    set_state(&worker, "Rebasing");
+    drop(worker);
+
+    let reopened = DbWorker::open(&path, KEY).unwrap();
+
+    assert_eq!(base_row(&reopened).2, "Ready");
+    assert_eq!(
+        reopened.base_image_status().unwrap(),
+        BaseImageStatus::Ready { base_seq: 7 }
+    );
+    for leftover in leftovers {
+        assert!(!leftover.exists(), "{}", leftover.display());
+    }
+    // Never the base, the kept previous vault or the saved snapshots.
+    assert_eq!(
+        sha256_file(&base_image_path(&path)).unwrap(),
+        base_before,
+        "base.db"
+    );
+    assert!(pre_rebase.exists());
+    assert!(crate::base_image::sync_dir(&path)
+        .join("snapshots")
+        .join("a.snapshot")
+        .exists());
+}
+
+#[test]
+fn a_rebasing_record_whose_base_no_longer_matches_becomes_no_base() {
+    let (_dir, worker) = worker();
+    worker.initialize_base_image(7).unwrap();
+    let path = worker.path.clone();
+    set_state(&worker, "Rebasing");
+    drop(worker);
+    std::fs::write(base_image_path(&path), b"not the base").unwrap();
+
+    let reopened = DbWorker::open(&path, KEY).unwrap();
+
+    assert_eq!(base_row(&reopened).2, "NoBase");
+    assert_eq!(base_row(&reopened).1, None);
+    assert_eq!(
+        reopened.base_image_status().unwrap(),
+        BaseImageStatus::NoBase
+    );
+}
+
+#[test]
+fn an_open_with_a_rebase_journal_present_touches_no_rebase_file_and_keeps_the_record() {
+    let (_dir, worker) = worker();
+    worker.initialize_base_image(7).unwrap();
+    let path = worker.path.clone();
+    let leftovers = plant_rebase_files(&path);
+    std::fs::write(rebase_journal_path(&path), b"{}").unwrap();
+    set_state(&worker, "Rebasing");
+    drop(worker);
+
+    let reopened = DbWorker::open(&path, KEY).unwrap();
+
+    // The kernel's recovery settles a journal before anything opens; a direct open that finds one
+    // still must not delete what the journal names or reset the intent it recorded.
+    assert_eq!(base_row(&reopened).2, "Rebasing");
+    for leftover in leftovers {
+        assert!(leftover.exists(), "{}", leftover.display());
+    }
+}
+
+#[test]
+fn only_a_rebases_own_files_are_removed_and_a_scratch_path_is_under_sync() {
+    let (_dir, worker) = worker();
+    worker.initialize_base_image(7).unwrap();
+    let path = worker.path.clone();
+    let leftovers = plant_rebase_files(&path);
+    std::fs::write(pre_rebase_path(&path), b"the previous vault").unwrap();
+
+    assert_eq!(remove_rebase_artifacts(&path).unwrap(), leftovers.len());
+
+    assert_eq!(
+        files_in_sync_dir(&worker),
+        vec![
+            "base.db".to_owned(),
+            "pre-rebase.db".to_owned(),
+            "snapshots".to_owned()
+        ]
+    );
+    assert_eq!(
+        rebase_scratch_path(&path),
+        crate::base_image::sync_dir(&path).join(REBASE_SCRATCH_FILE)
+    );
+}
+
+#[test]
+fn a_rotation_while_rebasing_re_records_the_re_encrypted_bases_digest() {
+    // A vault left `Rebasing` had a base it could vouch for; re-encrypting it must keep vouching
+    // (the same rule as `Ready`), so the recovery that follows never meets a digest the rotation
+    // made stale.
+    let (dir, worker, new_dek) = raw_worker();
+    worker.initialize_base_image(4).unwrap();
+    set_state(&worker, "Rebasing");
+    let new_db = rekeyed_vault(&worker, &new_dek, &dir);
+
+    let images = worker.prepare_rekeyed_images(&new_dek, &new_db).unwrap();
+
+    let digest = images[0].new_sha256.expect("the base was re-encrypted");
+    assert_eq!(
+        recorded_in(&new_db, &new_dek),
+        (Some(digest.to_vec()), "Rebasing".to_owned())
+    );
+}
+
+#[test]
+fn a_rotation_prepare_removes_the_working_files_of_a_rebase_that_was_never_swapped() {
+    let (dir, worker, new_dek) = raw_worker();
+    worker.initialize_base_image(4).unwrap();
+    let leftovers = plant_rebase_files(&worker.path);
+    let new_db = rekeyed_vault(&worker, &new_dek, &dir);
+
+    worker.prepare_rekeyed_images(&new_dek, &new_db).unwrap();
+
+    for leftover in leftovers {
+        assert!(!leftover.exists(), "{}", leftover.display());
+    }
+    assert!(base_image_path(&worker.path).exists());
+}
+
+#[test]
+fn the_status_check_and_the_copy_of_a_rollback_are_one_hold_of_the_base_gate() {
+    // 04b's #291 F3: the Sync loop cannot advance the base between a rollback's check and its
+    // copy. A capture started at the pause between the two must wait for the copy to finish, so
+    // the scratch vault is the base the check vouched for.
+    let (dir, worker) = worker();
+    let worker = Arc::new(worker);
+    worker.initialize_base_image(1).unwrap();
+    let advanced = Arc::new(AtomicBool::new(false));
+    let capture: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::new(Mutex::new(None));
+    let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let (worker, advanced, capture, seen) = (
+            Arc::clone(&worker),
+            Arc::clone(&advanced),
+            Arc::clone(&capture),
+            Arc::clone(&seen),
+        );
+        observe::install(move |label| {
+            if label != "rollback-checked" && label != "rollback-copied" {
+                return;
+            }
+            let mut slot = capture.lock().unwrap();
+            if slot.is_none() {
+                let (worker, advanced) = (Arc::clone(&worker), Arc::clone(&advanced));
+                *slot = Some(std::thread::spawn(move || {
+                    worker.advance_base_image(2).unwrap();
+                    advanced.store(true, Ordering::SeqCst);
+                }));
+            }
+            // The capture must still be waiting for the gate here; a pause is the right tool for
+            // that direction (a capture wrongly let through finishes well inside it).
+            std::thread::sleep(Duration::from_millis(150));
+            seen.lock()
+                .unwrap()
+                .push((label.to_owned(), !advanced.load(Ordering::SeqCst)));
+        });
+    }
+
+    let scratch = worker
+        .rollback_to(1, &dir.path().join("rebase").join("scratch.db"))
+        .unwrap();
+    observe::clear();
+
+    assert_eq!(
+        seen.lock().unwrap().clone(),
+        vec![
+            ("rollback-checked".to_owned(), true),
+            ("rollback-copied".to_owned(), true)
+        ]
+    );
+    capture.lock().unwrap().take().unwrap().join().unwrap();
+    assert!(advanced.load(Ordering::SeqCst), "the capture then ran");
+    drop(scratch);
+    assert_eq!(base_row(&worker).0, 2, "and the base advanced afterwards");
+}
+
+// ---- a capture and a key rotation never overlap (personal-cfo-bxsbz.7, rule 1) ----
+
+fn base_seq_in(new_db: &std::path::Path, new_dek: &Dek) -> i64 {
+    let conn = crate::open_vault_connection(new_db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    crate::key_raw(&conn, new_dek).unwrap();
+    conn.query_row("SELECT base_seq FROM sync_base", [], |r| r.get(0))
+        .unwrap()
+}
+
+fn rekey_copy_of(worker: &DbWorker) -> PathBuf {
+    crate::base_image::base_image_path(&worker.path).with_extension("db.rekey-new")
+}
+
+#[test]
+fn a_capture_that_starts_during_a_rotations_prepare_waits_and_the_copies_are_of_one_state() {
+    let (dir, worker, new_dek) = raw_worker();
+    let worker = Arc::new(worker);
+    worker.initialize_base_image(1).unwrap();
+    let new_db = dir.path().join("vault.db.rekey-new");
+
+    // The rotation takes the gate before it copies the vault.
+    let hold = worker.hold_base_gate();
+    let advanced = Arc::new(AtomicBool::new(false));
+    let capture = {
+        let (worker, advanced) = (Arc::clone(&worker), Arc::clone(&advanced));
+        std::thread::spawn(move || {
+            worker.advance_base_image(2).unwrap();
+            advanced.store(true, Ordering::SeqCst);
+        })
+    };
+    // A pause is the right tool for "still waiting": a capture wrongly let through finishes well
+    // inside it, and a slow machine can only make the pause too short to notice.
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(
+        !advanced.load(Ordering::SeqCst),
+        "the capture ran in the copy"
+    );
+    worker.prepare_rekeyed_copy(&new_dek, &new_db).unwrap();
+    let images = worker
+        .prepare_rekeyed_images_held(&new_dek, &new_db, &hold)
+        .unwrap();
+    assert!(
+        !advanced.load(Ordering::SeqCst),
+        "the capture ran between the copies"
+    );
+    drop(hold);
+    capture.join().unwrap();
+
+    // The copy of the vault and the copy of the image are of one state: the base at seq 1, and the
+    // digest the rekeyed vault records is the one of the re-encrypted image on disk.
+    let digest = sha256_file(&rekey_copy_of(&worker)).unwrap();
+    assert_eq!(images[0].new_sha256, Some(digest));
+    assert_eq!(base_seq_in(&new_db, &new_dek), 1);
+    assert_eq!(
+        recorded_in(&new_db, &new_dek),
+        (Some(digest.to_vec()), "Ready".to_owned())
+    );
+    assert_eq!(base_row(&worker).0, 2, "and the capture ran afterwards");
+}
+
+#[test]
+fn a_rotation_that_starts_during_a_capture_waits_for_it_and_copies_the_advanced_base() {
+    let (dir, worker, new_dek) = raw_worker();
+    let worker = Arc::new(worker);
+    let new_dek = Arc::new(new_dek);
+    worker.initialize_base_image(1).unwrap();
+    let new_db = dir.path().join("vault.db.rekey-new");
+    let finished = Arc::new(AtomicBool::new(false));
+    let rotation: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::new(Mutex::new(None));
+    let still_waiting: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let (worker, finished, rotation, still_waiting, new_db, key) = (
+            Arc::clone(&worker),
+            Arc::clone(&finished),
+            Arc::clone(&rotation),
+            Arc::clone(&still_waiting),
+            new_db.clone(),
+            Arc::clone(&new_dek),
+        );
+        observe::install(move |label| {
+            if label != "copied" {
+                return;
+            }
+            // The capture holds the gate here. A rotation that starts now must wait for it.
+            let mut slot = rotation.lock().unwrap();
+            if slot.is_none() {
+                let (worker, finished, new_db, key) = (
+                    Arc::clone(&worker),
+                    Arc::clone(&finished),
+                    new_db.clone(),
+                    Arc::clone(&key),
+                );
+                *slot = Some(std::thread::spawn(move || {
+                    let hold = worker.hold_base_gate();
+                    worker.prepare_rekeyed_copy(&key, &new_db).unwrap();
+                    worker
+                        .prepare_rekeyed_images_held(&key, &new_db, &hold)
+                        .unwrap();
+                    finished.store(true, Ordering::SeqCst);
+                }));
+            }
+            std::thread::sleep(Duration::from_millis(150));
+            still_waiting
+                .lock()
+                .unwrap()
+                .push(!finished.load(Ordering::SeqCst));
+        });
+    }
+
+    worker.advance_base_image(2).unwrap();
+    observe::clear();
+    rotation.lock().unwrap().take().unwrap().join().unwrap();
+
+    assert_eq!(still_waiting.lock().unwrap().clone(), vec![true]);
+    // The rotation copied the vault and the image after the capture: both are the base at seq 2,
+    // and the rekeyed vault vouches for the re-encrypted image that is on disk.
+    let digest = sha256_file(&rekey_copy_of(&worker)).unwrap();
+    assert_eq!(base_seq_in(&new_db, &new_dek), 2);
+    assert_eq!(
+        recorded_in(&new_db, &new_dek),
+        (Some(digest.to_vec()), "Ready".to_owned())
+    );
+}

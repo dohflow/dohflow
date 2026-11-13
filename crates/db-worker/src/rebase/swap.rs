@@ -63,14 +63,27 @@ impl DbWorker {
             "UPDATE sync_base SET state = 'Rebasing', updated_at = ?1 WHERE singleton = 1",
             [Utc::now().to_rfc3339()],
         )?;
-        let busy: i64 = guard
-            .conn
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
-        if busy != 0 {
-            guard.conn.execute(
+        // Any failure from here on puts the record back before it is reported, so a worker that
+        // stays healthy never carries a `Rebasing` record (04b's #308 O1). If even the revert fails,
+        // the next open resets a `Rebasing` record that has no journal.
+        let revert = |conn: &rusqlite::Connection| {
+            let _ = conn.execute(
                 "UPDATE sync_base SET state = 'Ready' WHERE singleton = 1",
                 [],
-            )?;
+            );
+        };
+        let busy: i64 = match guard
+            .conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
+        {
+            Ok(busy) => busy,
+            Err(error) => {
+                revert(&guard.conn);
+                return Err(error.into());
+            }
+        };
+        if busy != 0 {
+            revert(&guard.conn);
             return Err(DbError::CheckpointBusy.into());
         }
         guard.state = WorkerState::Swapping;

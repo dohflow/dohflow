@@ -23,7 +23,7 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=43 -->
+<!-- vault-format: spec-version=45 -->
 <!-- vault-format: schema-version=73 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
@@ -85,6 +85,10 @@ or service-facing identifier.
 | `vault.db.runner.lock` | advisory exclusive lock (the vault lease) held while a vault is unlocked, and across every step that renames or removes the vault's files with no worker running: startup rotation recovery, the rotation swap, delete, restore. A second opener fails with a typed vault-in-use error and touches no file. The OS releases it on close, exit or crash; a leftover file never blocks the next open |
 | `vault.db-wal`, `vault.db-shm`, `vault.db-journal` | SQLite side files: the WAL files while the vault is open, and a rollback journal if the database briefly uses that mode |
 | `vault.db.rekey`, `vault.db.rekey.tmp`, `vault.db.rekey-new`, `vault.db.envelope.rekey-new`, `vault.db.rekey-old` | transient files of an in-progress or interrupted key rotation: the journal (`preparing`, `prepared`, `committed`), its temp file, the re-encrypted copy, the new envelope and the old database |
+| `vault.db.rebase`, `vault.db.rebase.tmp` | transient files of an in-progress or interrupted Sync rebase swap: the journal (`preparing`, `prepared`, `committed`) and its temp file |
+| `sync/base.db` | the Sync base image: the vault as of `sync_base.base_seq`, credentials stripped, under the vault's DEK; a rebase swap replaces it with the new base |
+| `sync/pre-rebase.db` | the vault a rebase swap replaced, kept until the next accepted push: a full copy under the current DEK, connector credentials included; re-encrypted by a rotation and scrubbed of a removed connection's credential. A backup carries the vault, its envelope and its blobs, not `sync/`, so no backup holds it |
+| `sync/rebase-*` | a rebase's working files: the rebuilt vault, the new base image, trial copies, their SQLite side files and runner-lock sidecars. Each is a full copy of the vault under the current DEK, so none outlives its rebase: the swap, an abandoned rebase, a rotation's prepare and every open remove them |
 
 While a rotation runs, SQLite can leave `-wal`, `-shm` and `-journal` side files
 beside `vault.db.rekey-new`, and the hard-link probe leaves a transient
@@ -98,6 +102,24 @@ A rotation journal present at startup is finished (`committed`) or undone
 are reported as needing recovery and nothing is deleted
 ([ADR 0083](../adr/0083-vault-key-rotation.md) §4). Vault deletion removes every
 name in this file family, including the rotation side-file names.
+
+A rebase-swap journal present at startup is finished (`committed`) or undone (`preparing`,
+`prepared`) before the vault is classified, under the vault lease, by the recovery that also runs
+the rotation's. Before the commit point the live vault's data is unchanged; only its `sync_base` row
+says `Rebasing`, which the next open turns back into `Ready` when `sync/base.db` still matches the
+recorded digest (and into `NoBase` when it does not). After the commit point recovery finishes the
+rename sequence: the live vault becomes `sync/pre-rebase.db`, the rebuilt vault becomes `vault.db`,
+the new base image becomes `sync/base.db`, the rebase's working files are removed, and the journal
+goes last. The rotation journal and the rebase journal are mutually exclusive: if both are present
+neither recovery runs, nothing is moved or deleted, and the open fails with a typed error
+(`ConflictingJournals`). `Kernel::unlock_vault`, called directly without the vault controller that
+runs recovery, refuses a rebase journal alone with `RebaseInProgress`. A rotation does not prepare
+while a rebase journal exists. The journal names two files under `sync/`, the rebuilt vault and the
+new base image, and each is a rename source: both must be plain `sync/rebase-*` files, or the
+journal is a contradiction and nothing is moved; the rename targets (`vault.db`, `sync/base.db`,
+`sync/pre-rebase.db`) are fixed. Any housekeeping of `sync/` temporary files leaves `sync/snapshots/`
+alone. Vault deletion removes every rebase name: the journal beside `vault.db`, and `sync/` with the
+rest.
 
 ### Envelope byte layout (v1)
 
@@ -272,6 +294,12 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 45` (personal-cfo-bxsbz.7; provisional, it settles at merge) specifies the rebase
+  swap's on-disk surface: the journal and its crash-safe rename sequence, the `sync/rebase-*` working
+  files, the `sync/pre-rebase.db` lifecycle, the `Rebasing` record's recovery, and the rule that a
+  rotation and a rebase swap never overlap. No wire layout, write-set rule, vector, `engine_version`
+  or schema change.
+- `spec-version = 44` (personal-cfo-1cltt.8; provisional: it settles at merge): a replica derives its class-2 state from the class-1 rows it installed, before the base is captured; every cursor and watermark is in the device's own op_seq space; transaction lists order by the sort key, then the creating command id, then the transaction id, then the account id. No wire layout, write-set rule, vector, engine_version or schema change.
 - `spec-version = 43` (personal-cfo-1cltt.5, slice C, schema version 73; provisional: it settles at merge) records, in the device-local `sync_genesis` row, **which snapshot the genesis was and the SHA-256 of the container this device sent for it** (`genesis_snapshot_id` and `genesis_container_sha256`), and adds the device-local `operation_log.issued_at` (the instant a command was issued, Unix microseconds, written by `apply` on every row, Sync on or off; NULL before the column), which the genesis-gap replay reads because a command taken before Sync was armed has no outbox row to hold it. The identity columns are written in the transaction that records the genesis as `Published` and before the saved container is dropped (C.8 "The genesis snapshot's id and a resume"): the saved container is the only other place either lives. A bootstrap that reconciles the genesis gap fetches the genesis snapshot and checks it against these, so it never trusts the service's copy of what this device published. A row recorded by an earlier build has neither (NULL). No wire layout, write-set rule, vector or `engine_version` change.
 - `spec-version = 41` (personal-cfo-bxsbz.5, schema version 72) lets a `Bound` `sync_outbox` row carry no
   result. The accepted-envelope record (C.10) already allows an accepted command with no `result_ref`
@@ -2231,13 +2259,30 @@ ledger is keyed by position in it, not by id). A snapshot may record one id at t
 entry.
 
 **Becoming the vault.** The replica is built at `<vault>.bootstrapping` beside the vault path, under
-the vault's lease: the install, the ledger and the first base image (`sync_base` `Ready` at `root`,
-credentials stripped) all land there. Class-2 tables are never shipped, so a new replica starts with
-them empty. Only then is the file
+the vault's lease: the install, the ledger, the derived class-2 state and the first base image
+(`sync_base` `Ready` at `root`, credentials stripped) all land there. Only then is the file
 synced and renamed to the vault path and the directory synced. A vault that exists therefore always has
 its base, so no command can be taken, unrecorded, between the install and the base. A start that finds
 a `<vault>.bootstrapping` file discards that file (and its journal files) and begins again; it also discards `sync/base.db` when, and only when, no vault exists at the path and that file is the base the abandoned replica recorded (its `Ready` digest equals the file's), and touches no other base image; a vault
 file that already exists is never replaced.
+
+**Class-2 state on a replica** (`personal-cfo-1cltt.8`). Class 2 is never shipped, so the replica
+derives it from the class-1 rows it installed, once, before the base is captured: the transaction
+display read model, the commitments, the recurring instances and the Money Inbox, by the same full
+rebuilds an origin and a rebase run (the forecast tables are written by the forecast itself, from the
+same class-1 inputs). No derivation reads `operation_log` to decide which rows exist, because a
+replica's log holds no row for anything that came in its snapshot. Every cursor and watermark
+(`projection_cursors.last_applied_op_seq`, `transaction_display_rows_read_model.last_projected_op_seq`,
+the commitments and Money Inbox log head, `forecast_input_snapshots.ledger_cutoff_op_seq`) is in the
+device's own `op_seq` space on every device and never a Sync position: a full rebuild sets each cursor it
+maintains to the device's current `MAX(op_seq)` (0 on an empty log), and a forecast input snapshot records
+`MAX(op_seq)` when it is captured; the incremental display path then processes the
+operations the device logs afterwards, which are every envelope it applies and every command it runs. A
+row's `last_projected_op_seq` is the device's own log position for the transaction's creating command,
+0 where it holds none. Transaction lists order by the sort key, then the creating command's id (a
+UUIDv7, so command order), then the transaction id, then the account id (a transfer's two legs are
+on different accounts, so the last key separates them): class-1 data only, so every device orders the same
+rows the same way.
 
 ## C.9 Artifact transport
 
