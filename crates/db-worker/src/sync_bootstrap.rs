@@ -157,6 +157,18 @@ pub enum BootstrapError {
         /// This build's.
         build: i64,
     },
+    /// The snapshot is of a schema below a migration that writes class-1 rows outside a command. A
+    /// replica installs the snapshot's rows and then migrates them, so that migration would write
+    /// class-1 rows no log row explains (ADR 0074 Addendum J item 7). Nothing is written. The
+    /// origin's own vault must be migrated first, which an armed vault refuses, so a snapshot of
+    /// such a schema is not a root any current build can use.
+    #[error("the snapshot is of schema version {snapshot}, below migration {migration}, which writes rows outside a command")]
+    SnapshotBelowRowWritingMigration {
+        /// The snapshot's schema version.
+        snapshot: u64,
+        /// The first migration above it that writes class-1 rows.
+        migration: i64,
+    },
     /// The snapshot's recorded voids are not a ledger.
     #[error("the snapshot's recorded voids are not valid: {0}")]
     Ledger(#[from] LedgerError),
@@ -219,9 +231,11 @@ impl BootstrapError {
     #[must_use]
     pub fn kind(&self) -> FailureKind {
         match self {
-            Self::Invalid(_) | Self::Snapshot(_) | Self::NotAValidRoot | Self::Ledger(_) => {
-                FailureKind::Deterministic
-            }
+            Self::Invalid(_)
+            | Self::Snapshot(_)
+            | Self::NotAValidRoot
+            | Self::Ledger(_)
+            | Self::SnapshotBelowRowWritingMigration { .. } => FailureKind::Deterministic,
             Self::Install(
                 InstallError::Snapshot(_)
                 | InstallError::ColumnsMismatch { .. }
@@ -451,6 +465,14 @@ pub fn bootstrap_replica(
         return Err(BootstrapError::UpdateRequired {
             snapshot: u64::try_from(snapshot_schema).unwrap_or(u64::MAX),
             build: migrations::CURRENT_VERSION,
+        });
+    }
+    // A migration that writes class-1 rows outside a command cannot run on a replica: refused up
+    // front, before anything is created (the one marker is `migrations::CLASS_1_WRITING_MIGRATIONS`).
+    if let Some(migration) = migrations::first_row_writing_migration_after(snapshot_schema) {
+        return Err(BootstrapError::SnapshotBelowRowWritingMigration {
+            snapshot: u64::try_from(snapshot_schema).unwrap_or(u64::MAX),
+            migration,
         });
     }
     let root = to_i64(source.root)?;

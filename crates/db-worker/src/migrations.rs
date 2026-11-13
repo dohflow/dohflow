@@ -2897,14 +2897,44 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     },
 ];
 
-/// Rust steps that run in the same transaction as a migration's SQL, BEFORE it, so a step that refuses
-/// leaves nothing written. Keyed by migration version. They run only on the way up.
-type PreUp = fn(&rusqlite::Connection) -> Result<(), DbError>;
+/// The migrations that write class-1 rows outside a command (a backfill): `(version, what it writes)`.
+/// This is the ONE place that says so, and two rules read it (ADR 0074 Addendum J item 7):
+///
+/// - **An armed vault refuses it.** A write to class-1 rows outside a command is in no log row and no
+///   envelope, so no other device receives it (`refuse_on_an_armed_vault`, run before the step's SQL
+///   in the step's own transaction).
+/// - **A replica refuses a snapshot below it.** A replica installs the snapshot's rows and then
+///   migrates them, so such a migration would run over rows it was not written for and write
+///   class-1 rows no log row explains. The bootstrap checks [`first_row_writing_migration_after`]
+///   before it creates anything.
+///
+/// A later migration that backfills class-1 rows adds its row here, and the rule is standing: once
+/// Sync is user-reachable a backfill of class-1 rows is a command with a materialized payload.
+pub(crate) const CLASS_1_WRITING_MIGRATIONS: &[(i64, &str)] =
+    &[(76, "the import identity backfill")];
 
-const PRE_UP: &[(i64, PreUp)] = &[(
-    76,
-    crate::import_identity_backfill::refuse_on_an_armed_vault,
-)];
+/// The first marked migration above `schema` and at or below this build's schema, if any.
+pub(crate) fn first_row_writing_migration_after(schema: i64) -> Option<i64> {
+    CLASS_1_WRITING_MIGRATIONS
+        .iter()
+        .map(|(version, _)| *version)
+        .filter(|version| *version > schema && *version <= CURRENT_VERSION)
+        .min()
+}
+
+fn writes_class_1_rows(version: i64) -> bool {
+    CLASS_1_WRITING_MIGRATIONS
+        .iter()
+        .any(|(v, _)| *v == version)
+}
+
+/// Rust steps that run in the same transaction as a migration's SQL, BEFORE it, so a step that refuses
+/// leaves nothing written. A marked migration runs the armed-vault refusal. They run only on the way up.
+type PreUp = fn(&rusqlite::Connection, i64) -> Result<(), DbError>;
+
+fn refuse_on_an_armed_vault(conn: &rusqlite::Connection, version: i64) -> Result<(), DbError> {
+    crate::import_identity_backfill::refuse_on_an_armed_vault(conn, version)
+}
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
 /// cannot do (hashing). Keyed by migration version. They run only on the way up.
@@ -3096,10 +3126,7 @@ fn apply_to(conn: &mut Connection, migrations: &[Migration], stamp: i64) -> Resu
         if applied.iter().any(|(v, _)| *v == m.version) {
             continue;
         }
-        let pre = PRE_UP
-            .iter()
-            .find(|(version, _)| *version == m.version)
-            .map(|(_, step)| *step);
+        let pre: Option<PreUp> = writes_class_1_rows(m.version).then_some(refuse_on_an_armed_vault);
         run_step(conn, m, m.up, pre, |tx| {
             for (version, step) in POST_UP {
                 if *version == m.version {
@@ -3172,7 +3199,7 @@ fn run_step(
     let result = (|| -> Result<(), DbError> {
         let tx = conn.transaction()?;
         if let Some(pre) = pre {
-            pre(&tx)?;
+            pre(&tx, m.version)?;
         }
         tx.execute_batch(sql)?;
         if m.foreign_keys_off {
@@ -3317,6 +3344,25 @@ mod tests {
     fn user_version(conn: &Connection) -> i64 {
         conn.query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap()
+    }
+
+    /// Every marked migration is a real one, listed once, and a marked migration has a POST step that
+    /// writes the rows (the marker and the step name the same version).
+    #[test]
+    fn the_class_1_writing_marker_names_real_migrations_once() {
+        let mut seen = std::collections::BTreeSet::new();
+        for (version, what) in super::CLASS_1_WRITING_MIGRATIONS {
+            assert!(!what.is_empty());
+            assert!(seen.insert(*version), "listed twice: {version}");
+            assert!(
+                MIGRATIONS.iter().any(|m| m.version == *version),
+                "no migration {version}"
+            );
+            assert!(super::writes_class_1_rows(*version));
+        }
+        assert_eq!(super::first_row_writing_migration_after(0), Some(76));
+        assert_eq!(super::first_row_writing_migration_after(75), Some(76));
+        assert_eq!(super::first_row_writing_migration_after(76), None);
     }
 
     /// The set is contiguous `1..=CURRENT_VERSION` and every non-baseline

@@ -323,76 +323,68 @@ fn a_snapshot_of_a_newer_schema_is_update_required_and_writes_nothing() {
     no_stray_files(&path);
 }
 
-/// The class-1 tables the LATEST migration added (personal-cfo-0g528.3: version 76). The installer
-/// expects the build's table set whatever the snapshot's schema, so a snapshot exported before a
-/// class-1 table existed cannot install: the test below pins that while the list is non-empty, and
-/// the next migration that adds none restores the positive property it states.
-const TABLES_ADDED_BY_THE_LATEST_MIGRATION: &[&str] = &["import_dispositions", "import_identities"];
-
+/// A snapshot of a schema below a migration that writes class-1 rows outside a command is refused up
+/// front (ADR 0074 Addendum J item 7): a replica installs the snapshot's rows and then migrates them,
+/// so the backfill of migration 76 would run over installed rows and write class-1 rows no log row
+/// explains. The marker is the one the armed-vault refusal reads.
 #[test]
-fn a_snapshot_of_an_older_schema_installs_through_the_migrations() {
-    // A snapshot exported at the previous schema: the replica is migrated to that version first,
-    // the snapshot is installed, and the migrations after it run over the installed rows.
+fn a_snapshot_below_a_row_writing_migration_is_refused_before_anything_is_created() {
     let (_origin_dir, origin, verified) = origin();
-    let older_schema = CURRENT_VERSION - 1;
-    // A snapshot at the previous schema has no table the latest migration added (empty here).
-    let older = with_voids_without(
-        &verified,
-        &[],
-        older_schema.unsigned_abs(),
-        TABLES_ADDED_BY_THE_LATEST_MIGRATION,
-    );
-    assert_eq!(older.manifest.schema_version, older_schema.to_string());
     let (version, own) = (engine(), engine());
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("vault.db");
-    let attempt = bootstrap_replica(
-        &path,
-        &dek(),
-        &source(&origin, &older, 3, &version, &own, &[]),
-    );
-    if !TABLES_ADDED_BY_THE_LATEST_MIGRATION.is_empty() {
-        // KNOWN LIMIT, reported to planning: the installer checks the snapshot against this build's
-        // table set, not the snapshot's schema, so an older snapshot is refused as a deterministic
-        // MissingTable. Nothing is written. When the installer learns which schema introduced each
-        // table, this branch goes and the property below is asserted again.
-        let err = attempt.expect_err("refused while a table is missing");
+    let marked = *crate::migrations::CLASS_1_WRITING_MIGRATIONS
+        .iter()
+        .map(|(v, _)| v)
+        .min()
+        .expect("a marked migration exists");
+    for below in [marked - 1, 1] {
+        // A snapshot exported at that schema: it lacks the tables the marked migration added.
+        let older = with_voids_without(
+            &verified,
+            &[],
+            below.unsigned_abs(),
+            TABLES_ADDED_BY_THE_LATEST_MIGRATION,
+        );
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("vault.db");
+        let err = bootstrap_replica(
+            &path,
+            &dek(),
+            &source(&origin, &older, 3, &version, &own, &[]),
+        )
+        .expect_err("refused");
         assert!(
             matches!(
                 &err,
-                BootstrapError::Install(crate::snapshot_install::InstallError::MissingTable { table })
-                    if TABLES_ADDED_BY_THE_LATEST_MIGRATION.contains(&table.as_str())
+                BootstrapError::SnapshotBelowRowWritingMigration { snapshot, migration }
+                    if *snapshot == below.unsigned_abs() && *migration == marked
             ),
             "{err:?}"
         );
-        // No vault: the temporary replica is the next attempt's to discard.
+        assert_eq!(
+            err.kind(),
+            crate::sync_bootstrap::FailureKind::Deterministic
+        );
+        // Nothing is created: no vault, no temporary replica.
         assert!(!path.exists());
-        return;
+        no_stray_files(&path);
     }
-    let born = attempt.unwrap();
-    let conn = born.worker.read_connection().unwrap();
-    let version_now: i64 = conn
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(version_now, CURRENT_VERSION);
-    let migrated: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
-            [CURRENT_VERSION],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(migrated, 1, "the migrations after the snapshot's ran");
-    // The class-1 rows are the snapshot's, byte for byte, at the older version's digests.
-    assert_eq!(born.worker.vault_id().unwrap(), origin.vault_id().unwrap());
-    assert_eq!(
-        born.worker.sync_position().unwrap(),
-        Some(SyncPosition {
-            snapshot_root: Some(3),
-            next_to_apply: 4
-        })
+    // A snapshot AT the marked schema or above carries the rows already, so it is not refused for
+    // this reason.
+    let at = with_voids(&verified, &[], marked.unsigned_abs());
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("vault.db");
+    let born = bootstrap_replica(&path, &dek(), &source(&origin, &at, 3, &version, &own, &[]));
+    assert!(
+        !matches!(
+            born,
+            Err(BootstrapError::SnapshotBelowRowWritingMigration { .. })
+        ),
+        "{born:?}"
     );
 }
+
+/// The class-1 tables the marked migration added, which a snapshot exported before it does not hold.
+const TABLES_ADDED_BY_THE_LATEST_MIGRATION: &[&str] = &["import_dispositions", "import_identities"];
 
 #[test]
 fn a_crash_at_any_step_leaves_no_vault_and_a_clean_second_attempt_ends_ready() {

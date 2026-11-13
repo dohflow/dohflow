@@ -463,6 +463,18 @@ pub(crate) struct CommitTarget {
 
 /// Resolve the staged row's account, amount and date, or say which check it
 /// fails. The outer `Result` is a storage error, which always propagates.
+/// The instant a staged row's `posted_at` commits as: an RFC 3339 timestamp in UTC, or a bare date at
+/// noon UTC. The one parse, so the identity backfill's snapshot date is the date a commit would give.
+pub(crate) fn parse_staged_posted_at(posted_at: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(posted_at)
+        .map(|dt| dt.with_timezone(&Utc))
+        .or_else(|_| {
+            NaiveDate::parse_from_str(posted_at, "%Y-%m-%d")
+                .map(|d| d.and_hms_opt(12, 0, 0).expect("noon is valid").and_utc())
+        })
+        .ok()
+}
+
 pub(crate) fn commit_target(
     tx: &Connection,
     staged: &ingestion::StagedTransaction,
@@ -487,13 +499,7 @@ pub(crate) fn commit_target(
     if amount.is_zero() {
         return Ok(Err(RowProblem::ZeroAmount));
     }
-    let occurred_at = DateTime::parse_from_rfc3339(&staged.posted_at)
-        .map(|dt| dt.with_timezone(&Utc))
-        .or_else(|_| {
-            NaiveDate::parse_from_str(&staged.posted_at, "%Y-%m-%d")
-                .map(|d| d.and_hms_opt(12, 0, 0).expect("noon is valid").and_utc())
-        });
-    let Ok(occurred_at) = occurred_at else {
+    let Some(occurred_at) = parse_staged_posted_at(&staged.posted_at) else {
         return Ok(Err(RowProblem::UnreadableDate));
     };
     Ok(Ok(CommitTarget {

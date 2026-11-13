@@ -84,11 +84,11 @@ enum Kind {
 /// # Errors
 /// [`DbError::MigrationRefusedSyncArmed`] when a `sync_base` or a `sync_genesis` row exists; the
 /// migration's transaction then rolls back and the vault stays at the previous schema.
-pub(crate) fn refuse_on_an_armed_vault(conn: &Connection) -> Result<(), DbError> {
+pub(crate) fn refuse_on_an_armed_vault(conn: &Connection, version: i64) -> Result<(), DbError> {
     let case = armed_case(conn)?;
     match case {
         None => Ok(()),
-        Some(case) => Err(DbError::MigrationRefusedSyncArmed { version: 76, case }),
+        Some(case) => Err(DbError::MigrationRefusedSyncArmed { version, case }),
     }
 }
 
@@ -312,7 +312,12 @@ fn file_candidates(
             account,
             amount,
             currency,
-            posted,
+            // The date a commit would give (its UTC date), not the staged text: a timestamp with an
+            // offset names the UTC day.
+            posted
+                .as_deref()
+                .and_then(crate::apply::ingestion_cmds::parse_staged_posted_at)
+                .map(|at| at.date_naive().to_string()),
         )
         else {
             report.file_unrecoverable += 1;
@@ -744,6 +749,46 @@ mod tests {
             )
             .unwrap();
         assert_eq!((account, created.as_str()), (uid(ACCOUNT), "rec-time"));
+    }
+
+    /// The snapshot date is the date a commit gives (the UTC day of `parse_staged_posted_at`), not the
+    /// staged text: the staged column the commit path reads, with its own parse.
+    #[test]
+    fn a_file_rows_snapshot_date_is_the_utc_day_a_commit_would_give() {
+        for (posted, expected) in [
+            ("2026-03-04T23:30:00-05:00", "2026-03-05"),
+            ("2026-03-04T00:30:00+05:00", "2026-03-03"),
+            ("2026-03-04T12:00:00Z", "2026-03-04"),
+            ("2026-03-04", "2026-03-04"),
+        ] {
+            let mut conn = before();
+            batch(&conn, 0x10, "csv", Some(FINGERPRINT), None);
+            record(&conn, 0x20, 0x10, None, "{}");
+            committed(&conn, 0x30, 0x20, -700, false);
+            staged(&conn, 0x20, 0x30, 1, -700);
+            conn.execute("UPDATE staged_transactions SET posted_at = ?1", [posted])
+                .unwrap();
+            migrate(&mut conn);
+            let date: String = conn
+                .query_row("SELECT posted_date FROM import_identities", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(date, expected, "{posted}");
+        }
+        // A staged date the commit path cannot read gives no identity (counted), as it gives no commit.
+        let mut conn = before();
+        batch(&conn, 0x10, "csv", Some(FINGERPRINT), None);
+        record(&conn, 0x20, 0x10, None, "{}");
+        committed(&conn, 0x30, 0x20, -700, false);
+        staged(&conn, 0x20, 0x30, 1, -700);
+        conn.execute(
+            "UPDATE staged_transactions SET posted_at = 'not a date'",
+            [],
+        )
+        .unwrap();
+        migrate(&mut conn);
+        assert!(identities(&conn).is_empty());
     }
 
     #[test]
