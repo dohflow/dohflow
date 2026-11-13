@@ -11,7 +11,9 @@
 //! * [`DbWorker::materialize_attachment`] re-encrypts the bytes under this device's DEK with a fresh
 //!   content key, names the blob by this device's `StorageId`, writes it, and records the mapping with
 //!   the crypto fields **staged** for the attach command's `apply` (it never writes the class-4
-//!   `attachments` row).
+//!   `attachments` row). When another attachment (or another artifact's staging) already holds a blob
+//!   under that name, the bytes are the same (the name is a keyed hash of them): the blob is **reused**,
+//!   never overwritten and never re-encrypted, and the staging is a copy of the holder's crypto fields.
 //! * [`DbWorker::materialize_batch`] writes the batch, record and parser-run rows of a decoded source
 //!   batch, with the device-local columns the spec gives a received batch, and records the mapping
 //!   of every part.
@@ -37,11 +39,23 @@ pub enum MaterializeError {
     /// The mapping could not be written.
     #[error("the artifact mapping could not be written")]
     Mapping(#[from] MappingError),
-    /// Another attachment, or another artifact's staging, already stores a blob under the name these
-    /// bytes get (`attachments.storage_id` and the staged storage id are unique). Two attachment ids
-    /// carrying identical bytes in one vault are not representable.
-    #[error("another attachment already stores a blob with these bytes")]
-    BlobHeld,
+    /// A blob already stored under the name these bytes get (the same bytes under another attachment
+    /// id, which is honest: AC9 shares the blob) does not decrypt to these bytes, or its content key
+    /// does not unwrap. The name is a keyed hash of the bytes, so this device's own copy is damaged.
+    /// A local fault, never a verdict on the artifact; nothing is written and the blob and its
+    /// staging are left as they are.
+    #[error("the blob this device already stores for these bytes does not match them")]
+    BlobConflict,
+    /// A file with the name these bytes get is named only by the base image (the rollback target of a
+    /// rebase): a row deleted here since the base was taken. It is not an orphan to overwrite under a
+    /// new content key, which would leave the base's row unreadable after a rollback. A local fault,
+    /// nothing is written; reusing it under the base's own crypto fields is 5ymg8.6's to build.
+    #[error("the blob for these bytes is kept for the base image")]
+    BlobInBaseImage,
+    /// A row or staging names the blob these bytes get, and the file is not there. A local fault;
+    /// nothing is written (a blob is written once, under its holder's key, and never re-encrypted).
+    #[error("the blob this device already stores for these bytes is missing")]
+    BlobMissing,
     /// The artifact is not a valid attachment (its metadata names no attachment id). A deterministic
     /// defect that stage 9(b) rejects before materialization; reaching it is a caller error.
     #[error("the artifact is not a valid attachment")]
@@ -77,6 +91,99 @@ fn mime_type_of(logical_metadata: &[u8]) -> Option<String> {
 impl From<rusqlite::Error> for MaterializeError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Local(DbError::from(error))
+    }
+}
+
+/// The crypto fields of the blob another holder (an `attachments` row, lowest id first, else another
+/// artifact's staging) already stores under a storage id.
+struct Holder {
+    wrapped_content_key: Vec<u8>,
+    content_key_nonce: Vec<u8>,
+    content_nonce: Vec<u8>,
+    content_alg: String,
+}
+
+type HolderRow = (Vec<u8>, Vec<u8>, Vec<u8>, String);
+
+fn holder_of(
+    conn: &rusqlite::Connection,
+    storage_id: &str,
+    key_epoch: u64,
+    artifact_id: &[u8; 32],
+) -> Result<Option<Holder>, MaterializeError> {
+    let row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<HolderRow> {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    };
+    let found: Option<HolderRow> = conn
+        .query_row(
+            "SELECT wrapped_content_key, content_key_nonce, content_nonce, content_alg
+               FROM attachments WHERE storage_id = ?1 ORDER BY id LIMIT 1",
+            params![storage_id],
+            row,
+        )
+        .optional()?;
+    let found = match found {
+        Some(found) => Some(found),
+        None => conn
+            .query_row(
+                "SELECT staged_wrapped_content_key, staged_content_key_nonce, staged_content_nonce,
+                        staged_content_alg
+                   FROM sync_artifacts
+                  WHERE staged_storage_id = ?1 AND NOT (key_epoch = ?2 AND sync_artifact_id = ?3)
+                  ORDER BY key_epoch, sync_artifact_id LIMIT 1",
+                params![
+                    storage_id,
+                    i64::try_from(key_epoch).map_err(|_| MappingError::Corrupt)?,
+                    artifact_id.as_slice()
+                ],
+                row,
+            )
+            .optional()?,
+    };
+    Ok(found.map(
+        |(wrapped_content_key, content_key_nonce, content_nonce, content_alg)| Holder {
+            wrapped_content_key,
+            content_key_nonce,
+            content_nonce,
+            content_alg,
+        },
+    ))
+}
+
+impl Holder {
+    /// The blob under `storage_id` exists and decrypts, under this holder's key, to `plaintext`.
+    fn check_blob(
+        &self,
+        dek: &vault_crypto::Dek,
+        dir: &std::path::Path,
+        storage_id: &str,
+        plaintext: &[u8],
+    ) -> Result<(), MaterializeError> {
+        let (Ok(key_nonce), Ok(content_nonce)) = (
+            attachments::to_nonce(&self.content_key_nonce),
+            attachments::to_nonce(&self.content_nonce),
+        ) else {
+            return Err(MaterializeError::BlobConflict);
+        };
+        let blob = match attachments::read_blob(dir, storage_id, content_nonce) {
+            Ok(blob) => blob,
+            Err(DbError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(MaterializeError::BlobMissing)
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let wrapped = vault_crypto::WrappedContentKey {
+            nonce: key_nonce,
+            ciphertext: self.wrapped_content_key.clone(),
+        };
+        let held = vault_crypto::unwrap_content_key(dek, &wrapped)
+            .and_then(|key| vault_crypto::decrypt_blob(&key, &blob))
+            .map_err(|_| MaterializeError::BlobConflict)?;
+        if held.as_slice() == plaintext {
+            Ok(())
+        } else {
+            Err(MaterializeError::BlobConflict)
+        }
     }
 }
 
@@ -133,12 +240,19 @@ impl DbWorker {
         };
 
         // This artifact is already here: its blob is on disk and its mapping is staged, or the apply
-        // consumed the staging and the attachments row exists. Only the verified hash is refreshed.
+        // consumed the staging and the attachments row for THIS attachment id exists and names the
+        // blob. Asked by id: another attachment sharing the blob is not this one, and a retry after
+        // the apply must not stage a second copy that nothing would ever consume.
         let existing = crate::sync_artifacts::lookup(&guard.conn, key_epoch, &artifact_id)?;
         let staged_here = existing.as_ref().and_then(|m| m.staged.as_ref());
-        let attachment_row = attachments::find_id_by_storage_id(&guard.conn, storage_id.as_str())?;
-        let row_is_this_attachment =
-            attachment_row.is_some_and(|row| *row.as_uuid().as_bytes() == attachment_id);
+        let row_is_this_attachment: bool = guard
+            .conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM attachments WHERE id = ?1 AND storage_id = ?2)",
+                params![attachment_id.as_slice(), storage_id.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(DbError::from)?;
         if (staged_here.is_some_and(|s| s.storage_id == storage_id.as_str())
             && dir.join(storage_id.as_str()).is_file())
             || row_is_this_attachment
@@ -146,31 +260,38 @@ impl DbWorker {
             record(&guard.conn, &mapping, None)?;
             return Ok(());
         }
-        // Another attachment, or another artifact's staging, already holds these bytes' name.
-        if attachment_row.is_some() {
-            return Err(MaterializeError::BlobHeld);
-        }
-        let staged_elsewhere: bool = guard
-            .conn
-            .query_row(
-                "SELECT 1 FROM sync_artifacts WHERE staged_storage_id = ?1
-                    AND NOT (key_epoch = ?2 AND sync_artifact_id = ?3)",
-                params![
-                    storage_id.as_str(),
-                    i64::try_from(key_epoch).map_err(|_| MappingError::Corrupt)?,
-                    artifact_id.as_slice()
-                ],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if staged_elsewhere {
-            return Err(MaterializeError::BlobHeld);
+
+        // Another attachment, or another artifact's staging, already holds a blob under this name:
+        // the same bytes. Reuse it, never overwrite it: check it, then stage a copy of its crypto
+        // fields (the one blob is encrypted under the holder's key), all under this one hold of the
+        // writer lock so an unlink cannot remove the holder between the check and the staging.
+        if let Some(holder) = holder_of(&guard.conn, storage_id.as_str(), key_epoch, &artifact_id)?
+        {
+            holder.check_blob(dek, &dir, storage_id.as_str(), plaintext.blob)?;
+            let staged = StagedAttachment {
+                storage_id: storage_id.as_str().to_owned(),
+                wrapped_content_key: holder.wrapped_content_key,
+                content_key_nonce: holder.content_key_nonce,
+                content_nonce: holder.content_nonce,
+                content_alg: holder.content_alg,
+                plaintext_size: plaintext.blob.len() as u64,
+                mime_type,
+            };
+            let tx = guard.conn.transaction()?;
+            record(&tx, &mapping, Some(&staged))?;
+            tx.commit()?;
+            return Ok(());
         }
 
-        // Nothing references a blob under this name (an attachments row and another artifact's
-        // staging were refused above, and this artifact's own was handled), so a file here is an
-        // orphan of an attempt that died before its mapping was recorded: it is replaced.
+        // Nothing references a blob under this name (a row or another artifact's staging was reused
+        // above, and this artifact's own was handled), so a file here is an orphan of an attempt
+        // that died before its mapping was recorded: it is replaced. (A file only the base image
+        // names is not told apart here: that is unreachable until a rebase can restore a row, 5ymg8.6.)
+        if dir.join(storage_id.as_str()).exists()
+            && self.blob_keep()?.image.contains(storage_id.as_str())
+        {
+            return Err(MaterializeError::BlobInBaseImage);
+        }
         attachments::write_blob(&dir, &storage_id, &local.blob.ciphertext)?;
         let staged = StagedAttachment {
             storage_id: storage_id.as_str().to_owned(),
@@ -188,8 +309,12 @@ impl DbWorker {
             Ok(())
         })();
         if let Err(error) = recorded {
-            // The write failed, so the mapping does not exist and nothing references the file.
-            let _ = attachments::remove_blob(&dir, storage_id.as_str());
+            // The write failed, so the mapping does not exist and nothing references the file
+            // (and the one predicate keeps it if anything, the base image included, does).
+            if let Ok(keep) = self.blob_keep() {
+                let _ =
+                    attachments::remove_if_unnamed(&dir, &guard.conn, &keep, storage_id.as_str());
+            }
             return Err(error);
         }
         Ok(())

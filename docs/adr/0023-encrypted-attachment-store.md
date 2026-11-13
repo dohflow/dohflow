@@ -145,6 +145,22 @@ direct FS access from the frontend.
   staging ciphertext into the sandbox.
 - Cross-device sync (ADR 0017) requires blob-level sync envelopes.
 
+## Addendum (2026-11-12, personal-cfo-0g528.2 AC9): two attachments may share one blob
+
+Section 7's statement that the metadata row "holds the only wrapped copy of the content key" is
+**no longer true for a shared blob**. The same bytes attached on two devices are two attachment ids
+(the random ids of ADR 0013 stand), and a device that receives both names one blob for them, because the
+blob's name is a keyed hash of the bytes. The blob is written once and is **owned by the set of
+`attachments` rows and staged sync mappings that name it**; each holds a wrapped copy of the one
+content key. The crypto-shred guarantee now attaches to that set: removing the last link to a
+document deletes that row and its wrapped copy, and the bytes stay readable only while another
+row (or a staging) naming the same bytes remains, whether a document the user still has attached
+here or one that arrived from another device. When the last name is gone the file is removed and
+the bytes are unreadable. One rule decides every removal (an unlink, the orphan sweep, a
+materialization's own cleanup): remove the file only when no row, no staging, no base image and no
+swap or rebase in progress names it, checked after the commit under the writer lock.
+`attachments.storage_id` is no longer unique (vault-format spec 48).
+
 ## Test coverage
 
 - `personal-cfo-bcj` plaintext-leak test (PDF + PNG, post-import + crash) — the

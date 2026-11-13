@@ -1321,6 +1321,80 @@ mod protocol_tests {
         (dir, path, reopened, attachment, before, envelope, blobs)
     }
 
+    /// A second attachments row on the first's blob (AC9: the same bytes attached on two devices),
+    /// made with the first's own crypto fields, as a materialization does.
+    fn share_blob(
+        controller: &VaultController,
+        attachment: crate::AttachmentId,
+    ) -> crate::AttachmentId {
+        let shared = crate::AttachmentId::from_uuid(Uuid::from_bytes([0x66; 16]));
+        let hex = |id: crate::AttachmentId| -> String {
+            id.as_uuid()
+                .as_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        controller
+            .kernel()
+            .unwrap()
+            .worker
+            .read_connection()
+            .unwrap()
+            .execute(
+                &format!(
+                    "INSERT INTO attachments (id, storage_id, wrapped_content_key, content_key_nonce,
+                            content_nonce, content_alg, plaintext_size, mime_type, original_filename,
+                            ref_count, created_at)
+                     SELECT x'{}', storage_id, wrapped_content_key, content_key_nonce, content_nonce,
+                            content_alg, plaintext_size, mime_type, 'twin.pdf', 0, created_at
+                       FROM attachments WHERE id = x'{}'",
+                    hex(shared),
+                    hex(attachment)
+                ),
+                [],
+            )
+            .unwrap();
+        shared
+    }
+
+    /// Two attachments sharing one blob rotate to ONE renamed file (the same rename is not journaled
+    /// or linked twice), and both read after the rotation, after a crash at `Linked` (rolled back)
+    /// and after a crash at `Committed` (rolled forward).
+    #[test]
+    fn a_vault_with_a_shared_blob_rotates_and_recovers_with_both_attachments_readable() {
+        for point in [None, Some(CrashPoint::Linked), Some(CrashPoint::Committed)] {
+            let (_dir, path, mut controller, attachment) = seeded();
+            let shared = share_blob(&controller, attachment);
+            let blobs = blob_names(&path);
+            match point {
+                None => controller.rotate_key(PASSWORD).unwrap(),
+                Some(point) => {
+                    let error = controller
+                        .rotate_key_with(PASSWORD, Some(point))
+                        .unwrap_err();
+                    assert!(is_simulated_crash(&error), "{point:?}: {error}");
+                    drop(controller);
+                    controller = VaultController::open(&path);
+                    controller.unlock(PASSWORD).unwrap();
+                }
+            }
+            let kernel = controller.kernel().unwrap();
+            for id in [attachment, shared] {
+                assert_eq!(kernel.read_attachment_bytes(id).unwrap(), PDF, "{point:?}");
+            }
+            let now = blob_names(&path);
+            assert_eq!(
+                now.len(),
+                blobs.len(),
+                "{point:?}: one file for the shared blob"
+            );
+            if point != Some(CrashPoint::Linked) {
+                assert!(now.iter().all(|n| !blobs.contains(n)), "{point:?}: renamed");
+            }
+        }
+    }
+
     #[test]
     fn a_crash_before_the_commit_point_rolls_back_to_the_old_vault() {
         for point in BEFORE_COMMIT {

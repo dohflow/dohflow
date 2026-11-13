@@ -502,14 +502,25 @@ fn every_refusal_writes_nothing_and_keeps_the_staging() {
         [&storage_id],
     )
     .unwrap();
-    assert!(matches!(
-        create_attachment_from_staged(&conn, 1, &ID, id, None, "t"),
-        Err(CreateAttachmentError::StorageIdHeld)
-    ));
+    // Not refused (AC9): a second attachment may share the blob. The row is created with the staged
+    // fields and the staging is cleared; the savepoint puts the state back for what follows.
+    conn.execute_batch("SAVEPOINT shared").unwrap();
+    create_attachment_from_staged(&conn, 1, &ID, id, None, "t").unwrap();
+    let sharing: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM attachments WHERE storage_id = ?1",
+            [&storage_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(sharing, 2, "two rows share one blob");
+    assert_eq!(lookup(&conn, 1, &ID).unwrap().unwrap().staged, None);
+    conn.execute_batch("ROLLBACK TO shared; RELEASE shared")
+        .unwrap();
     assert_eq!(
         lookup(&conn, 1, &ID).unwrap().unwrap().staged,
         staged_before,
-        "storage id held: the staging"
+        "rolled back"
     );
     conn.execute("DELETE FROM attachments", []).unwrap();
 
