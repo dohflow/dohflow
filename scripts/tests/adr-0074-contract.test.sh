@@ -124,4 +124,37 @@ require_text "likely matches are never automatic" "**never automatic**"
 require_text "matched accounts keep the household identity" "the household account stays the"
 require_text "the honest costs are stated" "**6. The honest costs.** History arrives as **new commands with new ids"
 
+# Addendum J (personal-cfo-0g528.3): import identities, dispositions and the restore question.
+require_text 'Addendum J is dated and named' '## Addendum J — Import identities, dispositions and the restore question (2026-11-12, `personal-cfo-0g528.3`)'
+require_text 'one identity table with a kind column' '`import_identities` has one row per committed row that has a cross-device identity.'
+require_text 'provider uniqueness' '`UNIQUE(connection_id, provider_account_key, provider_txn_id)`'
+require_text 'file uniqueness' '`UNIQUE(file_fingerprint, row_ordinal)`'
+require_text 'dispositions table' '`import_dispositions` has one row per decision about an identity or a file.'
+require_text 'no class-3 reference' 'Neither table references a class-3 row, and no staged id appears in either.'
+require_text 'LunchFlow has no provider identity' '**LunchFlow rows have no provider identity** until'
+require_text 'apply binds the identity to its own source' 'so a payload cannot claim another row'"'"'s identity'
+require_text 'a file row is compared, never trusted' '4. **A file-row identity is compared, never trusted.**'
+require_text 'restore commits fresh copies' '**A restore commits fresh copies and leaves the voided originals voided.**'
+require_text 'attachments and obligations do not come back' '**Attachment links and obligation'
+require_text 'the migration refuses on an armed vault' '**The migration refuses on a vault where Sync is armed.**'
+require_text 'a backfill after launch is a command' '**a migration writes no class-1 rows on an armed'
+require_text 'the third answer is a decided item' '9. **A third answer for a file voided for the wrong account or mapping (owner decision, 2026-11-12).**'
+require_text 'the third answer is first a claim' 'The answer is first a **claim** command that resolves the question'
+require_text 'the claim sets an outcome and the batch' 'with `outcome = '"'"'import_anyway'"'"'` and sets `claimed_source_batch_id`'
+require_text 'outcome column' '`outcome TEXT`: `'"'"'restored'"'"'`, `'"'"'dismissed'"'"'` or `'"'"'import_anyway'"'"'`.'
+require_text 'outcome is tied to a resolved question' '`kind = '"'"'restore_question'"'"'` and `status = '"'"'resolved'"'"'`; a `CHECK` ties the three columns together.'
+require_text 'the claimed batch column' '`claimed_source_batch_id BLOB`: the claimant'"'"'s batch, as its logical class-1b id. It is non-NULL'
+require_text 'the batch is set exactly for a claim' 'exactly when `outcome = '"'"'import_anyway'"'"'`.'
+require_text 'kind is never rewritten' '`kind` is never rewritten, so `disposition_id`'
+require_text 'detail is display and audit only' '`detail TEXT` is for display and audit only. **Apply never reads it.**'
+require_text 'dispositions timestamps are issued_at' '`created_at TEXT NOT NULL` and `decided_at TEXT` are `meta.issued_at`, never the clock'
+require_text 'the row gate reads the one question row' '**row gate** reads `status`, `outcome`,'
+require_text 'the gate never reads detail' '`claimed_source_batch_id`, never `detail`.'
+require_text 'the gate matches the claimed batch to the row'"'"'s own' 'is that row'"'"'s own batch. A confirm sets'
+require_text 'a confirm and a dismiss set their outcomes' 'A confirm sets `outcome = '"'"'restored'"'"'` and a dismiss `'"'"'dismissed'"'"'`'
+require_text 'reopening clears the outcome' 'reopening clears `outcome`,'
+require_text 'the claimed batch supersedes the identities' '**The claimed batch supersedes the identities.**'
+require_text 'only the uploading side is offered it' 'Other devices offer confirm and dismiss only.'
+require_text 'originals stay voided and the question closes' '**The originals stay voided, and the question closes everywhere.**'
+
 echo "PASS — $CASES ADR 0074 contract assertions, 0 failures"

@@ -8,7 +8,10 @@ use std::process::Command;
 
 use uuid::Uuid;
 
-use super::{derive_id, derive_id_traced, DerivedIdError, DerivedIdKey, DerivedIds, MAX_ORDINALS};
+use super::{
+    derive_id, derive_id_traced, DerivedIdError, DerivedIdKey, DerivedIds, FileFingerprint,
+    MAX_ORDINALS, MAX_PROVIDER_COMPONENT_LEN,
+};
 use crate::IssuedAt;
 
 const ADR: &str = include_str!("../../../../docs/adr/0013-id-strategy.md");
@@ -518,4 +521,304 @@ fn a_singleton_id_is_a_pure_function_of_the_vault_and_the_label_with_known_answe
         key.singleton_id("has space").unwrap_err(),
         DerivedIdError::TagNotPrintableAscii
     );
+}
+
+/// The known-answer blocks of ADR 0013 Addendum A section `number`, one map per blank-line-separated
+/// vector, read from the document so the test consumes its own numbers rather than a retyped copy.
+fn section_vectors(heading: &str, next: &str) -> Vec<HashMap<String, String>> {
+    let section = ADR
+        .split_once(heading)
+        .unwrap_or_else(|| panic!("the ADR has {heading}"))
+        .1
+        .split_once(next)
+        .unwrap_or_else(|| panic!("{next} follows {heading}"))
+        .0;
+    let block = section
+        .split_once("Known-answer vector")
+        .expect("the section has its vectors")
+        .1
+        .split("```text")
+        .nth(1)
+        .expect("the vectors are in a code fence")
+        .split("```")
+        .next()
+        .expect("the fence closes");
+    block
+        .split("\n\n")
+        .map(|chunk| {
+            chunk
+                .lines()
+                .filter_map(|line| line.split_once('='))
+                .map(|(k, v)| {
+                    // A trailing note in parentheses is commentary, not part of the value.
+                    let v = v.trim().split("(").next().unwrap_or("").trim();
+                    (k.trim().to_owned(), v.to_owned())
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The id key of the ADR vectors (vector A's vault) as the crate derives it, checked against the
+/// literal the provider and file-row vectors name.
+fn adr_vector_key(literal: &str) -> DerivedIdKey {
+    let vector_a = &adr_vectors()[0];
+    let key = DerivedIdKey::for_vault(&Uuid::parse_str(&vector_a["vault_id"]).unwrap());
+    assert_eq!(key.as_bytes().to_vec(), unhex(literal), "vector A's key");
+    key
+}
+
+fn hmac_hex(key: &DerivedIdKey, message: &[u8]) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key.as_bytes()).unwrap();
+    mac.update(message);
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[test]
+fn the_provider_vectors_of_section_9_reproduce_byte_for_byte() {
+    let vectors = section_vectors(
+        "#### 9. Exception: content-derived provider-transaction identifiers",
+        "#### 10.",
+    );
+    assert_eq!(vectors.len(), 2);
+    let key = adr_vector_key(&vectors[0]["id_key"]);
+    let connection = Uuid::parse_str(&vectors[0]["connection_id"]).unwrap();
+    let account = &vectors[0]["provider_account_key"];
+    for (i, v) in vectors.iter().enumerate() {
+        let txn = v
+            .get("provider_txn_id")
+            .unwrap_or(&vectors[0]["provider_txn_id"]);
+        // The message, built here from the grammar rather than by the function under test.
+        let mut message = vec![26_u8];
+        message.extend_from_slice(b"dohflow/provider-txn-id/v1");
+        message.extend_from_slice(connection.as_bytes());
+        for part in [account, txn] {
+            message.extend_from_slice(&u16::try_from(part.len()).unwrap().to_be_bytes());
+            message.extend_from_slice(part.as_bytes());
+        }
+        if i == 0 {
+            assert_eq!(hex(&message), v["message_hex"]);
+            assert_eq!(hmac_hex(&key, &message), v["hmac_sha256"]);
+        }
+        let id = key.provider_txn_id(&connection, account, txn).unwrap();
+        assert_eq!(id.to_string(), v["uuid"], "vector {i}");
+        assert_eq!(id.get_version_num(), 8);
+        assert_eq!(id.as_bytes()[8] >> 6, 0b10);
+    }
+}
+
+#[test]
+fn the_file_row_vectors_of_section_12_reproduce_byte_for_byte() {
+    let vectors = section_vectors(
+        "#### 12. Exception: file-row identifiers",
+        "### Rejected alternatives",
+    );
+    assert_eq!(vectors.len(), 2);
+    let key = adr_vector_key(&vectors[0]["id_key"]);
+    let fingerprint = FileFingerprint::parse(&vectors[0]["file_fingerprint"]).unwrap();
+    for (i, v) in vectors.iter().enumerate() {
+        let ordinal: u32 = v["row_ordinal"].parse().unwrap();
+        let mut message = vec![22_u8];
+        message.extend_from_slice(b"dohflow/file-row-id/v1");
+        message.extend_from_slice(fingerprint.as_bytes());
+        message.extend_from_slice(&ordinal.to_be_bytes());
+        assert_eq!(message.len(), 59, "a fixed 59 bytes");
+        if i == 0 {
+            assert_eq!(hex(&message), v["message_hex"]);
+        }
+        assert_eq!(hmac_hex(&key, &message), v["hmac_sha256"], "vector {i}");
+        let id = key.file_row_id(&fingerprint, ordinal).unwrap();
+        assert_eq!(id.to_string(), v["uuid"], "vector {i}");
+        assert_eq!(id.get_version_num(), 8);
+        assert_eq!(id.as_bytes()[8] >> 6, 0b10);
+    }
+}
+
+#[test]
+fn a_provider_id_depends_on_every_input_and_each_string_is_length_prefixed() {
+    let key = sample_key();
+    let connection = Uuid::from_u128(0x0198_c2c1_5f0a_7c3d_8a4e_9b1d_2e3f_4a5b);
+    let base = key.provider_txn_id(&connection, "ACT-1", "TXN-1").unwrap();
+    assert_eq!(
+        base,
+        key.provider_txn_id(&connection, "ACT-1", "TXN-1").unwrap()
+    );
+    assert_ne!(
+        base,
+        key.provider_txn_id(&Uuid::from_u128(1), "ACT-1", "TXN-1")
+            .unwrap()
+    );
+    assert_ne!(
+        base,
+        key.provider_txn_id(&connection, "ACT-2", "TXN-1").unwrap()
+    );
+    assert_ne!(
+        base,
+        key.provider_txn_id(&connection, "ACT-1", "TXN-2").unwrap()
+    );
+    let other_vault = DerivedIdKey::for_vault(&Uuid::from_u128(1));
+    assert_ne!(
+        base,
+        other_vault
+            .provider_txn_id(&connection, "ACT-1", "TXN-1")
+            .unwrap()
+    );
+    // The length prefix keeps a boundary shift from colliding.
+    assert_ne!(
+        key.provider_txn_id(&connection, "ab", "c").unwrap(),
+        key.provider_txn_id(&connection, "a", "bc").unwrap()
+    );
+    // Byte for byte: no case folding and no Unicode normalization.
+    assert_ne!(
+        base,
+        key.provider_txn_id(&connection, "act-1", "TXN-1").unwrap()
+    );
+    assert_ne!(
+        key.provider_txn_id(&connection, "caf\u{e9}", "t").unwrap(),
+        key.provider_txn_id(&connection, "cafe\u{301}", "t")
+            .unwrap()
+    );
+}
+
+#[test]
+fn a_provider_component_outside_the_byte_rules_has_no_identity() {
+    let key = sample_key();
+    let connection = Uuid::from_u128(7);
+    let invalid = |component| DerivedIdError::ProviderComponentInvalid { component };
+    // Empty, either side.
+    assert_eq!(
+        key.provider_txn_id(&connection, "", "t").unwrap_err(),
+        invalid("account key")
+    );
+    assert_eq!(
+        key.provider_txn_id(&connection, "a", "").unwrap_err(),
+        invalid("transaction id")
+    );
+    // 1,024 bytes is the bound.
+    let at_bound = "x".repeat(MAX_PROVIDER_COMPONENT_LEN);
+    assert!(key
+        .provider_txn_id(&connection, &at_bound, &at_bound)
+        .is_ok());
+    let over = "x".repeat(MAX_PROVIDER_COMPONENT_LEN + 1);
+    assert_eq!(
+        key.provider_txn_id(&connection, &over, "t").unwrap_err(),
+        invalid("account key")
+    );
+    assert_eq!(
+        key.provider_txn_id(&connection, "a", &over).unwrap_err(),
+        invalid("transaction id")
+    );
+    // The bound is in BYTES: 513 two-byte characters are 1,026.
+    let wide = "\u{e9}".repeat(513);
+    assert_eq!(
+        key.provider_txn_id(&connection, "a", &wide).unwrap_err(),
+        invalid("transaction id")
+    );
+    // Every C0 control character and DEL, in the middle of an otherwise valid string.
+    for byte in (0x00_u8..=0x1f).chain([0x7f]) {
+        let bad = format!("a{}b", char::from(byte));
+        assert_eq!(
+            key.provider_txn_id(&connection, &bad, "t").unwrap_err(),
+            invalid("account key"),
+            "{byte:#04x}"
+        );
+        assert_eq!(
+            key.provider_txn_id(&connection, "a", &bad).unwrap_err(),
+            invalid("transaction id"),
+            "{byte:#04x}"
+        );
+    }
+    // A space, punctuation and non-ASCII text are legal.
+    assert!(key
+        .provider_txn_id(&connection, "a b/c-1", "t\u{e9}\u{4e2d}")
+        .is_ok());
+}
+
+#[test]
+fn a_file_fingerprint_is_exactly_sha256_and_sixty_four_lowercase_hex_characters() {
+    let good = "sha256:2c30d6d4f9c6954bfc4f2e31460da5660e8d4aa9d893b6228eddc467516a6830";
+    let parsed = FileFingerprint::parse(good).unwrap();
+    assert_eq!(hex(parsed.as_bytes()), &good["sha256:".len()..]);
+    assert_eq!(FileFingerprint::from_digest(*parsed.as_bytes()), parsed);
+    let invalid = DerivedIdError::FileFingerprintInvalid;
+    for bad in [
+        "",
+        "sha256:",
+        "2c30d6d4f9c6954bfc4f2e31460da5660e8d4aa9d893b6228eddc467516a6830",
+        &good.to_uppercase(),
+        &good.replace("sha256:", "SHA256:"),
+        &good.replace("sha256:", "sha512:"),
+        &good[..good.len() - 1],
+        &format!("{good}0"),
+        &format!("{} ", good),
+        &format!(" {good}"),
+        &good.replace("2c30", "2C30"),
+        &good.replace("2c30", "zc30"),
+        &good.replace("sha256:", "sha256: "),
+    ] {
+        assert_eq!(FileFingerprint::parse(bad).unwrap_err(), invalid, "{bad:?}");
+    }
+    // The debug form does not print a digest into a log line.
+    assert_eq!(format!("{parsed:?}"), "FileFingerprint(..)");
+}
+
+#[test]
+fn a_file_row_id_depends_on_the_fingerprint_and_the_ordinal_and_counts_from_one() {
+    let key = sample_key();
+    let a = FileFingerprint::from_digest([1; 32]);
+    let b = FileFingerprint::from_digest([2; 32]);
+    let first = key.file_row_id(&a, 1).unwrap();
+    assert_eq!(first, key.file_row_id(&a, 1).unwrap());
+    assert_ne!(first, key.file_row_id(&a, 2).unwrap());
+    assert_ne!(first, key.file_row_id(&b, 1).unwrap());
+    assert_ne!(
+        first,
+        DerivedIdKey::for_vault(&Uuid::from_u128(1))
+            .file_row_id(&a, 1)
+            .unwrap()
+    );
+    // The ordinal is four bytes, so the top of the range is distinct and accepted.
+    assert_ne!(
+        key.file_row_id(&a, u32::MAX).unwrap(),
+        key.file_row_id(&a, 255).unwrap()
+    );
+    assert_eq!(
+        key.file_row_id(&a, 0).unwrap_err(),
+        DerivedIdError::RowOrdinalZero
+    );
+}
+
+#[test]
+fn the_new_derivations_are_separate_from_every_other_one_under_the_same_key() {
+    // The separation argument is in the ADR (sections 9 and 12); this is the behavioral check that
+    // no two of the derivations here return one id for the inputs that could be confused.
+    let key = sample_key();
+    let fp = FileFingerprint::from_digest([9; 32]);
+    let connection = Uuid::from_bytes([9; 16]);
+    let ids = [
+        key.file_row_id(&fp, 1).unwrap(),
+        key.provider_txn_id(&connection, "a", "b").unwrap(),
+        key.content_id("txn.import", &[&[9; 16], &1_u32.to_be_bytes()])
+            .unwrap(),
+        key.content_id("file-row-id", &[fp.as_bytes(), &1_u32.to_be_bytes()])
+            .unwrap(),
+        key.keyed_id(&connection, "file-row-id", &[fp.as_bytes()])
+            .unwrap(),
+        key.singleton_id("file-row-id").unwrap(),
+    ];
+    let distinct: HashSet<Uuid> = ids.iter().copied().collect();
+    assert_eq!(distinct.len(), ids.len());
+    // The message prefix bytes the ADR's argument rests on: 22 for a file row, 26 for a provider id.
+    assert_ne!(22_u8, 26);
+    assert_ne!(22_u8, b'd');
 }
