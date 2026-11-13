@@ -38,6 +38,10 @@ pub enum Fault {
     Refuse(ServiceError),
     /// The call takes full effect and the client is told `Unavailable` (a lost response).
     LoseResponse,
+    /// The service has lost every staged snapshot and closure (a restart, an expiry) just before
+    /// this call, which then runs as it would: `stageSnapshotClosure` and `installEpoch` find no
+    /// snapshot, as a snapshot "that was dropped is not there" (protocol 4.14 step 3).
+    DropStaged,
 }
 
 struct Vault {
@@ -219,6 +223,11 @@ impl FakeSnapshotService {
         match state.faults.pop_front() {
             Some(Fault::Pass) | None => op(&mut state, credential),
             Some(Fault::Refuse(error)) => Err(error),
+            Some(Fault::DropStaged) => {
+                state.staged.clear();
+                state.closures.clear();
+                op(&mut state, credential)
+            }
             Some(Fault::LoseResponse) => {
                 let _ = op(&mut state, credential);
                 Err(ServiceError::Unavailable)
