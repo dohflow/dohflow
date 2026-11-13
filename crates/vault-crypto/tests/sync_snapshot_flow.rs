@@ -942,6 +942,99 @@ fn a_retry_after_a_lost_install_response_stages_the_same_closure_again() {
     );
 }
 
+/// A service that loses its staging between the closure and the install: the genesis stages the
+/// snapshot and the closure again, with the same bytes, installs once and still sends an empty list
+/// (mutant S3: without the second `stage_closure` the install finds no closure above 4096 ids).
+#[test]
+fn a_genesis_whose_staging_is_dropped_before_the_install_stages_both_again_and_installs_once() {
+    let rig = Rig::genesis("closure-dropped");
+    let service = FakeSnapshotService::new(Credential::Account);
+    let ids = ascending_ids_with_receipts(&service, 4097);
+    let plaintext = common::snapshot_plaintext(&ids, "a large genesis, staging dropped");
+    service.script(Fault::Pass); // the stage
+    service.script(Fault::Pass); // the closure
+    service.script(Fault::DropStaged); // the install finds nothing staged
+    let outcome = rig
+        .publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext))
+        .unwrap();
+    assert!(
+        matches!(outcome, PublishOutcome::GenesisInstalled(_)),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        service.calls(),
+        [
+            "stage_snapshot",
+            "stage_snapshot_closure",
+            "install_epoch",
+            "stage_snapshot",
+            "stage_snapshot_closure",
+            "install_epoch"
+        ]
+    );
+    assert_eq!(
+        service.closure_of(&[0x01; 16]),
+        Some(raw(&ids)),
+        "the same closure bytes"
+    );
+    assert_eq!(service.manifest_sent("install_epoch"), Some(Vec::new()));
+    assert_eq!(service.published().len(), 1, "installed once");
+}
+
+/// The closure stage may find the snapshot gone (S8): that is the install's to say, and the install
+/// then re-stages both, as above.
+#[test]
+fn a_genesis_whose_closure_stage_finds_the_snapshot_gone_recovers_through_the_install() {
+    let rig = Rig::genesis("closure-gone");
+    let service = FakeSnapshotService::new(Credential::Account);
+    let ids = ascending_ids_with_receipts(&service, 4097);
+    let plaintext = common::snapshot_plaintext(&ids, "a large genesis, gone at the closure");
+    service.script(Fault::Pass); // the stage
+    service.script(Fault::DropStaged); // the closure stage finds no snapshot
+    let outcome = rig
+        .publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext))
+        .unwrap();
+    assert!(
+        matches!(outcome, PublishOutcome::GenesisInstalled(_)),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        service.calls(),
+        [
+            "stage_snapshot",
+            "stage_snapshot_closure",
+            "install_epoch",
+            "stage_snapshot",
+            "stage_snapshot_closure",
+            "install_epoch"
+        ]
+    );
+    assert_eq!(service.closure_of(&[0x01; 16]), Some(raw(&ids)));
+    assert_eq!(service.published().len(), 1);
+}
+
+/// A closure stage the service cannot take (`Unavailable`) is returned, not swallowed (mutant S7):
+/// nothing is installed, and the saved container stays for the retry.
+#[test]
+fn a_genesis_whose_closure_stage_is_unavailable_returns_it_and_installs_nothing() {
+    let rig = Rig::genesis("closure-unavailable");
+    let service = FakeSnapshotService::new(Credential::Account);
+    let ids = ascending_ids_with_receipts(&service, 4097);
+    let plaintext = common::snapshot_plaintext(&ids, "a large genesis, closure unavailable");
+    service.script(Fault::Pass); // the stage
+    service.script(Fault::Refuse(ServiceError::Unavailable)); // the closure
+    assert_eq!(
+        rig.publish(&service, &HEALTHY, &genesis_request(&rig, &plaintext)),
+        Err(PublishError::Service(ServiceError::Unavailable))
+    );
+    assert_eq!(
+        service.calls(),
+        ["stage_snapshot", "stage_snapshot_closure"]
+    );
+    assert!(service.published().is_empty(), "nothing is installed");
+    assert!(rig.saved_file_exists(0x01), "the saved container is kept");
+}
+
 /// A closure read back with `getSnapshotClosure` is checked against the header's commitment by the
 /// client: the service's bytes are not trusted.
 #[test]
