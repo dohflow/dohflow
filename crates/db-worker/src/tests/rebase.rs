@@ -3693,8 +3693,11 @@ mod overlay {
     // removes an attachment, so these tests play the engine: the class-1 effect of the envelope is
     // written with `hold`, and its delta with `apply_delta`, in that order and before the replay.
 
+    /// One row of the live closure: epoch, artifact id, hash, logical kind, logical id.
+    type ClosureRow = (i64, Vec<u8>, Vec<u8>, String, Vec<u8>);
+
     /// The rows of a vault's live closure, in key order, as a plain value.
-    fn closure_rows(worker: &DbWorker) -> Vec<(i64, Vec<u8>, Vec<u8>, String, Vec<u8>)> {
+    fn closure_rows(worker: &DbWorker) -> Vec<ClosureRow> {
         let guard = worker.lock();
         let mut stmt = guard
             .conn
