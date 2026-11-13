@@ -535,6 +535,7 @@ fn replica_of(origin: &DbWorker, verified: &Verified) -> (tempfile::TempDir, DbW
             engine_version: &version,
             own_engine_version: &own,
             held_voids: &[],
+            closure: None,
         },
     )
     .unwrap();

@@ -146,6 +146,24 @@ pub fn fetch(
     id: &ArtifactId,
     bound_sha256: &[u8; 32],
 ) -> Result<OpenedArtifact, FetchError> {
+    let container = fetch_container(transport, key, id, bound_sha256)?;
+    open_fetched(key, id, &container)
+}
+
+/// Get the container the envelope or snapshot bound to `id` and check it is that artifact's bytes:
+/// a well-formed container whose ciphertext hashes to `bound_sha256`. It does **not** open it, so a
+/// caller that must keep the bytes waiting (a bootstrap spooling a part until its siblings arrive)
+/// keeps **ciphertext**, never plaintext. [`fetch`] is this and [`open_fetched`].
+///
+/// # Errors
+/// [`FetchError::Missing`], [`FetchError::Unavailable`] or [`FetchError::HashMismatch`]: a service or
+/// transport fault, never a verdict about the artifact.
+pub fn fetch_container(
+    transport: &(impl ArtifactTransport + ?Sized),
+    key: &EpochKey,
+    id: &ArtifactId,
+    bound_sha256: &[u8; 32],
+) -> Result<Vec<u8>, FetchError> {
     let container = transport
         .get(key.vault_id(), key.key_epoch(), id)
         .map_err(|e| match e {
@@ -159,7 +177,21 @@ pub fn fetch(
     if sha2::Sha256::digest(ciphertext).as_slice() != bound_sha256 {
         return Err(FetchError::HashMismatch);
     }
-    open_artifact(key, id, &container, MAX_ARTIFACT_CONTAINER).map_err(|e| match e {
+    Ok(container)
+}
+
+/// Open a container [`fetch_container`] verified (or one read back from a spool of such): the outer
+/// AEAD, then the descriptor. Bytes that hash to the bound value are one fixed object, so a failure
+/// here is a fact about the artifact (the producer's), not about the service.
+///
+/// # Errors
+/// [`FetchError::OuterAead`] or [`FetchError::Invalid`].
+pub fn open_fetched(
+    key: &EpochKey,
+    id: &ArtifactId,
+    container: &[u8],
+) -> Result<OpenedArtifact, FetchError> {
+    open_artifact(key, id, container, MAX_ARTIFACT_CONTAINER).map_err(|e| match e {
         OpenArtifactError::Container(_) | OpenArtifactError::NotOpenable => FetchError::OuterAead,
         other => FetchError::Invalid(other),
     })

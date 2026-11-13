@@ -314,6 +314,57 @@ fn clear_staged(
     Ok(())
 }
 
+/// Create the `attachments` row of a snapshot's attachment on a replica that is bootstrapping:
+/// the columns that travel come from the **snapshot's row** (`plaintext_size`, `mime_type`,
+/// `original_filename`, `created_at`: a media type different from the artifact's is a later edit of
+/// the row, not an error), and only the local crypto fields come from the artifact's staging, which
+/// this clears in the same transaction. The row's plaintext size must equal the staged size.
+///
+/// # Errors
+/// [`CreateAttachmentError`]; in every case nothing was written.
+pub fn create_attachment_from_snapshot_row(
+    conn: &Connection,
+    key_epoch: u64,
+    artifact_id: &[u8; 32],
+    row: &crate::snapshot_install::SnapshotAttachment,
+) -> Result<(), CreateAttachmentError> {
+    let attachment_id = core_ledger::AttachmentId::from_uuid(uuid::Uuid::from_bytes(row.id));
+    let stored =
+        lookup(conn, key_epoch, artifact_id)?.ok_or(CreateAttachmentError::ArtifactMissing)?;
+    let staged = stored
+        .staged
+        .ok_or(CreateAttachmentError::ArtifactMissing)?;
+    if stored.mapping.kind != ArtifactKind::Attachment || stored.mapping.logical_id != row.id {
+        return Err(CreateAttachmentError::WrongAttachment);
+    }
+    if i64::try_from(staged.plaintext_size).ok() != Some(row.plaintext_size) {
+        return Err(CreateAttachmentError::SizeDisagrees);
+    }
+    if crate::attachments::row_exists(conn, attachment_id)? {
+        return Err(CreateAttachmentError::AlreadyExists);
+    }
+    if crate::attachments::find_id_by_storage_id(conn, &staged.storage_id)?.is_some() {
+        return Err(CreateAttachmentError::StorageIdHeld);
+    }
+    crate::attachments::insert_attachment_fields(
+        conn,
+        attachment_id,
+        &crate::attachments::AttachmentFields {
+            storage_id: &staged.storage_id,
+            wrapped_content_key: &staged.wrapped_content_key,
+            content_key_nonce: &staged.content_key_nonce,
+            content_nonce: &staged.content_nonce,
+            content_alg: &staged.content_alg,
+            plaintext_size: staged.plaintext_size,
+            mime_type: row.mime_type.as_deref(),
+            original_filename: row.original_filename.as_deref(),
+            created_at: &row.created_at,
+        },
+    )?;
+    clear_staged(conn, key_epoch, artifact_id)?;
+    Ok(())
+}
+
 /// Why an `attachments` row could not be created from a staged artifact. In every case nothing was
 /// written and the staging is untouched; the caller's transaction is rolled back with its command.
 #[derive(Debug, Error)]
@@ -333,6 +384,10 @@ pub enum CreateAttachmentError {
     /// unique), so a second row cannot share it.
     #[error("another attachment already stores this blob")]
     StorageIdHeld,
+    /// The snapshot row's plaintext size is not the size of the bytes the artifact carried: the
+    /// producer's row and artifact disagree (a deterministic defect of the snapshot).
+    #[error("the row's plaintext size is not the artifact's")]
+    SizeDisagrees,
     /// The mapping could not be read or written.
     #[error(transparent)]
     Mapping(#[from] MappingError),

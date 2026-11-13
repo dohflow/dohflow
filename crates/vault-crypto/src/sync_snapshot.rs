@@ -145,11 +145,26 @@ fn hex32(hex: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
-fn closure_bound_of(plaintext: &[u8]) -> Result<Vec<BoundArtifact>, SnapshotSealError> {
-    let verified = verify_plaintext(plaintext).map_err(|error| match error {
+/// What a plaintext that does not verify is to a sealer: over its bounds (2^30 bytes, or a closure of
+/// more than 2^20 ids) is `SnapshotTooLarge`, anything else `PlaintextInvalid`.
+fn seal_error_of(error: SnapshotPlaintextError) -> SnapshotSealError {
+    match error {
         SnapshotPlaintextError::TooLarge => SnapshotSealError::SnapshotTooLarge,
         _ => SnapshotSealError::PlaintextInvalid,
-    })?;
+    }
+}
+
+/// What a plaintext that does not give its closure's commitments is to an opener: over its bounds is
+/// `SnapshotTooLarge` (deterministically invalid at every opener), anything else `PlaintextInvalid`.
+fn open_failure_of(error: SnapshotSealError) -> SnapshotOpenFailure {
+    match error {
+        SnapshotSealError::SnapshotTooLarge => SnapshotOpenFailure::SnapshotTooLarge,
+        _ => SnapshotOpenFailure::PlaintextInvalid,
+    }
+}
+
+fn closure_bound_of(plaintext: &[u8]) -> Result<Vec<BoundArtifact>, SnapshotSealError> {
+    let verified = verify_plaintext(plaintext).map_err(seal_error_of)?;
     verified
         .manifest
         .artifacts
@@ -372,10 +387,7 @@ impl<'a> SnapshotOpener<'a> {
         .map_err(|()| SnapshotOpenFailure::NotOpenable)?;
         // After authenticated decryption, the receiver checks the commitment of header field 17
         // against the plaintext's own manifest (C.4 receiver check 4, for a snapshot).
-        let commitments = closure_commitments_of(&plaintext).map_err(|error| match error {
-            SnapshotSealError::SnapshotTooLarge => SnapshotOpenFailure::SnapshotTooLarge,
-            _ => SnapshotOpenFailure::PlaintextInvalid,
-        })?;
+        let commitments = closure_commitments_of(&plaintext).map_err(open_failure_of)?;
         match header.object {
             ObjectKind::Snapshot {
                 artifact_manifest_commitment,
@@ -751,5 +763,33 @@ impl<S: RegisterStore, W: RollbackWitness> SnapshotSealer<'_, S, W> {
         }
         self.files.remove(object_id)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bound_mapping_tests {
+    use super::*;
+
+    /// A snapshot over the closure bound cannot be built outside sync-core (`build` refuses it, as
+    /// `verify` does), so the mappings the sealer and the opener make are tested as the functions
+    /// they are: over the bound is `SnapshotTooLarge` and every other defect is `PlaintextInvalid`.
+    #[test]
+    fn a_plaintext_over_the_bound_is_snapshot_too_large_at_the_sealer_and_the_opener() {
+        assert_eq!(
+            seal_error_of(SnapshotPlaintextError::TooLarge),
+            SnapshotSealError::SnapshotTooLarge
+        );
+        assert_eq!(
+            seal_error_of(SnapshotPlaintextError::HashMismatch),
+            SnapshotSealError::PlaintextInvalid
+        );
+        assert_eq!(
+            open_failure_of(SnapshotSealError::SnapshotTooLarge),
+            SnapshotOpenFailure::SnapshotTooLarge
+        );
+        assert_eq!(
+            open_failure_of(SnapshotSealError::PlaintextInvalid),
+            SnapshotOpenFailure::PlaintextInvalid
+        );
     }
 }

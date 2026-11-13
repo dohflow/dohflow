@@ -83,6 +83,9 @@ pub struct GenesisProof<'a> {
     pub chain: &'a VerifiedState,
     /// This build's `engine_version`.
     pub own_engine_version: &'a EngineVersion,
+    /// The artifact service the genesis's closure is fetched from (a genesis that carries
+    /// attachments or batches is built into its image with every artifact, as a bootstrap does).
+    pub artifacts: &'a dyn sync_core::artifact_transport::ArtifactTransport,
 }
 
 /// One command of the gap, as it was recorded: everything a faithful replay needs.
@@ -373,6 +376,7 @@ pub fn build_genesis_image(
     snapshot: &Verified,
     engine: &EngineVersion,
     own: &EngineVersion,
+    closure: Option<crate::sync_bootstrap::ClosureSource<'_>>,
 ) -> Result<PathBuf, GapError> {
     let source = ReplicaSource {
         vault_id,
@@ -381,6 +385,7 @@ pub fn build_genesis_image(
         engine_version: engine,
         own_engine_version: own,
         held_voids: &[],
+        closure,
     };
     let bootstrapped = bootstrap_replica(replica_path, dek, &source)?;
     drop(bootstrapped);
@@ -709,6 +714,10 @@ pub fn reconcile_genesis_gap_with<S: SnapshotService>(
             &verified,
             &engine,
             proof.own_engine_version,
+            Some(crate::sync_bootstrap::ClosureSource {
+                transport: proof.artifacts,
+                key: proof.epoch_key,
+            }),
         )?;
         // 3. Replay and prove.
         let keys = replay_and_prove_with(
