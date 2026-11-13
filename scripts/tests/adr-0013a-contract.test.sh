@@ -270,4 +270,57 @@ assert m[0] == 34 and 34 not in (26, 28)
 PY
 echo "    ok   — merge-import vectors re-derived independently; domain separation re-checked on the bytes"
 
+# Section 12 (personal-cfo-0g528.3): file-row identifiers.
+require_text 'section 12 is dated and named' "$ADR" '#### 12. Exception: file-row identifiers (2026-11-12, `personal-cfo-0g528.3`)'
+require_text 'file-row label is fixed' "$ADR" 'label    = ASCII "dohflow/file-row-id/v1"                    (22 bytes)'
+require_text 'file-row message layout' "$ADR" '|| file_fingerprint                                  # 32 raw bytes, the decoded SHA-256 digest'
+require_text 'file-row ordinal encoding' "$ADR" '|| u32_be(row_ordinal)                               # 1..=4294967295'
+require_text 'file-row id is not the ledger id' "$ADR" 'ledger id** of the row: the ledger id of an imported row stays the one of'
+require_text 'file-row ordinal depends on parser and map' "$ADR" 'so the ordinal depends on the'
+require_text 'file-row fingerprint form is pinned' "$ADR" '**32 decoded bytes**. Any other form, including an uppercase digest'
+require_text 'section 9 points at section 12' "$ADR" 'their own label, fixed by section 12 below with its own vector.'
+
+CASES=$((CASES + 1))
+python3 -I - "$ADR" <<'PY'
+import hashlib, hmac, re, sys, uuid
+text = open(sys.argv[1]).read()
+sec = text.split("#### 12. Exception: file-row identifiers", 1)[1].split("### Rejected alternatives", 1)[0]
+block = sec.split("Known-answer vector", 1)[1].split("```text", 1)[1].split("```", 1)[0]
+def f(name, chunk):
+    m = re.search(r"^" + name + r"\s*=\s*(\S+)", chunk, re.M)
+    assert m, name
+    return m.group(1)
+parts = block.split("\n\n")
+assert len(parts) == 2, len(parts)
+id_key = bytes.fromhex(f("id_key", parts[0]))
+label = b"dohflow/file-row-id/v1"
+assert len(label) == 22
+fp_text = f("file_fingerprint", parts[0])
+assert re.fullmatch(r"sha256:[0-9a-f]{64}", fp_text)
+fp = bytes.fromhex(fp_text[len("sha256:"):])
+assert len(fp) == 32
+def derive(ordinal):
+    m = bytes([len(label)]) + label + fp + ordinal.to_bytes(4, "big")
+    d = hmac.new(id_key, m, hashlib.sha256).digest()
+    b = bytearray(d[:16]); b[6] = (b[6] & 0x0F) | 0x80; b[8] = (b[8] & 0x3F) | 0x80
+    return m, d, uuid.UUID(bytes=bytes(b))
+for chunk, ordinal in ((parts[0], 1), (parts[1], 2)):
+    assert int(f("row_ordinal", chunk)) == ordinal
+    m, d, u = derive(ordinal)
+    assert len(m) == 59
+    if chunk is parts[0]:
+        assert m.hex() == f("message_hex", chunk), "message_hex"
+    assert d.hex() == f("hmac_sha256", chunk), "hmac_sha256"
+    assert str(u) == f("uuid", chunk), "uuid"
+    assert u.version == 8
+# Domain separation, re-checked on the bytes.
+m, _, _ = derive(1)
+assert m[0] == 22 and m[0] not in (26, 28, 34)                # sections 9, 10, 11 begin with their label length
+assert m[0] != ord("d")                                       # content_id / keyed_id / singleton_id begin with the raw label
+assert m[16] == label[15] == 0x77 and m[16] == 119            # a section 1 reading would need tag_len 119 ...
+assert 16 + 1 + 119 + 2 == 138 and 138 != len(m)              # ... and a 138-byte message
+assert len(m) == 19 + 40 and m[16] != 40                      # a 59-byte section 1 message has tag_len 40
+PY
+echo "    ok   — file-row vectors re-derived independently; domain separation re-checked on the bytes"
+
 echo "PASS — $CASES ADR 0013-A contract assertions, 0 failures"
