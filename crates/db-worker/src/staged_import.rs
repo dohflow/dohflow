@@ -49,8 +49,11 @@ use crate::{
 pub enum StagedDecision {
     /// The row was committed to the ledger by this command.
     Committed(Outcome),
-    /// The row's transaction already existed (a crash left the staged row behind); the staged row
-    /// is now marked committed and no command was dispatched.
+    /// Nothing was committed for this row: its transaction already existed (a crash left the staged
+    /// row behind), or its cross-device identity is held by a transaction that is equal to it or
+    /// voided, or a command that only records a revision of that identity changed nothing in the
+    /// ledger. The staged row is now marked committed against the transaction that exists, and an
+    /// import counts it as no new row.
     AlreadyCommitted,
     /// The row was flagged for the Money Inbox, not committed (a duplicate, or a row the ledger
     /// cannot accept). Device-local; no command.
@@ -470,7 +473,24 @@ impl DbWorker {
                     None => transaction_id,
                 };
                 ingestion::mark_staged_committed(&guard.conn, staged_id, committed)?;
-                Ok(StagedDecision::Committed(outcome))
+                // A command that held the identity with different fields committed nothing (it only
+                // recorded the revision): this row's source record is not what the transaction was
+                // created from. Only a real commit leaves that provenance link, so the link tells
+                // the two apart (the ids cannot: a provider row's derived id is the held one too).
+                let created_here: bool = guard.conn.query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM source_provenance_links pl
+                           JOIN staged_transactions st ON st.source_record_id = pl.source_record_id
+                          WHERE st.id = ?1 AND pl.entity_type = 'ledger_transaction'
+                            AND pl.entity_id = ?2 AND pl.relationship = 'created_from')",
+                    params![staged_id, committed],
+                    |r| r.get(0),
+                )?;
+                if created_here {
+                    Ok(StagedDecision::Committed(outcome))
+                } else {
+                    Ok(StagedDecision::AlreadyCommitted)
+                }
             }
             StagedPlan::Flag(mut flag) => {
                 if !flag.already_flagged {

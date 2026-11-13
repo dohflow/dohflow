@@ -320,10 +320,11 @@ fn a_revised_row_on_a_device_with_no_staged_counterpart_records_the_revision_and
         )
         .unwrap();
     let revised = provider(&worker, account, "TXN-1", -1_300, "COFFEE");
-    assert!(matches!(
+    assert_eq!(
         worker.commit_staged(meta(), revised, false).unwrap(),
-        StagedDecision::Committed(_)
-    ));
+        StagedDecision::AlreadyCommitted,
+        "nothing was committed, so an import counts no new row"
+    );
     assert_eq!(imported(&worker), 1, "nothing was committed");
     assert_eq!(
         committed_to(&worker, revised),
