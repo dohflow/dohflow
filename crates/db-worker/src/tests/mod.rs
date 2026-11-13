@@ -5,6 +5,7 @@
 
 mod base_image;
 mod import_identity;
+mod import_planner;
 mod instance_parity;
 mod loan_bill_overlap;
 mod loan_link;

@@ -3840,9 +3840,36 @@ impl DbWorker {
     /// restore, not an accidental duplicate (feedback 2026-07-03). Skipped rows
     /// keep nothing counted. ADR 0008 §5 addendum.
     pub fn batch_with_fingerprint(&self, fingerprint: &str) -> Result<Option<Uuid>, DbError> {
-        self.read_connection()?
-            .query_row(
-                "SELECT sb.id FROM source_batches sb
+        let conn = self.read_connection()?;
+        // The class-1 check, which every device holds: a file-row identity of this file whose
+        // transaction is still active (`personal-cfo-0g528.3`, ADR 0074 Addendum J item 6). A fallback
+        // fingerprint has no section-12 form and so no identity. A voided identity does not count
+        // here: a re-upload of an all-voided file keeps today's behavior until the restore question.
+        if let Ok(parsed) = core_ids::FileFingerprint::parse(fingerprint) {
+            let held: Option<Uuid> = conn
+                .query_row(
+                    "SELECT sr.source_batch_id
+                       FROM import_identities i
+                       JOIN ledger_transactions lt ON lt.id = i.transaction_id
+                       JOIN source_provenance_links pl
+                         ON pl.entity_type = 'ledger_transaction' AND pl.entity_id = lt.id
+                        AND pl.relationship = 'created_from'
+                       JOIN source_records sr ON sr.id = pl.source_record_id
+                      WHERE i.kind = 'file' AND i.file_fingerprint = ?1 AND lt.voided_at IS NULL
+                      ORDER BY i.row_ordinal, i.identity_id
+                      LIMIT 1",
+                    [parsed.as_bytes().as_slice()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if held.is_some() {
+                return Ok(held);
+            }
+        }
+        // The local check, over the staging this device holds, beside it: a file whose rows are all
+        // flagged counts as already imported here, which no identity records.
+        conn.query_row(
+            "SELECT sb.id FROM source_batches sb
                   WHERE sb.file_fingerprint = ?1
                     AND sb.status IN ('committed', 'partially_committed')
                     AND (
@@ -3872,11 +3899,11 @@ impl DbWorker {
                       )
                     )
                   LIMIT 1",
-                params![fingerprint],
-                |r| r.get::<_, Uuid>(0),
-            )
-            .optional()
-            .map_err(DbError::from)
+            params![fingerprint],
+            |r| r.get::<_, Uuid>(0),
+        )
+        .optional()
+        .map_err(DbError::from)
     }
 
     /// Persist a parser run for `batch_id` from a [`ParserRunReport`]

@@ -14,6 +14,16 @@
 //! transaction id (a content id of its batch and row ordinal), finds the transaction, and finishes the
 //! bookkeeping without dispatching again (planner step 0).
 //!
+//! **Cross-device identity** (`personal-cfo-0g528.3`, ADR 0074 Addendum J). A row of a SimpleFIN batch,
+//! or of a file batch whose fingerprint has section 12's form, claims an identity (`claim_for`): a
+//! provider row's ledger id is its derived identity, a file row's stays the id of its batch and ordinal,
+//! and the claim's ordinal is the staged row's own, the value that derives that id. When the identity is
+//! already held, and the row equals what it holds or its transaction is voided, **no command is sent**:
+//! only the staged row's bookkeeping is left. A row that differs carries on (a device that staged the
+//! first one still flags it, as it always did) with a command that records the revision. A person's
+//! "import anyway" claims nothing, and a file row whose identity is voided claims nothing either, so a
+//! re-uploaded voided file keeps restoring until the restore question exists.
+//!
 //! **Planning runs on the writer connection.** The planner is read-only SQL, but a fresh read
 //! connection costs about 75 ms to key with a passphrase, and an import decides thousands of rows. The
 //! lock is held for the plan alone and released before the command is dispatched.
@@ -23,12 +33,16 @@ use core_ledger::StagedTransactionId;
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
+use crate::apply::import_identity::{changed_fields, held, Snapshot};
 use crate::apply::ingestion_cmds::{
     commit_target, cross_source_reason, fit_import_text, import_date_is_valid,
     import_transaction_id, staged_already_committed, staged_cannot_be_skipped, staged_missing,
     staged_ordinal_unusable, RowProblem,
 };
-use crate::{ingestion, CommandMeta, DbError, DbWorker, Outcome, WriteCommand};
+use crate::{
+    ingestion, CommandMeta, DbError, DbWorker, ImportIdentityClaim, ImportIdentityComponents,
+    Outcome, WriteCommand,
+};
 
 /// What deciding one staged row did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +74,101 @@ struct PlannedFlag {
     suspected_duplicate: bool,
     /// Whether the row is already flagged, so a repeat writes nothing.
     already_flagged: bool,
+    /// When the row's cross-device identity is held with different fields, the commit that records
+    /// the revision (apply commits nothing and records a pending disposition): sent after the flag,
+    /// so the revision is recorded whether or not this device flags the row.
+    revision: Option<Box<WriteCommand>>,
+}
+
+/// The identity a staged row claims, with the ledger id its commit carries.
+struct PlannedClaim {
+    claim: ImportIdentityClaim,
+    /// A provider row's ledger id IS its derived identity; a file row's stays the id of its batch and
+    /// ordinal.
+    ledger_id: Uuid,
+    /// A provider row's posted date and description, read from its record the way the backfill does.
+    provider: Option<(String, Option<String>)>,
+}
+
+/// The identity a staged row of a SimpleFIN batch or a file batch claims (ADR 0074 Addendum J item 2):
+/// only a SimpleFIN transaction with a provider id and account key that satisfy ADR 0013-A section 9,
+/// and a file row whose batch has a fingerprint in section 12's form, have one. A LunchFlow row, a
+/// connector row without an id and a row under a fallback fingerprint keep the local heuristic path.
+///
+/// A file row whose identity is held by a **voided** transaction claims nothing: re-uploading a voided
+/// file keeps restoring silently until the restore question exists (`personal-cfo-0g528.3`, S3c).
+fn claim_for(
+    conn: &Connection,
+    vault_id: &Uuid,
+    staged: &ingestion::StagedTransaction,
+    batch_id: Uuid,
+    ordinal: i64,
+) -> Result<Option<PlannedClaim>, DbError> {
+    let (source_type, connection, fingerprint, external_id, normalized): (
+        String,
+        Option<Uuid>,
+        Option<String>,
+        Option<String>,
+        String,
+    ) = conn.query_row(
+        "SELECT sb.source_type, sb.connector_connection_id, sb.file_fingerprint, sr.external_id,
+                sr.normalized_json
+           FROM source_records sr JOIN source_batches sb ON sb.id = sr.source_batch_id
+          WHERE sr.id = ?1 AND sb.id = ?2",
+        params![staged.source_record_id, batch_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )?;
+    let key = core_ids::DerivedIdKey::for_vault(vault_id);
+    if source_type == "simplefin" {
+        let (Some(connection_id), Some(provider_txn_id)) = (connection, external_id) else {
+            return Ok(None);
+        };
+        let Some((provider_account_key, posted_date, description)) =
+            crate::import_identity_backfill::parse_normalized(&normalized)
+        else {
+            return Ok(None);
+        };
+        let Ok(identity_id) =
+            key.provider_txn_id(&connection_id, &provider_account_key, &provider_txn_id)
+        else {
+            return Ok(None);
+        };
+        return Ok(Some(PlannedClaim {
+            claim: ImportIdentityClaim {
+                identity_id,
+                components: ImportIdentityComponents::Provider {
+                    connection_id,
+                    provider_account_key,
+                    provider_txn_id,
+                },
+            },
+            ledger_id: identity_id,
+            provider: Some((posted_date, description)),
+        }));
+    }
+    let (Some(fingerprint), Ok(row_ordinal)) = (fingerprint, u32::try_from(ordinal)) else {
+        return Ok(None);
+    };
+    let Ok(parsed) = core_ids::FileFingerprint::parse(&fingerprint) else {
+        return Ok(None);
+    };
+    let Ok(identity_id) = key.file_row_id(&parsed, row_ordinal) else {
+        return Ok(None);
+    };
+    if held(conn, identity_id)?.is_some_and(|held| held.voided) {
+        return Ok(None);
+    }
+    Ok(Some(PlannedClaim {
+        claim: ImportIdentityClaim {
+            identity_id,
+            components: ImportIdentityComponents::File {
+                file_fingerprint: fingerprint,
+                row_ordinal,
+            },
+        },
+        ledger_id: import_transaction_id(vault_id, batch_id, ordinal)?,
+        provider: None,
+    }))
 }
 
 enum StagedPlan {
@@ -70,6 +179,43 @@ enum StagedPlan {
     },
     Commit(Box<PlannedCommit>),
     Flag(PlannedFlag),
+}
+
+/// The command that commits `staged` as the transaction `transaction_id`, claiming `claim` unless the
+/// person forced the row.
+fn command_for(
+    conn: &Connection,
+    staged: &ingestion::StagedTransaction,
+    transaction_id: Uuid,
+    claim: Option<&PlannedClaim>,
+    force: bool,
+    target: crate::apply::ingestion_cmds::CommitTarget,
+) -> Result<WriteCommand, DbError> {
+    // The category the source's own column named, when it names a real one (ADR 0045 §3); resolved
+    // here so the command carries an id and apply looks nothing up by name.
+    let category_id = match staged.imported_category.as_deref() {
+        Some(name) => crate::categories::find_id_by_name(conn, name)?,
+        None => None,
+    };
+    let account_id = staged
+        .proposed_account_id
+        .expect("commit_target found the account, so the row has one");
+    Ok(WriteCommand::CommitImportedTransaction {
+        transaction_id: core_ledger::TransactionId::from_uuid(transaction_id),
+        account_id: core_ledger::AccountId::from_uuid(account_id),
+        source_record_id: core_ledger::SourceRecordId::from_uuid(staged.source_record_id),
+        occurred_at: target.occurred_at,
+        amount: target.amount,
+        counterparty: staged.normalized_merchant.as_deref().map(fit_import_text),
+        memo: staged.description.as_deref().map(fit_import_text),
+        transaction_date: staged
+            .transaction_date
+            .as_deref()
+            .and_then(|text| NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()),
+        category_id: category_id.map(core_ledger::CategoryId::from_uuid),
+        forced: force,
+        identity: claim.map(|planned| planned.claim.clone()),
+    })
 }
 
 /// Plan the commit of staged row `staged_id`. Read-only. `force` is the Money Inbox "import anyway":
@@ -90,14 +236,79 @@ fn plan_staged(
         |r| r.get(0),
     )?;
     let ordinal = staged.row_ordinal.ok_or_else(staged_ordinal_unusable)?;
-    let transaction_id = import_transaction_id(vault_id, batch_id, ordinal)?;
+    // An "import anyway" claims no identity: the person's override commits the row as it always did.
+    let claim = if force {
+        None
+    } else {
+        claim_for(conn, vault_id, &staged, batch_id, ordinal)?
+    };
+    let transaction_id = match &claim {
+        Some(planned) => planned.ledger_id,
+        None => import_transaction_id(vault_id, batch_id, ordinal)?,
+    };
+
+    // Step 0a: the identity is held already (another device's commit, a backfill, an earlier refresh).
+    // A row that is equal to what the identity holds, or whose transaction the person voided, is not
+    // committed and no command is sent: only the bookkeeping is left. A differing row carries on, with
+    // a command that records the revision.
+    let mut revision_target = None;
+    let mut identity_held = false;
+    if let Some(planned) = &claim {
+        if let Some(held) = held(conn, planned.claim.identity_id)? {
+            identity_held = true;
+            match commit_target(conn, &staged)? {
+                Ok(target) if import_date_is_valid(target.occurred_at) => {
+                    let account = staged
+                        .proposed_account_id
+                        .expect("commit_target found the account, so the row has one");
+                    let incoming = Snapshot::of(
+                        planned.provider.clone(),
+                        account,
+                        &target.amount,
+                        &target.occurred_at,
+                    );
+                    if held.voided
+                        || changed_fields(&planned.claim.components, &held.snapshot, &incoming)
+                            .is_empty()
+                    {
+                        return Ok(StagedPlan::AlreadyCommitted {
+                            staged_id,
+                            transaction_id: held.transaction_id,
+                        });
+                    }
+                    revision_target = Some(target);
+                }
+                // A row the ledger cannot accept is planned (and flagged) the usual way, but a
+                // voided identity's row is never imported again.
+                _ if held.voided => {
+                    return Ok(StagedPlan::AlreadyCommitted {
+                        staged_id,
+                        transaction_id: held.transaction_id,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    let revision = match revision_target {
+        Some(target) => Some(Box::new(command_for(
+            conn,
+            &staged,
+            transaction_id,
+            claim.as_ref(),
+            false,
+            target,
+        )?)),
+        None => None,
+    };
 
     // Step 0: the transaction this row derives already exists, so there is nothing to decide.
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM ledger_transactions WHERE id = ?1)",
-        [transaction_id],
-        |r| r.get(0),
-    )?;
+    let exists: bool = !identity_held
+        && conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM ledger_transactions WHERE id = ?1)",
+            [transaction_id],
+            |r| r.get(0),
+        )?;
     if exists {
         // The derived transaction must have been made from THIS row's source record. A repeated
         // ordinal (a staging pass that restarted its numbering) would otherwise silently treat a
@@ -126,6 +337,7 @@ fn plan_staged(
             matched,
             suspected_duplicate,
             already_flagged,
+            revision: revision.clone(),
         })
     };
 
@@ -168,31 +380,9 @@ fn plan_staged(
         Err(problem) => return Err(problem.error()),
     };
 
-    // The category the source's own column named, when it names a real one (ADR 0045 §3); resolved
-    // here so the command carries an id and apply looks nothing up by name.
-    let category_id = match staged.imported_category.as_deref() {
-        Some(name) => crate::categories::find_id_by_name(conn, name)?,
-        None => None,
-    };
-    let account_id = staged
-        .proposed_account_id
-        .expect("commit_target found the account, so the row has one");
-    let command = WriteCommand::CommitImportedTransaction {
-        transaction_id: core_ledger::TransactionId::from_uuid(transaction_id),
-        account_id: core_ledger::AccountId::from_uuid(account_id),
-        source_record_id: core_ledger::SourceRecordId::from_uuid(staged.source_record_id),
-        occurred_at: target.occurred_at,
-        amount: target.amount,
-        counterparty: staged.normalized_merchant.as_deref().map(fit_import_text),
-        memo: staged.description.as_deref().map(fit_import_text),
-        transaction_date: staged
-            .transaction_date
-            .as_deref()
-            .and_then(|text| NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()),
-        category_id: category_id.map(core_ledger::CategoryId::from_uuid),
-        forced: force,
-        // The planner claims no identity yet (S3b part 3b gives it one for a SimpleFIN or file row).
-        identity: None,
+    let command = match revision {
+        Some(command) => *command,
+        None => command_for(conn, &staged, transaction_id, claim.as_ref(), force, target)?,
     };
     Ok(StagedPlan::Commit(Box::new(PlannedCommit {
         staged_id,
@@ -260,14 +450,36 @@ impl DbWorker {
                     transaction_id,
                     command,
                 } = *commit;
+                let claimed = match &command {
+                    WriteCommand::CommitImportedTransaction { identity, .. } => {
+                        identity.as_ref().map(|claim| claim.identity_id)
+                    }
+                    _ => None,
+                };
                 let outcome = self.dispatch(meta.clone(), command)?;
                 let guard = self.lock();
-                ingestion::mark_staged_committed(&guard.conn, staged_id, transaction_id)?;
+                // A row that claimed an identity is bookkept against the transaction the identity
+                // holds: the one it just committed, or, when another device's commit (or an
+                // earlier one) held the identity with different fields, that one.
+                let committed = match claimed {
+                    Some(identity_id) => guard.conn.query_row(
+                        "SELECT transaction_id FROM import_identities WHERE identity_id = ?1",
+                        [identity_id],
+                        |r| r.get(0),
+                    )?,
+                    None => transaction_id,
+                };
+                ingestion::mark_staged_committed(&guard.conn, staged_id, committed)?;
                 Ok(StagedDecision::Committed(outcome))
             }
-            StagedPlan::Flag(flag) => {
+            StagedPlan::Flag(mut flag) => {
                 if !flag.already_flagged {
                     self.record_flag(&flag)?;
+                }
+                // The row differs from what its identity holds: the revision is recorded (apply
+                // commits nothing), though this device also flags the row, as it always did.
+                if let Some(revision) = flag.revision.take() {
+                    self.dispatch(meta.clone(), *revision)?;
                 }
                 Ok(StagedDecision::Flagged)
             }
