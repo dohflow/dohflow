@@ -189,6 +189,13 @@ fn unlock_refuses_a_mismatched_wal_with_a_typed_error_and_touches_nothing() {
         main_before,
         "the vault is untouched"
     );
+    // The words the person reads (Studio's wording, personal-cfo-5vto5): the outcome first, both
+    // sizes as numbers, both files covered, and no path.
     let text = refused.to_string();
-    assert!(text.contains("8192") && text.contains("4096") && !text.contains("vault.db"));
+    assert_eq!(
+        text,
+        "DohFlow did not open the vault. The write-ahead log reports a page size of 8192 bytes, \
+         but the vault requires 4096 bytes per page. Neither file was changed or deleted."
+    );
+    assert!(!text.contains("vault.db"));
 }
