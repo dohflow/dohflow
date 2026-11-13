@@ -998,6 +998,8 @@ rejection an import commit in another currency than its account	rejected 2
 rejection an import commit naming an unknown category	rejected 3
 rejection an import commit of a zero amount	rejected 2
 rejection an import commit to an unknown account	rejected 3
+rejection an import commit whose identity is not its components' derived id	rejected 2
+rejection an import commit whose identity names a malformed file fingerprint	rejected 2
 rejection an import commit with an over-long memo	rejected 2
 rejection an opening balance in another currency than the account	rejected 2
 rejection an update of an unknown category	rejected 3

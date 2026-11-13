@@ -65,6 +65,7 @@ fn invalid(message: &str) -> DbError {
 
 /// The fields of the claimed row's source record and batch that bind the identity to it.
 struct Source {
+    source_type: String,
     connection_id: Option<Uuid>,
     file_fingerprint: Option<String>,
     batch_id: Uuid,
@@ -74,33 +75,22 @@ struct Source {
 
 fn read_source(tx: &Connection, source_record_id: Uuid) -> Result<Source, DbError> {
     Ok(tx.query_row(
-        "SELECT sb.connector_connection_id, sb.file_fingerprint, sb.id, sr.external_id,
-                sr.normalized_json
+        "SELECT sb.source_type, sb.connector_connection_id, sb.file_fingerprint, sb.id,
+                sr.external_id, sr.normalized_json
            FROM source_records sr JOIN source_batches sb ON sb.id = sr.source_batch_id
           WHERE sr.id = ?1",
         [source_record_id],
         |r| {
             Ok(Source {
-                connection_id: r.get(0)?,
-                file_fingerprint: r.get(1)?,
-                batch_id: r.get(2)?,
-                external_id: r.get(3)?,
-                normalized_json: r.get(4)?,
+                source_type: r.get(0)?,
+                connection_id: r.get(1)?,
+                file_fingerprint: r.get(2)?,
+                batch_id: r.get(3)?,
+                external_id: r.get(4)?,
+                normalized_json: r.get(5)?,
             })
         },
     )?)
-}
-
-/// The account key and the description a SimpleFIN record's normalized payload holds (the same read
-/// the migration-76 backfill makes, so the first refresh compares equal).
-fn normalized_fields(json: &str) -> Option<(String, Option<String>)> {
-    let value: serde_json::Value = serde_json::from_str(json).ok()?;
-    let account_key = value.get("account_key")?.as_str()?.to_owned();
-    let description = value
-        .get("description")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
-    Some((account_key, description))
 }
 
 /// Check the claim and decide what the commit does. See the module docs.
@@ -117,7 +107,7 @@ pub(crate) fn resolve(
     amount: &Money,
 ) -> Result<Resolution, DbError> {
     let source = read_source(tx, source_record_id.as_uuid())?;
-    let mut provider_description = None;
+    let mut provider_snapshot: Option<(String, Option<String>)> = None;
 
     // 1. The id is the components' derived id, and 2. the components are this row's own.
     match &claim.components {
@@ -132,8 +122,18 @@ pub(crate) fn resolve(
             if derived != claim.identity_id {
                 return Err(invalid("the import identity does not match its components"));
             }
-            let (account_key, description) = normalized_fields(&source.normalized_json)
-                .ok_or_else(|| invalid("the source record has no provider account key"))?;
+            // Only a SimpleFIN transaction has a provider identity (a LunchFlow row has none until its
+            // account-key function is verified).
+            if source.source_type != "simplefin" {
+                return Err(invalid(
+                    "only a SimpleFIN transaction has a provider identity",
+                ));
+            }
+            // The record's own normalized payload, through the migration-76 backfill's parser (one
+            // function), so a backfilled row's first refresh compares equal.
+            let (account_key, posted_date, description) =
+                crate::import_identity_backfill::parse_normalized(&source.normalized_json)
+                    .ok_or_else(|| invalid("the source record has no readable provider fields"))?;
             if source.connection_id != Some(*connection_id)
                 || source.external_id.as_deref() != Some(provider_txn_id.as_str())
                 || account_key != *provider_account_key
@@ -148,7 +148,7 @@ pub(crate) fn resolve(
                     "a provider transaction's id is its derived identity",
                 ));
             }
-            provider_description = description;
+            provider_snapshot = Some((posted_date, description));
         }
         ImportIdentityComponents::File {
             file_fingerprint,
@@ -185,11 +185,17 @@ pub(crate) fn resolve(
         }
     }
 
+    // A provider row's posted date and description are the record's own; a file row's date is the UTC
+    // day of the instant it commits as (the staged `posted_at` through `parse_staged_posted_at`).
+    let (posted_date, provider_description) = match provider_snapshot {
+        Some((posted_date, description)) => (posted_date, description),
+        None => (occurred_at.date_naive().to_string(), None),
+    };
     let snapshot = Snapshot {
         account_id: account_id.as_uuid(),
         amount_minor: amount.minor_units(),
         currency: amount.currency().code().to_owned(),
-        posted_date: occurred_at.date_naive().to_string(),
+        posted_date,
         provider_description,
     };
 
@@ -230,7 +236,14 @@ pub(crate) fn resolve(
     }
     let changed = changed_fields(&claim.components, &held_snapshot, &snapshot);
     if changed.is_empty() {
-        record_merged(tx, meta, ids, claim.identity_id, held_transaction, source.batch_id)?;
+        record_merged(
+            tx,
+            meta,
+            ids,
+            claim.identity_id,
+            held_transaction,
+            source.batch_id,
+        )?;
         return Ok(Resolution::Settled(held_transaction));
     }
     let kind = match claim.components {

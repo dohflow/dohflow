@@ -234,7 +234,7 @@ fn provider_candidates(
 }
 
 /// `(account_key, posted_date, description)` from a SimpleFIN record's normalized payload.
-fn parse_normalized(json: &str) -> Option<(String, String, Option<String>)> {
+pub(crate) fn parse_normalized(json: &str) -> Option<(String, String, Option<String>)> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
     let account_key = value.get("account_key")?.as_str()?.to_owned();
     let posted = value.get("posted")?.as_i64()?;
@@ -940,5 +940,144 @@ mod tests {
         // The refused down left the vault at 76 (77's own down had already run); now it can go.
         assert_eq!(migrate_down(&mut conn, 75).unwrap(), 1);
         assert_eq!(apply(&mut conn, MIGRATIONS).unwrap(), 2, "and up again");
+    }
+
+    /// Apply a commit that claims `claim`, directly on the migrated connection.
+    fn commit_claiming(
+        conn: &Connection,
+        ledger_id: Uuid,
+        record: u128,
+        occurred_at: chrono::DateTime<chrono::Utc>,
+        minor: i64,
+        claim: crate::ImportIdentityClaim,
+    ) -> Result<Uuid, DbError> {
+        let meta = crate::CommandMeta {
+            command_id: Uuid::now_v7(),
+            correlation_id: Uuid::now_v7(),
+            causation_id: None,
+            actor_type: crate::ActorType::User,
+            actor_id: "tester".to_owned(),
+            idempotency_key: crate::new_idempotency_key(),
+            issued_at: crate::IssuedAt::now(),
+        };
+        let ids = core_ids::DerivedIds::new(key(), meta.issued_at, meta.command_id);
+        crate::apply::ingestion_cmds::apply_commit_imported_transaction(
+            conn,
+            &meta,
+            &ids,
+            &core_ledger::TransactionId::from_uuid(ledger_id),
+            &core_ledger::AccountId::from_uuid(uid(ACCOUNT)),
+            &core_ledger::SourceRecordId::from_uuid(uid(record)),
+            &occurred_at,
+            &core_money::Money::new(minor, core_money::Currency::Usd),
+            &None,
+            &None,
+            &None,
+            &None,
+            &false,
+            &Some(claim),
+        )
+    }
+
+    fn at(day: u32, hour: u32) -> chrono::DateTime<chrono::Utc> {
+        use chrono::TimeZone;
+        chrono::Utc
+            .with_ymd_and_hms(2026, 3, day, hour, 0, 0)
+            .unwrap()
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    /// The first refresh of a backfilled provider row (a ledger id that is NOT the derived id, which is
+    /// what every vault that imported before identity holds) commits nothing and raises nothing: the
+    /// snapshot the backfill wrote and the one apply computes come from the same parser, so a posted date
+    /// that differs from the instant the commit would carry is not a revision.
+    #[test]
+    fn the_first_refresh_of_a_backfilled_provider_row_is_a_merge_not_a_revision() {
+        let mut conn = before();
+        batch(&conn, 0x10, "simplefin", None, Some(CONNECTION));
+        simplefin_record(&conn, 0x20, 0x10, "TXN-1");
+        committed(&conn, 0x30, 0x20, -1234, false);
+        migrate(&mut conn);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM import_identities"), 1);
+
+        // The refresh: its own batch and record, the same provider transaction.
+        batch(&conn, 0x11, "simplefin", None, Some(CONNECTION));
+        simplefin_record(&conn, 0x21, 0x11, "TXN-1");
+        let derived = key()
+            .provider_txn_id(&uid(CONNECTION), "conn-1/acct-9", "TXN-1")
+            .unwrap();
+        assert_ne!(
+            derived,
+            uid(0x30),
+            "the old ledger id is not the derived id"
+        );
+        let claim = crate::ImportIdentityClaim {
+            identity_id: derived,
+            components: crate::ImportIdentityComponents::Provider {
+                connection_id: uid(CONNECTION),
+                provider_account_key: "conn-1/acct-9".to_owned(),
+                provider_txn_id: "TXN-1".to_owned(),
+            },
+        };
+        // The commit's own instant is a different day from the provider's posted date.
+        let returned = commit_claiming(&conn, derived, 0x21, at(9, 15), -1234, claim).unwrap();
+        assert_eq!(returned, uid(0x30), "the held transaction, by identity");
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM ledger_transactions"), 1);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM dedupe_decisions WHERE decision = 'merged'"
+            ),
+            1
+        );
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM import_dispositions"), 0);
+    }
+
+    /// A backfilled file row re-committed with its identity (the same file uploaded again, a new batch)
+    /// is the same row: a merge, not a conflict.
+    #[test]
+    fn a_backfilled_file_row_recommitted_with_its_identity_is_a_merge_not_a_conflict() {
+        let mut conn = before();
+        batch(&conn, 0x10, "csv", Some(FINGERPRINT), None);
+        record(&conn, 0x20, 0x10, None, "{}");
+        committed(&conn, 0x30, 0x20, -700, false);
+        staged(&conn, 0x20, 0x30, 1, -700);
+        migrate(&mut conn);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM import_identities"), 1);
+
+        batch(&conn, 0x11, "csv", Some(FINGERPRINT), None);
+        record(&conn, 0x21, 0x11, None, "{}");
+        let fingerprint = FileFingerprint::parse(FINGERPRINT).unwrap();
+        let ledger_id = key()
+            .content_id(
+                "txn.import",
+                &[uid(0x11).as_bytes(), 1_i64.to_be_bytes().as_slice()],
+            )
+            .unwrap();
+        let claim = crate::ImportIdentityClaim {
+            identity_id: key().file_row_id(&fingerprint, 1).unwrap(),
+            components: crate::ImportIdentityComponents::File {
+                file_fingerprint: FINGERPRINT.to_owned(),
+                row_ordinal: 1,
+            },
+        };
+        let returned = commit_claiming(&conn, ledger_id, 0x21, at(4, 12), -700, claim).unwrap();
+        assert_eq!(returned, uid(0x30));
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM ledger_transactions"), 1);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM dedupe_decisions WHERE decision = 'merged'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM import_dispositions"),
+            0,
+            "no file_row_conflict"
+        );
     }
 }
