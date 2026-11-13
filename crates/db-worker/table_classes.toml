@@ -603,7 +603,7 @@ note = "A named scenario (definition and lifecycle). Written only by CreateScena
 table = "import_identities"
 class = "1"
 owner_bead = "personal-cfo-0g528.3"
-note = "The cross-device identity of a committed import row (ADR 0074 Addendum J): kind 'provider' (the derived id of ADR 0013-A section 9 over connection_id, provider_account_key and provider_txn_id) or 'file' (section 12 over the decoded file fingerprint and the row ordinal), mapped to the transaction committed for it, with a snapshot (account, amount, currency, posted date, and for a provider row the provider's description) that a later commit of the same identity is compared against. The primary key is the derived id; the two UNIQUE constraints are the identity's components. Names no class-3 row. A void keeps the row. Written by CommitImportedTransaction's apply (S3b part 2) and, once, by migration 76's backfill on a vault that never enabled Sync."
+note = "The cross-device identity of a committed import row (ADR 0074 Addendum J): kind 'provider' (the derived id of ADR 0013-A section 9 over connection_id, provider_account_key and provider_txn_id) or 'file' (section 12 over the decoded file fingerprint and the row ordinal), mapped to the transaction committed for it, with a snapshot (account, amount, currency, posted date, and for a provider row the provider's description) that a later commit of the same identity is compared against. The primary key is the derived id; the two UNIQUE constraints are the identity's components. Names no class-3 row. A void keeps the row. Written by CommitImportedTransaction's apply when the row claims an identity (S3b part 3a) and, once, by migration 76's backfill on a vault that never enabled Sync."
 
 [[table]]
 table = "import_dispositions"

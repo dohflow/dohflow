@@ -20,6 +20,12 @@ use uuid::Uuid;
 // Deterministic sample values
 // ---------------------------------------------------------------------------
 
+/// The vault id the engine pin gives its vault (`engine_pin.rs`), which the identity sample derives under.
+pub const PIN_VAULT_ID: u128 = 0x0198_c2c1_5f0a_7c3d_8a4e_9b1d_f000_0001;
+/// The file fingerprint of the batch the oracle's setup stages.
+pub const ORACLE_FINGERPRINT: &str =
+    "sha256:2c30d6d4f9c6954bfc4f2e31460da5660e8d4aa9d893b6228eddc467516a6830";
+
 pub fn u(n: u128) -> Uuid {
     Uuid::from_u128(0x0198_c2c1_5f0a_7c3d_8a4e_9b1d_0000_0000 + n)
 }
@@ -399,6 +405,7 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
                 transaction_date: Some(date(2026, 10, 15)),
                 category_id: Some(category(25)),
                 forced: true,
+                identity: None,
             },
         ),
         (
@@ -718,6 +725,42 @@ pub fn samples() -> Vec<(&'static str, WriteCommand)> {
 /// `<variant>+<label>`. They are not payload fixtures: `payload_v1.rs` freezes `samples()` alone.
 pub fn alternates() -> Vec<(&'static str, &'static str, WriteCommand)> {
     vec![
+        (
+            // A file row that claims its cross-device identity (`dohflow-engine-5`): on the batch the
+            // pin vault stages (`u(920)`, with `ORACLE_FINGERPRINT`), its second source record, with
+            // the ledger id and the identity id both derived under the pin vault's key.
+            "commit_imported_transaction",
+            "with_a_file_identity",
+            {
+                let key = core_ids::DerivedIdKey::for_vault(&Uuid::from_u128(PIN_VAULT_ID));
+                let fingerprint = core_ids::FileFingerprint::parse(ORACLE_FINGERPRINT).unwrap();
+                WriteCommand::CommitImportedTransaction {
+                    transaction_id: TransactionId::from_uuid(
+                        key.content_id(
+                            "txn.import",
+                            &[u(920).as_bytes(), 2_i64.to_be_bytes().as_slice()],
+                        )
+                        .unwrap(),
+                    ),
+                    account_id: account(1),
+                    source_record_id: SourceRecordId::from_uuid(u(922)),
+                    occurred_at: instant(),
+                    amount: usd(-2_450),
+                    counterparty: Some("corner shop".into()),
+                    memo: Some("CORNER SHOP 7".into()),
+                    transaction_date: None,
+                    category_id: None,
+                    forced: false,
+                    identity: Some(db_worker::ImportIdentityClaim {
+                        identity_id: key.file_row_id(&fingerprint, 2).unwrap(),
+                        components: db_worker::ImportIdentityComponents::File {
+                            file_fingerprint: ORACLE_FINGERPRINT.to_owned(),
+                            row_ordinal: 2,
+                        },
+                    }),
+                }
+            },
+        ),
         (
             "set_debt_terms",
             "fixed_amount",

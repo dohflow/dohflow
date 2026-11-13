@@ -137,6 +137,39 @@ pub fn imported(n: u128, account_id: AccountId, amount: Money) -> WriteCommand {
         transaction_date: None,
         category_id: None,
         forced: false,
+        identity: None,
+    }
+}
+
+/// `command` (an import commit) with the cross-device identity `claim` attached.
+fn claiming(command: WriteCommand, claim: db_worker::ImportIdentityClaim) -> WriteCommand {
+    match command {
+        WriteCommand::CommitImportedTransaction {
+            transaction_id,
+            account_id,
+            source_record_id,
+            occurred_at,
+            amount,
+            counterparty,
+            memo,
+            transaction_date,
+            category_id,
+            forced,
+            ..
+        } => WriteCommand::CommitImportedTransaction {
+            transaction_id,
+            account_id,
+            source_record_id,
+            occurred_at,
+            amount,
+            counterparty,
+            memo,
+            transaction_date,
+            category_id,
+            forced,
+            identity: Some(claim),
+        },
+        _ => unreachable!("imported builds a CommitImportedTransaction"),
     }
 }
 
@@ -763,6 +796,7 @@ pub fn scenarios() -> Vec<Step> {
                     transaction_date,
                     category_id,
                     forced,
+                    identity: None,
                 },
                 _ => unreachable!("imported builds a CommitImportedTransaction"),
             },
@@ -795,6 +829,7 @@ pub fn scenarios() -> Vec<Step> {
                     transaction_date,
                     category_id,
                     forced,
+                    identity: None,
                 },
                 _ => unreachable!("imported builds a CommitImportedTransaction"),
             },
@@ -835,6 +870,7 @@ pub fn scenarios() -> Vec<Step> {
                     transaction_date,
                     category_id: Some(category(96)),
                     forced,
+                    identity: None,
                 },
                 _ => unreachable!("imported builds a CommitImportedTransaction"),
             },
@@ -865,6 +901,7 @@ pub fn scenarios() -> Vec<Step> {
                     transaction_date,
                     category_id,
                     forced,
+                    identity: None,
                 },
                 _ => unreachable!("imported builds a CommitImportedTransaction"),
             },
@@ -1014,6 +1051,37 @@ pub fn scenarios() -> Vec<Step> {
             "clearing the comfort band's upper edge with the empty value",
             set_user_setting("user.comfort_band_upper_minor", ""),
             Fine,
+        ),
+        // ---- apply/import_identity.rs (personal-cfo-0g528.3): a claim is checked against its own
+        // components and its own row, from the payload and the class-1 and class-1b base alone ----
+        step(
+            "an import commit whose identity is not its components' derived id",
+            claiming(
+                imported(168, account(1), Money::new(-500, Currency::Usd)),
+                db_worker::ImportIdentityClaim {
+                    identity_id: u(168),
+                    components: db_worker::ImportIdentityComponents::Provider {
+                        connection_id: u(169),
+                        provider_account_key: "ACT-9".to_owned(),
+                        provider_txn_id: "TXN-1".to_owned(),
+                    },
+                },
+            ),
+            Reject(PayloadInvalid),
+        ),
+        step(
+            "an import commit whose identity names a malformed file fingerprint",
+            claiming(
+                imported(169, account(1), Money::new(-500, Currency::Usd)),
+                db_worker::ImportIdentityClaim {
+                    identity_id: u(169),
+                    components: db_worker::ImportIdentityComponents::File {
+                        file_fingerprint: "sha256:ABC".to_owned(),
+                        row_ordinal: 1,
+                    },
+                },
+            ),
+            Reject(PayloadInvalid),
         ),
     ]
 }

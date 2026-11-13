@@ -4,6 +4,7 @@
 //! shared helpers for those live in `tests/common/mod.rs`.
 
 mod base_image;
+mod import_identity;
 mod instance_parity;
 mod loan_bill_overlap;
 mod loan_link;
@@ -5813,6 +5814,19 @@ fn apply_keys_every_committed_decision_and_migration_77_gives_the_replayed_state
             },
         )
         .unwrap();
+    // A provider row that claims its cross-device identity: its committed decision carries the
+    // identity in the same apply, and migration 77 must give the same key.
+    let (_, identity_commit) =
+        import_identity::provider_row(&worker, account_id, "TXN-C9", -3_300, "C9 COFFEE");
+    let WriteCommand::CommitImportedTransaction {
+        transaction_id: identity_txn,
+        ..
+    } = &identity_commit
+    else {
+        unreachable!()
+    };
+    let identity_txn = identity_txn.as_uuid();
+    worker.dispatch(meta(), identity_commit).unwrap();
     // The planner's path: a unique commit, then a duplicate that is flagged, then skipped.
     let x = stage_a_transaction(&worker, account_id, -1100, "fp-x");
     let y = stage_a_transaction(&worker, account_id, -1100, "fp-x");
@@ -5886,15 +5900,18 @@ fn apply_keys_every_committed_decision_and_migration_77_gives_the_replayed_state
     // Two decisions, both committed, each keyed by its own transaction; no flagged or skipped row.
     let mut keys: Vec<Option<Uuid>> = decisions.iter().map(|d| d.1).collect();
     keys.sort();
-    let mut expected = vec![Some(x_txn), Some(z_txn)];
+    let mut expected = vec![Some(x_txn), Some(z_txn), Some(identity_txn)];
     expected.sort();
     assert_eq!(
         keys, expected,
         "every committed decision is keyed by its transaction"
     );
-    assert!(decisions
-        .iter()
-        .all(|d| d.3 == "committed" && d.2.is_none()));
+    assert!(decisions.iter().all(|d| d.3 == "committed"));
+    // Only the commit that claimed an identity carries one (a provider row's identity is its ledger id).
+    let with_identity: Vec<_> = decisions.iter().filter(|d| d.2.is_some()).collect();
+    assert_eq!(with_identity.len(), 1);
+    assert_eq!(with_identity[0].1, Some(identity_txn));
+    assert_eq!(with_identity[0].2, Some(identity_txn));
     // The flags are on the staged rows, with their counterpart, and the skip is their status.
     for (staged, matched) in [(y, x_txn), (w, z_txn)] {
         let row = flags.iter().find(|f| f.0 == staged.as_uuid()).unwrap();
