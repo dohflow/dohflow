@@ -2228,7 +2228,7 @@ refused up front:** a snapshot of a schema below a migration that writes class-1
 (a backfill; the build lists them in one place, and the armed-vault refusal reads the same list) is
 refused before anything is created, as a deterministic failure that names the snapshot's schema and that
 migration, because the migration would run over the installed rows and write class-1 rows that no log
-row explains. At spec 49 that migration is 76 (ADR 0074 Addendum J item 7).
+row explains. At spec 50 those migrations are 76 and 77; a snapshot is refused for the first of them above its schema (ADR 0074 Addendum J item 7).
 
 **The closure.** A snapshot's closure is every class-1b artifact its rows depend on, and a replica
 fetches **all** of it before it exists, because a manifest binds no id to a logical row: only opening
