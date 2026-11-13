@@ -1360,6 +1360,203 @@ never has a hole. An honest data loss needs an explicit, recorded way out (for e
 artifact so its rows show as unavailable and the closure drops it). `personal-cfo-1cltt.6` implements
 whatever is decided.
 
+## Addendum J — Import identities, dispositions and the restore question (2026-11-12, `personal-cfo-0g528.3`)
+
+Addendum B fixed the rule for cross-device connector ingestion and left the names and columns of its
+two class-1 tables to the bead that builds them (item 3), and left the identity of a file row to
+`personal-cfo-0g528` (item 6). This addendum fixes both, adds the owner's decision for a re-uploaded
+file whose rows were all voided (`personal-cfo-0g528` AC8(d), decision D-I1 = C of 2026-11-02), and
+records the migration's safety rule. It changes no decision above. Nothing here is business-sensitive
+(ADR 0082, public tier). The file-row derivation and its vectors are ADR 0013-A section 12.
+
+1. **Two tables, both class 1, both full write set, both in the CLASS-0 manifest and vault-format B.2.**
+
+   `import_identities` has one row per committed row that has a cross-device identity.
+   - `identity_id BLOB PRIMARY KEY`: the derived id, 16 bytes. For a provider row it is ADR 0013-A
+     section 9's id; for a file row it is section 12's. The key is derived, so it needs no text bound.
+   - `kind TEXT NOT NULL`: `'provider'` or `'file'`.
+   - Provider rows: `connection_id BLOB`, `provider_account_key TEXT`, `provider_txn_id TEXT`, the three
+     components of the derivation, with `UNIQUE(connection_id, provider_account_key, provider_txn_id)`.
+   - File rows: `file_fingerprint BLOB` (the 32 decoded bytes) and `row_ordinal INTEGER` (at least 1),
+     with `UNIQUE(file_fingerprint, row_ordinal)`.
+   - `CHECK` constraints tie each kind to exactly its columns: a provider row has the three provider
+     columns and neither file column, and a file row the reverse.
+   - `transaction_id BLOB NOT NULL REFERENCES ledger_transactions(id)`: the committed transaction. It
+     is a class-1 reference, so it passes the foreign-key class rule.
+   - A snapshot of what was committed, used for the comparison in item 3: `account_id BLOB NOT NULL`,
+     `amount_minor INTEGER NOT NULL`, `currency TEXT NOT NULL`, `posted_date TEXT NOT NULL`, and for a
+     provider row `provider_description TEXT`.
+   - `created_at TEXT NOT NULL`, which is `meta.issued_at`, never the clock (ADR 0013-A section 10(d)).
+
+   `import_dispositions` has one row per decision about an identity or a file.
+   - `disposition_id BLOB PRIMARY KEY`: a content id (ADR 0013-A section 10) of the subject and the kind,
+     so a repeat names the same row.
+   - `subject_id BLOB NOT NULL`: an `identity_id`, or for a restore question its question id (item 5).
+   - `kind TEXT NOT NULL`: `'skipped'`, `'import_anyway'`, `'provider_revision'`, `'file_row_conflict'`
+     or `'restore_question'`.
+   - `status TEXT NOT NULL`: `'pending'` or `'resolved'`.
+   - `generation INTEGER NOT NULL DEFAULT 1`.
+   - `outcome TEXT`: `'restored'`, `'dismissed'` or `'import_anyway'`. It is non-NULL exactly when
+     `kind = 'restore_question'` and `status = 'resolved'`; a `CHECK` ties the three columns together.
+     It records which answer won, because `status = 'resolved'` alone cannot tell a restore from a
+     claim. `kind` is never rewritten, so `disposition_id`, which is derived from the subject and the
+     kind, stays stable.
+   - `claimed_source_batch_id BLOB`: the claimant's batch, as its logical class-1b id. It is non-NULL
+     exactly when `outcome = 'import_anyway'`.
+   - `detail TEXT` is for display and audit only. **Apply never reads it.**
+   - `created_at TEXT NOT NULL` and `decided_at TEXT` are `meta.issued_at`, never the clock (ADR 0013-A
+     section 10(d)).
+
+   Neither table references a class-3 row, and no staged id appears in either. A void keeps the identity
+   row (Addendum B item 5): it records that the row was imported, not that it is active.
+
+2. **Which rows get an identity.** Only a row with a real identity: a SimpleFIN provider transaction
+   that is not pending and whose account key and transaction id satisfy ADR 0013-A section 9's byte
+   rules, and a file row whose batch has a fingerprint in section 12's form. A pending row never
+   commits, a fallback fingerprint never feeds an identity (Addendum B item 6), and a row without an
+   identity keeps today's local heuristic path, including its skip and import-anyway choices, which stay
+   device-local for such rows. **LunchFlow rows have no provider identity** until `personal-cfo-g3m.11`
+   verifies its account-key function (Addendum B item 11), and nothing may describe LunchFlow as covered.
+
+3. **The commit rule.** `CommitImportedTransaction` carries the identity: its components and the
+   derived id. Apply recomputes the id from the components and refuses a mismatch, and it also binds
+   the components to the row being committed, so a payload cannot claim another row's identity: the
+   provider's `connection_id` is the batch's `connector_connection_id`, its `provider_txn_id` is the
+   source record's `external_id` and its `transaction_id` is the derived id; a file row's fingerprint is
+   the batch's decoded `file_fingerprint` and its `transaction_id` is the `(source_batch_id, row ordinal)`
+   id of `personal-cfo-0g528.1`. A provider row's ledger id **is** its derived id, so two devices that
+   commit one provider transaction mint one ledger id, and apply's existing idempotence on the
+   transaction id is already the cross-device no-op. Apply looks an identity up in the table, never by
+   ledger id, because transactions committed before this change keep their old ids. The outcomes:
+
+   | Situation | Result |
+   | --- | --- |
+   | No identity row | Commit, and record the identity. |
+   | Identity present, snapshot fields equal | A no-op that returns the identity's `transaction_id`, one `merged` dedupe decision (its id derived from the identity and `merged`, so a repeat writes nothing) and an audit line. |
+   | Identity present, provider fields differ | Nothing is committed, and one `provider_revision` disposition is recorded or its `detail` updated, in command order. |
+   | Identity present, file fields differ | Nothing is committed, and one `file_row_conflict` disposition is recorded. |
+   | The identity's transaction is voided | A no-op. A refresh never resurrects it. |
+
+   The compared fields are the provider's `amount_minor`, `currency`, `posted_date` and
+   `provider_description`, and for a file row `account_id`, `amount_minor`, `currency` and `posted_date`.
+   User-editable fields are never compared. The planner skips an identity whose fields are equal without
+   issuing a command, as the refetch skip does today, so an overlapping refresh adds no decision or
+   audit line; apply reaches `merged` only when two commits meet. **A `provider_revision` or
+   `file_row_conflict` is recorded but not shown** until the resolution that Addendum B item 7 describes
+   exists (a separate bead): today a revised provider transaction is not re-imported silently, and
+   recording it changes nothing the user sees.
+
+4. **A file-row identity is compared, never trusted.** The ordinal of a row depends on the parser version
+   and, for a routed import, on the account map (ADR 0013-A section 12), so two devices that import one
+   file before they sync, under different maps, can derive one identity for two different rows. A blind
+   no-op would drop one source row as a duplicate and commit another twice. Hence the snapshot of item 1
+   and the `file_row_conflict` row of item 3: a difference commits nothing and does not claim the row.
+
+5. **A re-uploaded file whose committed rows are all voided (D-I1 = C).** The file layer reads class 1.
+   - An identity of the file whose transaction is **active** blocks the re-upload on every device, with
+     today's "already imported" message. While any committed row of the file is active, the file is
+     skipped, with no question.
+   - If every committed row of the file is voided, the re-upload commits nothing and records **one**
+     `restore_question` disposition, keyed by the file's fingerprint (its question id is a content id
+     over the fingerprint, so every device names the same row). The question appears on every device,
+     and the Money Inbox item is derived on read from the pending row, so it needs no new item kind in
+     the stored table and nothing in the checksummed projection.
+   - **Confirm** restores the rows and **dismiss** leaves them voided. Each is a class-1 command, and
+     each carries the generation it answers: apply does nothing for a stale generation or a question
+     that is no longer pending, so a confirm and a dismiss from two devices settle as whichever applies
+     first. A later re-upload of a file whose question was dismissed is a fresh, explicit action: the
+     question opens again at the next generation, and reopening clears `outcome`,
+     `claimed_source_batch_id` and `decided_at`. A device that holds a staged batch of the file has a
+     third answer (item 9).
+   - **A restore commits fresh copies and leaves the voided originals voided.** The ledger stays
+     append-only, and the result is what today's silent restore produces (new ledger rows; the old ones
+     stay voided). Confirm's own apply reads only class-1 rows, so it is deterministic on every device,
+     including one that has no staging. It walks the question's identities in ordinal order and, for
+     each, writes the transaction and its postings, its details including the note, its categorization
+     with its source and confidence, its review and tags, and its split lines, and links the original's
+     source record; then it points the identity at the copy. The copy's id is a content id over
+     `(fingerprint, ordinal, generation)` under a tag of its own (not `txn.import`), and split line ids
+     are content ids over the copy id and the original line id. **Attachment links and obligation
+     confirmations do not come back**: attachments are a different class, and an obligation confirmation
+     is a person's action that a copy would double-count. The user-facing wording belongs to the design
+     route, and it must not promise more than comes back.
+
+6. **The `dedupe_decisions` reshape.** The table moves to class 1, keyed to the identity or the
+   transaction, and loses `staged_transaction_id`, which points at a class-3 row that never replicates
+   (it carries the class-4 mark in the manifests until then; vault-format B.2 already routes it to
+   class 1). `committed`, `skipped` and `merged` decisions are written by commands. A `flagged` decision
+   is advisory state about a staging row, so it moves to columns on the class-3 staged-transaction row.
+   No raw site writes `dedupe_decisions` afterwards: the batch discard and the materializer's cleanup
+   are re-scoped, and the file layer's local check that a file whose rows were all flagged is already
+   imported stays, beside the class-1 check, as a check against staging.
+
+7. **Existing vaults and the migration.** A vault that already holds committed connector and file rows
+   has them under the old ids and without identity rows, so a second device's first refresh would commit
+   each of them again. The migration therefore **backfills**: one identity per committed SimpleFIN
+   transaction whose provider id is recoverable and one per committed file-import row, and nothing else.
+   - The components come from the record and its batch, never from the connection's account links
+     (which are written raw and are not one-to-one with provider keys): `connector_connection_id` of the
+     batch, `external_id` of the source record, and the `account_key` inside the record's normalized
+     payload, which is what the adapter emitted then. The snapshot is filled through the adapter's own
+     mapping, so the first refresh compares equal. A NULL connection (a batch from before connection
+     identity) is not recoverable and is counted; an adapter key that differs from the recorded one is
+     an identity change in section 9's sense and is reported, not silently re-keyed.
+   - One identity per key. When two committed transactions meet one key (a file voided and re-imported
+     by the silent restore, a duplicate from before cross-device dedupe, a forced commit), the identity
+     points at the active one, or, if none is active, at the lowest ledger id, and the rest are counted.
+   - **The migration refuses on a vault where Sync is armed.** A write to class-1 rows outside a command
+     is in no log row and no envelope, so no other device receives it; a replica cannot rebuild a
+     file-row ordinal from its own class-3 staging; the rows vanish at the next rebase, which restores
+     the base image and replays only the outbox; and a published-but-unarmed genesis compares its replay
+     with the live state and would see a change no command explains. So the migration checks, in its own
+     transaction and before writing, for a `sync_base` or a `sync_genesis` row. If either exists it
+     refuses atomically with a typed error that names the case, and the vault stays at the previous
+     schema. The reclassification of `dedupe_decisions` needs the same refusal. A vault with neither row
+     is safe: the rows are ordinary class-1 state that a later genesis carries to every replica. Once
+     Sync is user-reachable, this is a standing rule: **a migration writes no class-1 rows on an armed
+     vault, and a backfill of class-1 rows is a command with a materialized payload.**
+
+8. **Engine and format.** A payload that carries an identity changes the apply rules, so the engine
+   version rises with a pin section; a payload without one keeps today's path, and a household with
+   mixed engine versions rests on the engine-version rule. The tables and the new spec version are
+   recorded in vault-format B.2 and the spec markers; the numbers settle in merge order.
+
+9. **A third answer for a file voided for the wrong account or mapping (owner decision, 2026-11-12).**
+   `content_fingerprint` hashes the file's bytes only, so the same file has the same row identities
+   whichever account it is imported into. The commonest reason to void a whole import is a wrong account
+   or mapping, and under item 5 its re-upload asks instead of re-importing, and a confirmed restore
+   returns the old rows to the old account. The owner chose a third answer, "Import this upload
+   instead" (decision H1, option 1).
+   - (a) **Where it is offered.** Only on a device that holds a staged batch with the file's fingerprint
+     while the question is pending (the device the file was uploaded on, or any device that uploads it
+     again). Other devices offer confirm and dismiss only. A re-upload while the question is pending
+     does not raise the generation.
+   - (b) **A claim, then the rows.** The answer is first a **claim** command that resolves the question
+     with `outcome = 'import_anyway'` and sets `claimed_source_batch_id`; it carries
+     `(question id, generation, source_batch_id)`, with a materialized payload. Each row commit of the
+     re-upload then carries `(question id, generation)`, and its **row gate** reads `status`, `outcome`,
+     `generation` and `claimed_source_batch_id` from the one question row. It does nothing unless the
+     question is resolved, the outcome is `import_anyway`, the generation matches and the claimed batch
+     is that row's own batch. A confirm sets `outcome = 'restored'` and a dismiss `'dismissed'`, so a
+     restore win and a claim win are told apart. The generation rule of item 5 settles every race: a restore or dismiss applied between the claim and the rows
+     makes the rows no-ops; two devices that both claim commit only the first claimant's batch; a
+     restore that wins makes the claim and every row no-ops.
+   - (c) **The claimed batch supersedes the identities.** For a row of the claimed batch, apply commits
+     the row (an ordinary commit, with the ledger id of `personal-cfo-0g528.1` for the new batch) and
+     **replaces** the existing identity's `transaction_id` and snapshot, instead of returning the voided
+     transaction (item 3) or recording a `file_row_conflict` (item 4). The same supersede rule applies to
+     a restore's copies (item 5), and the committed dedupe decision keyed by the identity is superseded,
+     not duplicated, by both. For each ordinal in the claimed batch the identity is replaced, or inserted
+     when none exists. An identity whose ordinal the batch lacks (a map that routes fewer records)
+     stays on its voided row.
+   - (d) **The originals stay voided, and the question closes everywhere.** A later re-upload of the file
+     finds active identities, so it is "already imported", with no question. A batch that loses the race
+     (a restore or dismiss won, or another device's claim) ends discarded with nothing committed, and its
+     device shows that the question was answered elsewhere.
+   - (e) **The audit line and the disposition's `detail` name the winning batch.** The gate reads
+     `claimed_source_batch_id`, never `detail`.
+   The wording of the third answer belongs to the design route, like item 5's.
+
 ## Linked beads
 
 - `personal-cfo-j8ab7` (this ADR)
@@ -1371,6 +1568,7 @@ whatever is decided.
 - `personal-cfo-07u` (SYNC-2a: connection identity and secret split)
 - `personal-cfo-egn67` (SYNC-2b: tombstones)
 - `personal-cfo-0g528` (SYNC-2c: payload materialization)
+- `personal-cfo-0g528.3` (Addendum J: import identities, dispositions and the restore question; ADR 0013-A section 12)
 - `personal-cfo-1cltt` (SYNC-3: logical genesis and Sync key)
 - `personal-cfo-v98vd` (S2-1: service CAS, device authorization, and epochs)
 - `personal-cfo-elciw` (S3-1: client engine)
