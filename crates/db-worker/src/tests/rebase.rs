@@ -2417,3 +2417,1732 @@ mod accepted {
         assert!(parse_container(&bytes).is_ok(), "the ciphertext is kept");
     }
 }
+
+// ---- the class-3 overlay: what survives a rebase that is device-local ----------------------
+
+mod overlay {
+    use super::*;
+    use crate::connectors::CONNECTOR_SECRET_REMOVED_EVENT;
+    use crate::rebase::{BlockCause, Executed, Preservation};
+    use crate::{BackupHistoryEntry, BackupHistoryKind};
+    use rusqlite::params;
+    use rusqlite::types::Value;
+
+    const SECRET_A: &str = "fake-token-a-0001";
+    const SECRET_B: &str = "fake-token-b-0002";
+
+    struct World {
+        dir: TempDir,
+        live: DbWorker,
+        account: AccountId,
+        scratch: PathBuf,
+        a: Uuid,
+        b: Uuid,
+        batch: Uuid,
+        record: Uuid,
+        staged_kept: Uuid,
+        staged_gone: Uuid,
+    }
+
+    fn exec(worker: &DbWorker, sql: &str, p: impl rusqlite::Params) {
+        worker.lock().conn.execute(sql, p).unwrap();
+    }
+
+    fn count(worker: &DbWorker, sql: &str) -> i64 {
+        worker.lock().conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    fn setting(worker: &DbWorker, key: &str) -> Option<String> {
+        worker
+            .lock()
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
+            .ok()
+    }
+
+    fn secret(worker: &DbWorker, id: Uuid) -> Option<String> {
+        worker
+            .lock()
+            .conn
+            .query_row(
+                "SELECT credential FROM connector_connection_secrets WHERE connection_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    fn stage(worker: &DbWorker, record: Uuid, account: AccountId, id: Uuid, n: i64) {
+        exec(
+            worker,
+            "INSERT INTO staged_transactions
+                (id, source_record_id, proposed_account_id, posted_at, amount_minor, currency,
+                 normalized_merchant, description, txn_fingerprint, created_at, row_ordinal)
+             VALUES (?1, ?2, ?3, '2026-06-01', ?4, 'USD', 'payee', 'payee', ?5,
+                     '2026-11-04T00:00:00+00:00', ?6)",
+            params![
+                id,
+                record,
+                account.as_uuid(),
+                -100 * n,
+                format!("fingerprint {n}"),
+                n
+            ],
+        );
+    }
+
+    fn source(worker: &DbWorker) -> (Uuid, Uuid) {
+        let (batch, record) = (Uuid::now_v7(), Uuid::now_v7());
+        exec(
+            worker,
+            "INSERT INTO source_batches (id, source_type, source_name, status, created_at, updated_at)
+             VALUES (?1, 'other', 'fake import', 'staged', '2026-11-04T00:00:00+00:00',
+                     '2026-11-04T00:00:00+00:00')",
+            params![batch],
+        );
+        exec(
+            worker,
+            "INSERT INTO source_records
+                (id, source_batch_id, external_id, source_hash, normalized_json,
+                 parse_confidence_bps, created_at)
+             VALUES (?1, ?2, 'ext', 'hash', '{}', 10000, '2026-11-04T00:00:00+00:00')",
+            params![record, batch],
+        );
+        (batch, record)
+    }
+
+    fn job(worker: &DbWorker, kind: &str) -> Uuid {
+        let id = Uuid::now_v7();
+        exec(
+            worker,
+            "INSERT INTO durable_jobs (id, kind, cadence, max_attempts, created_at, updated_at)
+             VALUES (?1, ?2, 'daily', 3, '2026-11-04T00:00:00+00:00', '2026-11-04T00:00:00+00:00')",
+            params![id, kind],
+        );
+        id
+    }
+
+    fn receipt(worker: &DbWorker, created_at: &str) {
+        worker
+            .record_backup_history(&BackupHistoryEntry {
+                backup_id: Uuid::now_v7(),
+                vault_id: worker.vault_metadata().unwrap().vault_id,
+                created_at: created_at.to_owned(),
+                kind: BackupHistoryKind::Manual,
+                destination: "/fake/backups/one.pcfobk".to_owned(),
+                format_version: 2,
+                size_bytes: 512,
+                verified: true,
+                error: None,
+            })
+            .unwrap();
+    }
+
+    fn queue_record(worker: &DbWorker, command: Uuid, evidence: &[u8]) {
+        queue_record_in(worker, command, Uuid::now_v7(), evidence);
+    }
+
+    fn queue_record_in(worker: &DbWorker, command: Uuid, correlation: Uuid, evidence: &[u8]) {
+        exec(
+            worker,
+            "INSERT INTO outbox_queue
+                (command_id, correlation_id, reason, origin_node_id, queued_at, envelope,
+                 audit_evidence)
+             VALUES (?1, ?2, 'queue_choose', ?3, '2026-11-04T00:00:00+00:00', x'01', ?4)",
+            params![command, correlation, worker.node_id, evidence],
+        );
+    }
+
+    /// A live vault whose base (server seq 5) carries the device-local state of the earlier
+    /// session, then moves on: every kind of class-3 row is changed, removed or added after it.
+    fn world() -> World {
+        world_with(|_| {})
+    }
+
+    /// [`world`], with `before_base` run on the live vault just before the base image is taken, so
+    /// a test can put device-local state in the base's copy.
+    fn world_with(before_base: impl FnOnce(&DbWorker)) -> World {
+        let (dir, live) = worker();
+        let account = AccountId::new();
+        live.dispatch(meta(), liquid_account_cmd(account, Currency::Usd, 50_000))
+            .unwrap();
+        let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
+        live.create_connector_connection(a, "simplefin", SECRET_A, Some("A"))
+            .unwrap();
+        live.create_connector_connection(b, "simplefin", SECRET_B, Some("B"))
+            .unwrap();
+        live.set_connector_attention(a, r#"{"needs":"sign-in"}"#)
+            .unwrap();
+        live.set_connector_attention(b, r#"{"needs":"sign-in"}"#)
+            .unwrap();
+        live.upsert_connector_link(a, "acct-1", Some("Checking"), Some("USD"))
+            .unwrap();
+        live.set_connector_link_account(a, "acct-1", Some(account.as_uuid()))
+            .unwrap();
+        live.advance_connector_watermarks(a, "2026-10-01", &["acct-1".to_owned()])
+            .unwrap();
+        let (batch, record) = source(&live);
+        let (staged_kept, staged_gone) = (Uuid::now_v7(), Uuid::now_v7());
+        stage(&live, record, account, staged_kept, 1);
+        stage(&live, record, account, staged_gone, 2);
+        live.dispatch(
+            meta(),
+            WriteCommand::SetUserSetting {
+                key: crate::REPORTING_CURRENCY_KEY.to_owned(),
+                value: "USD".to_owned(),
+            },
+        )
+        .unwrap();
+        live.set_device_setting("device.theme", "dark").unwrap();
+        job(&live, "before-base");
+        live.record_audit_event(&meta(), "ack_before_base").unwrap();
+        receipt(&live, "2026-10-01T12:00:00Z");
+        before_base(&live);
+        live.initialize_base_image(5).unwrap();
+        let scratch = dir.path().join("rebase").join("scratch.db");
+        World {
+            dir,
+            live,
+            account,
+            scratch,
+            a,
+            b,
+            batch,
+            record,
+            staged_kept,
+            staged_gone,
+        }
+    }
+
+    /// The device-local state moves on after the base was taken.
+    fn drift(w: &World) {
+        let live = &w.live;
+        live.clear_connector_attention(w.b).unwrap();
+        exec(
+            live,
+            "DELETE FROM connector_connection_secrets WHERE connection_id = ?1",
+            params![w.b],
+        );
+        live.advance_connector_watermarks(w.a, "2026-10-15", &["acct-1".to_owned()])
+            .unwrap();
+        exec(
+            live,
+            "DELETE FROM staged_transactions WHERE id = ?1",
+            params![w.staged_gone],
+        );
+        live.set_device_setting("device.theme", "light").unwrap();
+        live.set_device_setting("device.after_base", "1").unwrap();
+        exec(
+            live,
+            "UPDATE durable_jobs SET state = 'failed', last_error = 'x'",
+            [],
+        );
+        job(live, "after-base");
+        live.record_audit_event(&meta(), "ack_after_base").unwrap();
+        live.record_audit_event(&meta(), CONNECTOR_SECRET_REMOVED_EVENT)
+            .unwrap();
+        receipt(live, "2026-11-01T12:00:00Z");
+        queue_record(live, Uuid::now_v7(), b"{\"why\":\"earlier rebase\"}");
+    }
+
+    /// Roll back, apply the remote command as the server's envelope 6, rebase the local one.
+    fn rebase<'a>(
+        w: &'a World,
+        local: WriteCommand,
+        remote: &WriteCommand,
+    ) -> (Scratch<'a>, Preservation, Executed, Uuid) {
+        let issued = executor::issue(&w.live, meta(), local);
+        let device_b = other_device(&w.live, &w.dir);
+        let sealed = seal(device_b.worker(), &meta(), remote);
+        let image = w.live.capture_preservation().unwrap();
+        let mut scratch = w.live.rollback_to(5, &w.scratch).unwrap();
+        scratch.apply_pulled(&[sealed.pulled(6)]).unwrap();
+        let executed = scratch.rebase_local(image.local()).unwrap();
+        (scratch, image, executed, issued.meta.command_id)
+    }
+
+    fn other_account() -> WriteCommand {
+        liquid_account_cmd(AccountId::new(), Currency::Usd, 7_000)
+    }
+
+    fn blocked(error: RebaseError) -> crate::rebase::RebaseBlockedLocalState {
+        match error {
+            RebaseError::BlockedLocalState(blocked) => *blocked,
+            other => panic!("expected a blocked rebase, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_successful_rebase_carries_every_stable_class_three_value_and_drops_only_the_base_inherited(
+    ) {
+        let w = world();
+        drift(&w);
+        let (mut scratch, image, executed, local_id) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        assert_eq!(executed.replayed.len(), 1);
+        let before = w.live.snapshot_bytes().unwrap();
+
+        let report = scratch.overlay_class3(&image).unwrap();
+        let s = scratch.worker();
+
+        // A credential, a watermark: the live values, byte for byte.
+        assert_eq!(secret(s, w.a).as_deref(), Some(SECRET_A));
+        assert_eq!(
+            count(
+                s,
+                "SELECT COUNT(*) FROM connector_link_cursors WHERE last_synced_on = '2026-10-15'"
+            ),
+            1,
+            "the live watermark, not the base's"
+        );
+        // What the live vault removed after the base is gone; the base's copy is not resurrected.
+        assert_eq!(secret(s, w.b), None);
+        assert_eq!(
+            count(s, "SELECT COUNT(*) FROM connector_attention"),
+            1,
+            "A's notice is kept, B's cleared notice is not resurrected"
+        );
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM staged_transactions WHERE id = x'{}'",
+                    hex(w.staged_gone)
+                )
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM staged_transactions WHERE id = x'{}'",
+                    hex(w.staged_kept)
+                )
+            ),
+            1
+        );
+        // device.* settings, a durable job, backup history, the queue.
+        assert_eq!(setting(s, "device.theme").as_deref(), Some("light"));
+        assert_eq!(setting(s, "device.after_base").as_deref(), Some("1"));
+        assert_eq!(count(s, "SELECT COUNT(*) FROM durable_jobs"), 2);
+        assert_eq!(
+            count(
+                s,
+                "SELECT COUNT(*) FROM durable_jobs WHERE state = 'failed'"
+            ),
+            1
+        );
+        assert_eq!(count(s, "SELECT COUNT(*) FROM backup_history"), 2);
+        assert_eq!(count(s, "SELECT COUNT(*) FROM outbox_queue"), 1);
+        // Audit: every stable row, before and after the base.
+        for event in [
+            "ack_before_base",
+            "ack_after_base",
+            CONNECTOR_SECRET_REMOVED_EVENT,
+        ] {
+            assert_eq!(
+                count(
+                    s,
+                    &format!("SELECT COUNT(*) FROM audit_events WHERE event_type = '{event}'")
+                ),
+                1,
+                "{event}"
+            );
+        }
+        // The rebuilt class-1 state and the replay's own memo and outbox row are untouched.
+        assert_eq!(account_name(s, w.account), "From device B");
+        assert_eq!(
+            count(
+                s,
+                "SELECT COUNT(*) FROM sync_outbox WHERE state = 'Pending'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM command_idempotency_keys WHERE command_id = x'{}'",
+                    hex(local_id)
+                )
+            ),
+            1
+        );
+        // The live vault was only read.
+        assert_eq!(w.live.snapshot_bytes().unwrap(), before);
+        assert_eq!(
+            report
+                .table("connector_connection_secrets")
+                .unwrap()
+                .inserted,
+            1
+        );
+        assert_eq!(report.table("staged_transactions").unwrap().removed, 2);
+        assert_eq!(report.table("staged_transactions").unwrap().inserted, 1);
+        assert!(w.batch != w.record);
+    }
+
+    fn hex(id: Uuid) -> String {
+        id.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn a_queued_rebase_preserves_the_same_state_and_withholds_the_queued_commands_memo() {
+        let w = world();
+        drift(&w);
+        // The local rename is touched by the server's rename: it queues.
+        let (mut scratch, image, executed, local_id) = rebase(
+            &w,
+            rename(w.account, "Local rename"),
+            &rename(w.account, "Remote rename"),
+        );
+        assert!(executed.replayed.is_empty());
+        scratch.overlay_class3(&image).unwrap();
+        let s = scratch.worker();
+
+        assert_eq!(secret(s, w.a).as_deref(), Some(SECRET_A));
+        assert_eq!(setting(s, "device.theme").as_deref(), Some("light"));
+        assert_eq!(count(s, "SELECT COUNT(*) FROM backup_history"), 2);
+        // The earlier record survives byte for byte and the rebase's own is added to it.
+        assert_eq!(count(s, "SELECT COUNT(*) FROM outbox_queue"), 2);
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM outbox_queue WHERE command_id = x'{}'",
+                    hex(local_id)
+                )
+            ),
+            1
+        );
+        // The live memo of the queued command is withheld: a retry is told it is queued.
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM command_idempotency_keys WHERE command_id = x'{}'",
+                    hex(local_id)
+                )
+            ),
+            0
+        );
+        assert_eq!(account_name(s, w.account), "Remote rename");
+    }
+
+    /// A rebase of `drift`ed state, left ready for the overlay.
+    fn ready(w: &World) -> (Scratch<'_>, Preservation) {
+        drift(w);
+        let (scratch, image, _executed, _local) =
+            rebase(w, other_account(), &rename(w.account, "From device B"));
+        (scratch, image)
+    }
+
+    #[test]
+    fn rows_the_pulled_envelopes_wrote_survive_and_a_replay_owned_audit_row_is_not_copied() {
+        let w = world();
+        drift(&w);
+        // Local: a timezone change (its audit row is the replay's to write). Remote: a rename.
+        let (mut scratch, image, _executed, local_id) = rebase(
+            &w,
+            WriteCommand::SetHouseholdTimezone {
+                timezone: "America/Chicago".to_owned(),
+            },
+            &rename(w.account, "From device B"),
+        );
+        // A key the base never carried, written on the scratch vault by something other than the
+        // live vault: it is not dropped.
+        exec(
+            scratch.worker(),
+            "INSERT INTO settings (key, value, updated_at) VALUES ('device.scratch_only', 'x', 't')",
+            [],
+        );
+        let before = count(
+            scratch.worker(),
+            "SELECT COUNT(*) FROM audit_events WHERE event_type = 'household_timezone_changed'",
+        );
+        assert_eq!(before, 1, "the replay wrote its own");
+        let report = scratch.overlay_class3(&image).unwrap();
+        let s = scratch.worker();
+
+        assert_eq!(setting(s, "device.scratch_only").as_deref(), Some("x"));
+        assert_eq!(
+            count(
+                s,
+                "SELECT COUNT(*) FROM audit_events WHERE event_type = 'household_timezone_changed'"
+            ),
+            1,
+            "the live copy of the replayed command's row was withheld, not doubled"
+        );
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM audit_events WHERE command_id = x'{}'",
+                    hex(local_id)
+                )
+            ),
+            1
+        );
+        assert_eq!(report.table("audit_events").unwrap().withheld, 1);
+        // Stable audit rows: the token-removed record is carried, never dropped or re-planned.
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM audit_events WHERE event_type = '{CONNECTOR_SECRET_REMOVED_EVENT}'"
+                )
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn an_identity_the_rebuilt_vault_lacks_blocks_the_rebase_and_overlays_nothing() {
+        let w = world();
+        let (scratch, image) = ready(&w);
+        let live_before = w.live.snapshot_bytes().unwrap();
+        // A pulled envelope removed connection A's identity outright.
+        scratch
+            .worker()
+            .lock()
+            .conn
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
+             DELETE FROM connector_link_cursors; DELETE FROM connector_attention;
+             DELETE FROM connector_account_links; DELETE FROM connector_connections;
+             PRAGMA foreign_keys = ON;",
+            )
+            .unwrap();
+        let mut scratch = scratch;
+        let error = scratch.overlay_class3(&image).unwrap_err();
+
+        let text = error.to_string();
+        assert!(
+            !text.contains(SECRET_A) && !text.contains(SECRET_B),
+            "{text}"
+        );
+        let blocked = blocked(error);
+        assert_eq!(blocked.table, "connector_connection_secrets");
+        let BlockCause::MissingReference {
+            column,
+            target,
+            rows,
+        } = &blocked.cause
+        else {
+            panic!("{:?}", blocked.cause)
+        };
+        assert_eq!(
+            (*column, *target, rows.count),
+            ("connection_id", "connector_connections", 1)
+        );
+        assert!(!format!("{blocked:?}").contains(SECRET_A));
+        // The live vault is untouched, the scratch vault is kept as the evidence, and nothing of
+        // the overlay is in it.
+        assert_eq!(w.live.snapshot_bytes().unwrap(), live_before);
+        assert!(blocked.scratch.exists());
+        assert_eq!(
+            count(
+                scratch.worker(),
+                "SELECT COUNT(*) FROM connector_connection_secrets"
+            ),
+            0
+        );
+        assert_eq!(
+            count(scratch.worker(), "SELECT COUNT(*) FROM backup_history"),
+            1
+        );
+        assert_eq!(
+            setting(scratch.worker(), "device.theme").as_deref(),
+            Some("dark")
+        );
+    }
+
+    #[test]
+    fn a_stale_notice_is_dropped_and_never_blocks() {
+        let w = world();
+        // B's secret is gone live (drift), so only its notice names an identity.
+        w.live.set_connector_attention(w.b, "{}").unwrap();
+        let (mut scratch, image) = ready(&w);
+        // `ready` drifted B's notice away; capture again with the notice back.
+        w.live.set_connector_attention(w.b, "{}").unwrap();
+        let image = {
+            drop(image);
+            w.live.capture_preservation().unwrap()
+        };
+        // The rebuilt vault lacks B's identity.
+        scratch
+            .worker()
+            .lock()
+            .conn
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 DELETE FROM connector_attention WHERE connection_id = (SELECT id FROM connector_connections WHERE display_hint = 'B');
+                 DELETE FROM connector_connections WHERE display_hint = 'B';
+                 PRAGMA foreign_keys = ON;",
+            )
+            .unwrap();
+        let report = scratch.overlay_class3(&image).unwrap();
+        assert_eq!(report.table("connector_attention").unwrap().stale, 1);
+        assert_eq!(
+            count(scratch.worker(), "SELECT COUNT(*) FROM connector_attention"),
+            1,
+            "A's notice stays"
+        );
+    }
+
+    /// An import left half-done on the live vault after the base: its batch, its record and a staged
+    /// row, none of which any envelope names.
+    fn in_flight_import(w: &World) -> (Uuid, Uuid, Uuid) {
+        let (batch, record) = source(&w.live);
+        let staged = Uuid::now_v7();
+        stage(&w.live, record, w.account, staged, 9);
+        (batch, record, staged)
+    }
+
+    fn row_count(worker: &DbWorker, table: &str, id: Uuid) -> i64 {
+        count(
+            worker,
+            &format!("SELECT COUNT(*) FROM {table} WHERE id = x'{}'", hex(id)),
+        )
+    }
+
+    #[test]
+    fn an_in_flight_import_is_carried_with_its_source_rows_across_a_rebase_that_pulls_others() {
+        let w = world();
+        let (batch, record, staged) = in_flight_import(&w);
+        let (mut scratch, image) = ready(&w);
+        let report = scratch.overlay_class3(&image).unwrap();
+        let s = scratch.worker();
+        assert_eq!(row_count(s, "source_batches", batch), 1);
+        assert_eq!(row_count(s, "source_records", record), 1);
+        assert_eq!(row_count(s, "staged_transactions", staged), 1);
+        assert_eq!(report.table("source_batches").unwrap().inserted, 1);
+        assert_eq!(report.table("source_records").unwrap().inserted, 1);
+        // The ids and the bytes are the live vault's, exactly.
+        let read = |worker: &DbWorker| -> (String, String) {
+            worker
+                .lock()
+                .conn
+                .query_row(
+                    "SELECT r.normalized_json, b.source_name FROM source_records r
+                       JOIN source_batches b ON b.id = r.source_batch_id WHERE r.id = ?1",
+                    [record],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+        };
+        assert_eq!(read(s), read(&w.live));
+    }
+
+    #[test]
+    fn an_in_flight_import_commits_or_is_discarded_after_the_rebase() {
+        let w = world();
+        let (batch, record, staged) = in_flight_import(&w);
+        let (mut scratch, image) = ready(&w);
+        scratch.overlay_class3(&image).unwrap();
+        let s = scratch.worker();
+        // Skipping works on the carried rows.
+        s.skip_staged(StagedTransactionId::from_uuid(staged))
+            .unwrap();
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM staged_transactions WHERE id = x'{}' AND commit_status = 'skipped'",
+                    hex(staged)
+                )
+            ),
+            1
+        );
+        // Discarding the import deletes the staging and the source rows together.
+        crate::ingestion::discard_batch(&s.lock().conn, batch).unwrap();
+        assert_eq!(row_count(s, "source_batches", batch), 0);
+        assert_eq!(row_count(s, "source_records", record), 0);
+        assert_eq!(row_count(s, "staged_transactions", staged), 0);
+    }
+
+    #[test]
+    fn a_same_id_source_row_from_a_pulled_envelope_blocks_with_a_typed_cause() {
+        let w = world();
+        let (batch, _record, _staged) = in_flight_import(&w);
+        let device_b = other_device(&w.live, &w.dir);
+        let sealed = seal(
+            device_b.worker(),
+            &meta(),
+            &WriteCommand::CreateSourceBatch {
+                id: SourceBatchId::from_uuid(batch),
+                source_type: "other".to_owned(),
+                source_name: Some("the same file".to_owned()),
+                file_fingerprint: None,
+                parser_version: None,
+                connector_connection_id: None,
+            },
+        );
+        let image = w.live.capture_preservation().unwrap();
+        let mut scratch = w.live.rollback_to(5, &w.scratch).unwrap();
+        scratch.apply_pulled(&[sealed.pulled(6)]).unwrap();
+        scratch.rebase_local(image.local()).unwrap();
+        let blocked = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert_eq!(blocked.table, "source_batches");
+        assert!(matches!(
+            blocked.cause,
+            BlockCause::SourceIdCollision { kind: "source_batches", rows } if rows.count == 1
+        ));
+        assert_eq!(
+            count(
+                scratch.worker(),
+                "SELECT COUNT(*) FROM staged_transactions WHERE row_ordinal = 9"
+            ),
+            0,
+            "nothing was overlaid"
+        );
+    }
+
+    #[test]
+    fn a_source_row_a_local_command_names_is_never_carried_this_way() {
+        let w = world();
+        // A local import written through the bus: the batch is named by an outbox command.
+        let batch = Uuid::now_v7();
+        let issued = executor::issue(
+            &w.live,
+            meta(),
+            WriteCommand::CreateSourceBatch {
+                id: SourceBatchId::from_uuid(batch),
+                source_type: "other".to_owned(),
+                source_name: Some("through the bus".to_owned()),
+                file_fingerprint: None,
+                parser_version: None,
+                connector_connection_id: None,
+            },
+        );
+        assert_eq!(issued.meta.command_id, issued.command.command_id);
+        let record = Uuid::now_v7();
+        exec(
+            &w.live,
+            "INSERT INTO source_records
+                (id, source_batch_id, external_id, source_hash, normalized_json,
+                 parse_confidence_bps, created_at)
+             VALUES (?1, ?2, 'ext', 'hash-bus', '{}', 10000, 't')",
+            params![record, batch],
+        );
+        stage(&w.live, record, w.account, Uuid::now_v7(), 8);
+        let image = w.live.capture_preservation().unwrap();
+        let mut scratch = w.live.rollback_to(5, &w.scratch).unwrap();
+        scratch.rebase_local(image.local()).unwrap();
+        // The replay wrote the batch itself; the overlay does not copy the live one over it.
+        let report = scratch.overlay_class3(&image).unwrap_err();
+        // The record (not named by any command) cannot be carried without a batch of its own: the
+        // staged row's reference is what blocks, never a copy of a row an envelope names.
+        let blocked = blocked(report);
+        assert!(matches!(
+            blocked.cause,
+            BlockCause::MissingReference {
+                target: "source_records",
+                ..
+            }
+        ));
+        assert_eq!(row_count(scratch.worker(), "source_batches", batch), 1);
+    }
+
+    #[test]
+    fn a_key_the_rebase_wrote_with_other_content_is_a_collision_not_a_silent_choice() {
+        let w = world();
+        let (queued, correlation) = (Uuid::now_v7(), Uuid::now_v7());
+        queue_record_in(&w.live, queued, correlation, b"live evidence");
+        let (mut scratch, image) = ready(&w);
+        queue_record_in(scratch.worker(), queued, correlation, b"another evidence");
+        let blocked = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert_eq!(blocked.table, "outbox_queue");
+        assert!(
+            matches!(blocked.cause, BlockCause::KeyCollision { .. }),
+            "{:?}",
+            blocked.cause
+        );
+        // The same record, byte for byte, is not a collision.
+        let w = world();
+        queue_record_in(&w.live, queued, correlation, b"live evidence");
+        let (mut scratch, image) = ready(&w);
+        queue_record_in(scratch.worker(), queued, correlation, b"live evidence");
+        let report = scratch.overlay_class3(&image).unwrap();
+        assert_eq!(report.table("outbox_queue").unwrap().unchanged, 1);
+    }
+
+    #[test]
+    fn a_memo_that_belongs_to_no_plan_and_is_not_in_the_scratch_vault_blocks() {
+        let w = world();
+        drift(&w);
+        exec(
+            &w.live,
+            "INSERT INTO command_idempotency_keys
+                (idempotency_key, command_id, command_type, result_ref_json, op_seq, expires_at)
+             VALUES ('stray-key', ?1, 'x', '{}', 1, '2999-01-01T00:00:00+00:00')",
+            params![Uuid::now_v7()],
+        );
+        let (mut scratch, image, _executed, _id) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        let blocked = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert_eq!(blocked.table, "command_idempotency_keys");
+        assert!(matches!(blocked.cause, BlockCause::UnplannedMemo { rows } if rows.count == 1));
+    }
+
+    #[test]
+    fn a_malformed_stable_audit_row_blocks_the_rebase() {
+        let w = world();
+        drift(&w);
+        exec(
+            &w.live,
+            "INSERT INTO audit_events (id, event_type, command_id, correlation_id, created_at)
+             VALUES (?1, 'ack_bad', x'0102', ?2, 't')",
+            params![Uuid::now_v7(), Uuid::now_v7()],
+        );
+        let (mut scratch, image, _executed, _id) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        let blocked = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert!(matches!(blocked.cause, BlockCause::MalformedAudit { .. }));
+    }
+
+    #[test]
+    fn schema_migration_cursor_and_outbox_disagreements_block_the_rebase() {
+        // Another schema.
+        let w = world();
+        let (mut scratch, image) = ready(&w);
+        exec(
+            scratch.worker(),
+            "ALTER TABLE backup_history ADD COLUMN extra TEXT",
+            [],
+        );
+        let blocked1 = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert_eq!(blocked1.cause, BlockCause::SchemaDiffers);
+        // Another migration history.
+        let w = world();
+        let (mut scratch, image) = ready(&w);
+        exec(scratch.worker(), "DELETE FROM schema_migrations WHERE version = (SELECT MAX(version) FROM schema_migrations)", []);
+        let blocked2 = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert_eq!(blocked2.cause, BlockCause::MigrationHistoryDiffers);
+        // A cursor ahead of the rebuilt log.
+        let w = world();
+        let (mut scratch, image) = ready(&w);
+        exec(scratch.worker(), "INSERT OR REPLACE INTO projection_cursors (read_model_name, last_applied_op_seq) VALUES ('probe', 999999)", []);
+        let blocked3 = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert!(matches!(blocked3.cause, BlockCause::CursorAhead { rows } if rows.count == 1));
+        // An outbox entry with no log row.
+        let w = world();
+        let (mut scratch, image) = ready(&w);
+        exec(
+            scratch.worker(),
+            "UPDATE sync_outbox SET op_seq = 999999",
+            [],
+        );
+        let blocked4 = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert!(matches!(
+            blocked4.cause,
+            BlockCause::OutboxWithoutLog { .. }
+        ));
+    }
+
+    /// The Sync void ledger and applied cursor (personal-cfo-1cltt.5): a replica bootstrapped from a
+    /// snapshot rooted at 4 that skips positions 2 to 3, with the base taken at seq 5.
+    fn seed_ledger(live: &DbWorker) {
+        exec(
+            live,
+            "INSERT INTO sync_voids (ordinal, void_id, first, last, origin)
+             VALUES (1, zeroblob(32), 2, 3, 'seeded')",
+            [],
+        );
+        exec(
+            live,
+            "INSERT INTO sync_position (singleton, snapshot_root, next_to_apply) VALUES (1, 4, 6)",
+            [],
+        );
+    }
+
+    fn honor(live: &DbWorker, ordinal: i64, first: i64, last: i64) {
+        exec(
+            live,
+            "INSERT INTO sync_voids (ordinal, void_id, first, last, origin)
+             VALUES (?1, randomblob(32), ?2, ?3, 'honored')",
+            params![ordinal, first, last],
+        );
+    }
+
+    fn ledger(worker: &DbWorker) -> Vec<(i64, i64, i64, String)> {
+        let guard = worker.lock();
+        let mut stmt = guard
+            .conn
+            .prepare("SELECT ordinal, first, last, origin FROM sync_voids ORDER BY ordinal")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn cursor(worker: &DbWorker) -> Option<(Option<i64>, i64)> {
+        worker
+            .lock()
+            .conn
+            .query_row(
+                "SELECT snapshot_root, next_to_apply FROM sync_position WHERE singleton = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+    }
+
+    #[test]
+    fn a_void_honored_after_the_base_survives_the_swap_appended_in_ordinal_order() {
+        let w = world_with(seed_ledger);
+        drift(&w);
+        honor(&w.live, 2, 7, 8);
+        honor(&w.live, 3, 10, 12);
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        assert_eq!(
+            ledger(scratch.worker()).len(),
+            1,
+            "the base's copy holds only what was recorded at capture"
+        );
+
+        let report = scratch.overlay_class3(&image).unwrap();
+
+        let want = vec![
+            (1, 2, 3, "seeded".to_owned()),
+            (2, 7, 8, "honored".to_owned()),
+            (3, 10, 12, "honored".to_owned()),
+        ];
+        assert_eq!(ledger(scratch.worker()), want, "the live ledger, in order");
+        assert_eq!(ledger(&w.live), want, "the live vault is only read");
+        let voids = report.table("sync_voids").unwrap();
+        assert_eq!((voids.inserted, voids.unchanged, voids.removed), (2, 1, 0));
+    }
+
+    #[test]
+    fn the_applied_cursor_moves_forward_with_the_pull_and_is_never_lowered_to_the_live_value() {
+        let w = world_with(seed_ledger);
+        drift(&w);
+        // The live cursor is still the base's (6); the rebase applied envelope 6 in the scratch
+        // vault, so the cursor it swaps in is 7.
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        assert_eq!(cursor(scratch.worker()), Some((Some(4), 7)));
+        let report = scratch.overlay_class3(&image).unwrap();
+        assert_eq!(cursor(scratch.worker()), Some((Some(4), 7)));
+        assert_eq!(cursor(&w.live), Some((Some(4), 6)));
+        let position = report.table("sync_position").unwrap();
+        assert_eq!((position.inserted, position.unchanged), (0, 1));
+    }
+
+    #[test]
+    fn a_live_cursor_ahead_of_the_pull_is_kept_and_the_root_is_not_touched() {
+        let w = world_with(seed_ledger);
+        drift(&w);
+        // A void honored past the pull moved the live cursor beyond the scratch vault's.
+        honor(&w.live, 2, 8, 9);
+        exec(&w.live, "UPDATE sync_position SET next_to_apply = 10", []);
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        assert_eq!(cursor(scratch.worker()), Some((Some(4), 7)));
+        let report = scratch.overlay_class3(&image).unwrap();
+        assert_eq!(cursor(scratch.worker()), Some((Some(4), 10)));
+        let position = report.table("sync_position").unwrap();
+        assert_eq!((position.inserted, position.unchanged), (1, 0));
+    }
+
+    #[test]
+    fn a_ledger_and_cursor_armed_after_the_base_are_inserted_whole() {
+        let w = world();
+        drift(&w);
+        seed_ledger(&w.live);
+        honor(&w.live, 2, 7, 7);
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        assert_eq!(cursor(scratch.worker()), None, "the base had no cursor");
+        scratch.overlay_class3(&image).unwrap();
+        assert_eq!(ledger(scratch.worker()), ledger(&w.live));
+        assert_eq!(cursor(scratch.worker()), Some((Some(4), 6)));
+    }
+
+    #[test]
+    fn a_void_honored_after_the_capture_moves_the_digest_so_the_swap_refuses_it() {
+        let w = world_with(seed_ledger);
+        drift(&w);
+        let first = w.live.capture_preservation().unwrap();
+        honor(&w.live, 2, 7, 8);
+        let second = w.live.capture_preservation().unwrap();
+        assert_ne!(first.digest(), second.digest());
+        let third = w.live.capture_preservation().unwrap();
+        exec(&w.live, "UPDATE sync_position SET next_to_apply = 9", []);
+        assert_ne!(
+            third.digest(),
+            w.live.capture_preservation().unwrap().digest(),
+            "a cursor move is a change too"
+        );
+    }
+
+    #[test]
+    fn two_ledgers_that_are_not_one_history_block_the_rebase_and_overlay_nothing() {
+        let w = world_with(seed_ledger);
+        drift(&w);
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        // The scratch vault's ordinal 1 is not the live one's (a ledger that was rewritten).
+        {
+            let guard = scratch.worker().lock();
+            guard
+                .conn
+                .execute_batch(
+                    "DROP TRIGGER sync_voids_no_update;
+                     UPDATE sync_voids SET first = 1, last = 1;",
+                )
+                .unwrap();
+        }
+        let error = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert_eq!(error.table, "sync_voids");
+        assert!(matches!(error.cause, BlockCause::KeyCollision { rows } if rows.count == 1));
+        assert_eq!(
+            setting(scratch.worker(), "device.after_base"),
+            None,
+            "nothing was overlaid"
+        );
+    }
+
+    #[test]
+    fn a_different_snapshot_root_blocks_the_rebase() {
+        let w = world_with(seed_ledger);
+        drift(&w);
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        {
+            let guard = scratch.worker().lock();
+            guard
+                .conn
+                .execute_batch(
+                    "DROP TRIGGER sync_position_forward;
+                     UPDATE sync_position SET snapshot_root = 3;",
+                )
+                .unwrap();
+        }
+        let error = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert_eq!(error.table, "sync_position");
+        assert!(matches!(error.cause, BlockCause::KeyCollision { .. }));
+    }
+
+    #[test]
+    fn the_counter_register_and_the_notices_are_the_live_rows_never_the_bases_older_copy() {
+        let w = world_with(|live| {
+            exec(
+                live,
+                "INSERT INTO sync_counter_register
+                    (vault_id, key_epoch, fingerprint, object_type, next_counter)
+                 VALUES (zeroblob(16), 1, zeroblob(32), 1, 4)",
+                [],
+            );
+            exec(
+                live,
+                "INSERT INTO sync_notices (kind, batch_id, source_name, discarded_count, created_at)
+                 VALUES ('import_discarded', zeroblob(16), 'before.csv', 2, 't')",
+                [],
+            );
+        });
+        drift(&w);
+        // After the base: the counter advanced twice, a notice was dismissed and another arrived.
+        exec(
+            &w.live,
+            "UPDATE sync_counter_register SET next_counter = 6",
+            [],
+        );
+        exec(
+            &w.live,
+            "UPDATE sync_notices SET dismissed_at = 'later'",
+            [],
+        );
+        exec(
+            &w.live,
+            "INSERT INTO sync_notices (kind, batch_id, source_name, discarded_count, created_at)
+             VALUES ('import_discarded', zeroblob(16), 'after.csv', 1, 't2')",
+            [],
+        );
+        let (mut scratch, image, _executed, _local) =
+            rebase(&w, other_account(), &rename(w.account, "From device B"));
+        let counter =
+            |worker: &DbWorker| count(worker, "SELECT next_counter FROM sync_counter_register");
+        assert_eq!(counter(scratch.worker()), 4, "the base's older copy");
+        scratch.overlay_class3(&image).unwrap();
+        assert_eq!(counter(scratch.worker()), 6, "a counter is never lowered");
+        assert_eq!(
+            count(scratch.worker(), "SELECT COUNT(*) FROM sync_notices"),
+            2
+        );
+        assert_eq!(
+            count(
+                scratch.worker(),
+                "SELECT COUNT(*) FROM sync_notices WHERE dismissed_at = 'later'"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn the_overlay_runs_once_and_only_after_the_replay() {
+        let w = world();
+        drift(&w);
+        let image = w.live.capture_preservation().unwrap();
+        let mut early = w.live.rollback_to(5, &w.scratch).unwrap();
+        assert!(matches!(
+            early.overlay_class3(&image),
+            Err(RebaseError::OverlayBeforeReplay)
+        ));
+        drop(early);
+        let w = world();
+        let (mut scratch, image) = ready(&w);
+        scratch.overlay_class3(&image).unwrap();
+        assert!(matches!(
+            scratch.overlay_class3(&image),
+            Err(RebaseError::AlreadyOverlaid)
+        ));
+    }
+
+    #[test]
+    fn the_capture_reads_the_plan_and_the_rows_together_and_never_prints_a_value() {
+        let w = world();
+        drift(&w);
+        let issued = executor::issue(&w.live, meta(), other_account());
+        let before = w.live.snapshot_bytes().unwrap();
+        let first = w.live.capture_preservation().unwrap();
+        let second = w.live.capture_preservation().unwrap();
+        assert_eq!(
+            w.live.snapshot_bytes().unwrap(),
+            before,
+            "a capture only reads"
+        );
+        assert_eq!(first.digest(), second.digest());
+        assert_eq!(first.local().len(), 1);
+        assert_eq!(first.local()[0].meta.command_id, issued.meta.command_id);
+        let text = format!("{first:?}");
+        assert!(
+            !text.contains(SECRET_A) && !text.contains("fake-token"),
+            "{text}"
+        );
+        // Any class-3 write changes the digest, so a controller can tell the live vault moved.
+        w.live.set_device_setting("device.theme", "blue").unwrap();
+        assert_ne!(
+            w.live.capture_preservation().unwrap().digest(),
+            first.digest()
+        );
+    }
+
+    #[test]
+    fn a_queued_replay_owned_audit_row_is_not_carried_and_a_user_setting_stays_replicated() {
+        let w = world();
+        drift(&w);
+        // The live vault's replicated preference differs from the one the server's side holds.
+        exec(
+            &w.live,
+            "UPDATE settings SET value = 'EUR' WHERE key = 'user.reporting_currency'",
+            [],
+        );
+        // Both devices change the timezone: the local command is touched and queues; the server's
+        // value, and the server's user setting, stand.
+        let (mut scratch, image, executed, local_id) = rebase(
+            &w,
+            WriteCommand::SetHouseholdTimezone {
+                timezone: "America/Chicago".to_owned(),
+            },
+            &WriteCommand::SetHouseholdTimezone {
+                timezone: "Europe/Paris".to_owned(),
+            },
+        );
+        assert!(executed.replayed.is_empty());
+        // A user.* value the pulled side wrote differently from the live vault.
+        exec(
+            scratch.worker(),
+            "INSERT OR REPLACE INTO settings (key, value, updated_at)
+             VALUES ('user.reporting_currency', 'GBP', 't')",
+            [],
+        );
+        // The device's identity row and Sync's own record come from the live vault.
+        exec(
+            scratch.worker(),
+            "UPDATE vault_meta SET node_id = x'00000000000000000000000000000001'",
+            [],
+        );
+        exec(
+            scratch.worker(),
+            "UPDATE sync_base SET base_seq = 1, state = 'NoBase', base_digest = NULL",
+            [],
+        );
+        scratch.overlay_class3(&image).unwrap();
+        let s = scratch.worker();
+
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM audit_events WHERE command_id = x'{}'",
+                    hex(local_id)
+                )
+            ),
+            0,
+            "the live row of a queued command is not carried"
+        );
+        assert_eq!(
+            setting(s, "user.reporting_currency").as_deref(),
+            Some("GBP"),
+            "user.* is replicated state, not an overlay"
+        );
+        let node: Uuid = s
+            .lock()
+            .conn
+            .query_row("SELECT node_id FROM vault_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(node, w.live.node_id);
+        let (live_base, scratch_base): (Vec<Value>, Vec<Value>) = {
+            let read = |worker: &DbWorker| {
+                worker
+                    .lock()
+                    .conn
+                    .query_row(
+                        "SELECT base_seq, state, base_digest, updated_at FROM sync_base",
+                        [],
+                        |r| {
+                            Ok(vec![
+                                r.get::<_, Value>(0)?,
+                                r.get::<_, Value>(1)?,
+                                r.get::<_, Value>(2)?,
+                                r.get::<_, Value>(3)?,
+                            ])
+                        },
+                    )
+                    .unwrap()
+            };
+            (read(&w.live), read(s))
+        };
+        assert_eq!(live_base, scratch_base);
+    }
+
+    #[test]
+    fn a_base_row_that_rebuilt_state_still_refers_to_cannot_be_dropped_and_blocks() {
+        let w = world();
+        let (mut scratch, image) = ready(&w);
+        // A dedupe decision of the rebuilt vault names the staged row the live vault removed.
+        exec(
+            scratch.worker(),
+            "INSERT INTO dedupe_decisions
+                (id, source_batch_id, layer, staged_transaction_id, decision, reason, decided_at)
+             VALUES (?1, ?2, 'transaction', ?3, 'skipped', 'fake', 't')",
+            params![Uuid::now_v7(), w.batch, w.staged_gone],
+        );
+        let blocked = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert_eq!(blocked.table, "staged_transactions");
+        assert!(matches!(
+            blocked.cause,
+            BlockCause::StillReferenced { rows } if rows.count == 1
+        ));
+        assert_eq!(
+            count(scratch.worker(), "SELECT COUNT(*) FROM staged_transactions"),
+            2,
+            "nothing was dropped"
+        );
+    }
+
+    #[test]
+    fn every_class_three_table_in_the_manifest_has_a_rule_in_the_overlay() {
+        const MANIFEST: &str = include_str!("../../table_classes.toml");
+        let handled: std::collections::BTreeSet<&str> = crate::rebase::class_three_tables_handled()
+            .into_iter()
+            .collect();
+        let mut class_three = std::collections::BTreeSet::new();
+        for block in MANIFEST.split("[[table]]").skip(1) {
+            let field = |name: &str| {
+                block.lines().find_map(|line| {
+                    let (key, value) = line.split_once('=')?;
+                    (key.trim() == name).then(|| value.trim().trim_matches('"').to_owned())
+                })
+            };
+            if field("class").as_deref() == Some("3")
+                && field("kind").as_deref().unwrap_or("sqlite_table") == "sqlite_table"
+            {
+                class_three.insert(field("table").unwrap());
+            }
+        }
+        let unhandled: Vec<_> = class_three
+            .iter()
+            .filter(|table| !handled.contains(table.as_str()))
+            .collect();
+        assert!(
+            unhandled.is_empty(),
+            "class-3 tables with no overlay rule: {unhandled:?}"
+        );
+        // The overlay names only manifest tables.
+        let stray: Vec<_> = handled
+            .iter()
+            .filter(|table| !class_three.contains(**table))
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "overlay rules for non-class-3 tables: {stray:?}"
+        );
+    }
+
+    /// Roll back, apply the remote command as envelope 6, rebase the local one, carry the overlay.
+    fn overlaid<'a>(
+        w: &'a World,
+        local: WriteCommand,
+        remote: &WriteCommand,
+    ) -> (Scratch<'a>, Uuid) {
+        let issued = executor::issue(&w.live, meta(), local);
+        let device_b = other_device(&w.live, &w.dir);
+        let sealed = seal(device_b.worker(), &meta(), remote);
+        let remote_id = Uuid::from_bytes(sealed.plaintext.meta.command_id);
+        let image = w.live.capture_preservation().unwrap();
+        let mut scratch = w.live.rollback_to(5, &w.scratch).unwrap();
+        scratch.apply_pulled(&[sealed.pulled(6)]).unwrap();
+        scratch.rebase_local(image.local()).unwrap();
+        scratch.overlay_class3(&image).unwrap();
+        assert_ne!(issued.meta.command_id, remote_id);
+        (scratch, remote_id)
+    }
+
+    fn cursors(worker: &DbWorker, connection: Uuid) -> i64 {
+        worker
+            .lock()
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM connector_link_cursors WHERE connection_id = ?1",
+                [connection],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn unmap(connection: Uuid) -> WriteCommand {
+        WriteCommand::SetConnectorLinkAccount {
+            connection_id: connection,
+            external_id: "acct-1".to_owned(),
+            account_id: None,
+        }
+    }
+
+    #[test]
+    fn a_pulled_mapping_change_clears_the_watermark_the_overlay_restored() {
+        let w = world();
+        drift(&w);
+        let (mut scratch, _remote) = overlaid(&w, other_account(), &unmap(w.a));
+        assert_eq!(
+            cursors(scratch.worker(), w.a),
+            1,
+            "the overlay brought the live watermark back"
+        );
+        let report = scratch.apply_pulled_class3_effects().unwrap();
+        assert_eq!(report.cursors_cleared, 1);
+        assert_eq!(cursors(scratch.worker(), w.a), 0);
+        // The credential and everything unrelated to the mapping stay.
+        assert_eq!(secret(scratch.worker(), w.a).as_deref(), Some(SECRET_A));
+    }
+
+    #[test]
+    fn a_pulled_delete_scrubs_the_restored_token_and_the_audit_row_keyed_by_the_command_survives() {
+        let w = world();
+        drift(&w);
+        let (mut scratch, remote_id) = overlaid(
+            &w,
+            other_account(),
+            &WriteCommand::DeleteConnectorConnection { id: w.a },
+        );
+        assert_eq!(
+            secret(scratch.worker(), w.a).as_deref(),
+            Some(SECRET_A),
+            "the overlay restored the token the stripped base did not have"
+        );
+        let report = scratch.apply_pulled_class3_effects().unwrap();
+        let s = scratch.worker();
+        assert_eq!(report.connections_scrubbed, 1);
+        assert_eq!(report.swept, 0, "the effect already did it");
+        assert_eq!(secret(s, w.a), None);
+        assert_eq!(cursors(s, w.a), 0);
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM connector_attention WHERE connection_id = x'{}'",
+                    hex(w.a)
+                )
+            ),
+            0
+        );
+        // The audit row is keyed by the pulled command; the live vault's own token-removed row
+        // (a stable audit row) was carried by the overlay and is still there.
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM audit_events WHERE event_type = '{CONNECTOR_SECRET_REMOVED_EVENT}'
+                      AND id = x'{}'",
+                    hex(remote_id)
+                )
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                s,
+                &format!(
+                    "SELECT COUNT(*) FROM audit_events WHERE event_type = '{CONNECTOR_SECRET_REMOVED_EVENT}'"
+                )
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn the_effects_run_once_and_only_after_the_overlay() {
+        let w = world();
+        drift(&w);
+        let image = w.live.capture_preservation().unwrap();
+        let mut scratch = w.live.rollback_to(5, &w.scratch).unwrap();
+        scratch.rebase_local(image.local()).unwrap();
+        assert!(matches!(
+            scratch.apply_pulled_class3_effects(),
+            Err(RebaseError::EffectsBeforeOverlay)
+        ));
+        scratch.overlay_class3(&image).unwrap();
+        scratch.apply_pulled_class3_effects().unwrap();
+        assert!(matches!(
+            scratch.apply_pulled_class3_effects(),
+            Err(RebaseError::EffectsAlreadyApplied)
+        ));
+    }
+
+    #[test]
+    fn the_sweep_scrubs_a_tombstoned_connection_no_pulled_command_named() {
+        let w = world();
+        drift(&w);
+        let (mut scratch, _remote) =
+            overlaid(&w, other_account(), &rename(w.account, "From device B"));
+        exec(
+            scratch.worker(),
+            "UPDATE connector_connections SET deleted_at = '2026-11-05T00:00:00Z' WHERE id = ?1",
+            params![w.a],
+        );
+        let report = scratch.apply_pulled_class3_effects().unwrap();
+        assert_eq!(report.swept, 1);
+        assert_eq!(secret(scratch.worker(), w.a), None);
+        assert_eq!(cursors(scratch.worker(), w.a), 0);
+        // Idempotent: the credential is gone, so a second sweep has nothing to do.
+        let guard = scratch.worker().lock();
+        let tx = guard.conn.unchecked_transaction().unwrap();
+        assert_eq!(crate::connectors::scrub_tombstoned_in(&tx).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_pulled_command_that_is_this_devices_own_accepted_one_does_not_clear_a_newer_watermark() {
+        let w = world();
+        drift(&w);
+        let (mut scratch, remote_id) = {
+            let issued = executor::issue(&w.live, meta(), other_account());
+            let device_b = other_device(&w.live, &w.dir);
+            let sealed = seal(device_b.worker(), &meta(), &unmap(w.a));
+            let remote_id = Uuid::from_bytes(sealed.plaintext.meta.command_id);
+            let image = w.live.capture_preservation().unwrap();
+            let mut scratch = w.live.rollback_to(5, &w.scratch).unwrap();
+            scratch.apply_pulled(&[sealed.pulled(6)]).unwrap();
+            scratch.rebase_local(image.local()).unwrap();
+            scratch.overlay_class3(&image).unwrap();
+            assert_ne!(issued.meta.command_id, remote_id);
+            (scratch, remote_id)
+        };
+        scratch.mark_pulled_own(remote_id);
+        let report = scratch.apply_pulled_class3_effects().unwrap();
+        assert_eq!(report.cursors_cleared, 0);
+        assert_eq!(
+            cursors(scratch.worker(), w.a),
+            1,
+            "the live vault already ran it; its newer watermark stands"
+        );
+    }
+
+    #[test]
+    fn the_classification_names_the_commands_that_touch_class_three() {
+        use crate::rebase::{effect_of, Class3Effect};
+        assert_eq!(
+            effect_of(&unmap(Uuid::nil())),
+            Class3Effect::ClearLinkCursor
+        );
+        assert_eq!(
+            effect_of(&WriteCommand::DeleteConnectorConnection { id: Uuid::nil() }),
+            Class3Effect::ScrubDeletedConnection
+        );
+        assert_eq!(
+            effect_of(&rename(AccountId::new(), "x")),
+            Class3Effect::None
+        );
+    }
+
+    #[test]
+    fn every_class_three_write_in_apply_has_an_effect() {
+        use crate::rebase::CLASS3_APPLY_SITES;
+        const MANIFEST: &str = include_str!("../../table_classes.toml");
+        let mut class_three = std::collections::BTreeSet::new();
+        for block in MANIFEST.split("[[table]]").skip(1) {
+            let field = |name: &str| {
+                block.lines().find_map(|line| {
+                    let (key, value) = line.split_once('=')?;
+                    (key.trim() == name).then(|| value.trim().trim_matches('"').to_owned())
+                })
+            };
+            if field("class").as_deref() == Some("3")
+                && field("kind").as_deref().unwrap_or("sqlite_table") == "sqlite_table"
+            {
+                class_three.insert(field("table").unwrap());
+            }
+        }
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/apply");
+        let mut found = std::collections::BTreeSet::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let code = source.split("#[cfg(test)]").next().unwrap();
+            let words: Vec<&str> = code
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| !w.is_empty())
+                .collect();
+            for (i, word) in words.iter().enumerate() {
+                let table = match *word {
+                    "INTO" | "UPDATE" => words.get(i + 1),
+                    "FROM" if i > 0 && words[i - 1] == "DELETE" => words.get(i + 1),
+                    _ => None,
+                };
+                if let Some(table) = table {
+                    if class_three.contains(*table) {
+                        found.insert((
+                            path.file_name().unwrap().to_str().unwrap().to_owned(),
+                            (*table).to_owned(),
+                        ));
+                    }
+                }
+            }
+        }
+        let listed: std::collections::BTreeSet<(String, String)> = CLASS3_APPLY_SITES
+            .iter()
+            .map(|(file, table, _)| ((*file).to_owned(), (*table).to_owned()))
+            .collect();
+        assert_eq!(
+            found, listed,
+            "an apply arm writes a class-3 table the registry does not cover (or the list is stale)"
+        );
+    }
+
+    struct Covers(Vec<crate::rebase::ClassOneBObject>);
+
+    impl crate::rebase::ClosureView for Covers {
+        fn covers(&self, object: &crate::rebase::ClassOneBObject) -> bool {
+            self.0.contains(object)
+        }
+    }
+
+    fn link_provenance(worker: &DbWorker, entity_type: &str, entity: Uuid, record: Uuid) {
+        exec(
+            worker,
+            "INSERT INTO source_provenance_links
+                (id, entity_type, entity_id, source_record_id, relationship, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'created_from', 't')",
+            params![Uuid::now_v7(), entity_type, entity, record],
+        );
+    }
+
+    fn rebuilt(w: &World) -> Scratch<'_> {
+        let (mut scratch, image) = ready(w);
+        scratch.overlay_class3(&image).unwrap();
+        scratch.apply_pulled_class3_effects().unwrap();
+        scratch
+    }
+
+    #[test]
+    fn a_rebuilt_vault_whose_class_1b_references_all_resolve_passes_the_closure_check() {
+        let w = world();
+        let scratch = rebuilt(&w);
+        let account = w.account.as_uuid();
+        link_provenance(scratch.worker(), "account", account, w.record);
+        let report = scratch
+            .check_class_1b_closure(&crate::rebase::NoRetainedClosure)
+            .unwrap();
+        assert_eq!(report.covered_by_view, 0);
+    }
+
+    #[test]
+    fn a_reference_to_a_source_record_the_vault_lacks_needs_a_rebootstrap_unless_the_closure_covers_it(
+    ) {
+        let w = world();
+        let scratch = rebuilt(&w);
+        link_provenance(scratch.worker(), "account", w.account.as_uuid(), w.record);
+        scratch
+            .worker()
+            .lock()
+            .conn
+            .execute_batch("PRAGMA foreign_keys = OFF;")
+            .unwrap();
+        exec(
+            scratch.worker(),
+            "DELETE FROM source_records WHERE id = ?1",
+            params![w.record],
+        );
+        let live_before = w.live.snapshot_bytes().unwrap();
+
+        let error = scratch
+            .check_class_1b_closure(&crate::rebase::NoRetainedClosure)
+            .unwrap_err();
+        let text = error.to_string();
+        assert!(!text.contains(&w.record.to_string()), "{text}");
+        let RebaseError::ArtifactRebootstrapRequired(evidence) = error else {
+            panic!("expected a rebootstrap, got {error:?}");
+        };
+        assert_eq!(evidence.missing.len(), 1);
+        assert_eq!(
+            (evidence.missing[0].kind, evidence.missing[0].rows.count),
+            ("source_record", 1)
+        );
+        assert!(evidence.scratch.exists(), "the evidence is kept");
+        assert_eq!(w.live.snapshot_bytes().unwrap(), live_before);
+
+        // The retained closure or the confirmed pin covers it: the check passes.
+        let covered = Covers(vec![crate::rebase::ClassOneBObject::SourceRecord(w.record)]);
+        let report = scratch.check_class_1b_closure(&covered).unwrap();
+        assert_eq!(report.covered_by_view, 1);
+    }
+
+    #[test]
+    fn a_provenance_link_to_an_entity_the_vault_lacks_is_a_missing_reference_too() {
+        let w = world();
+        let scratch = rebuilt(&w);
+        let absent = Uuid::now_v7();
+        link_provenance(scratch.worker(), "ledger_transaction", absent, w.record);
+        let RebaseError::ArtifactRebootstrapRequired(evidence) = scratch
+            .check_class_1b_closure(&crate::rebase::NoRetainedClosure)
+            .unwrap_err()
+        else {
+            panic!("expected a rebootstrap");
+        };
+        assert_eq!(evidence.missing[0].kind, "ledger_transaction");
+        assert!(evidence.describe().contains("re-bootstrap"));
+    }
+
+    #[test]
+    fn a_source_record_or_parser_run_whose_batch_is_gone_is_a_missing_batch() {
+        let w = world();
+        let scratch = rebuilt(&w);
+        scratch
+            .worker()
+            .lock()
+            .conn
+            .execute_batch("PRAGMA foreign_keys = OFF;")
+            .unwrap();
+        exec(
+            scratch.worker(),
+            "DELETE FROM source_batches WHERE id = ?1",
+            params![w.batch],
+        );
+        let RebaseError::ArtifactRebootstrapRequired(evidence) = scratch
+            .check_class_1b_closure(&crate::rebase::NoRetainedClosure)
+            .unwrap_err()
+        else {
+            panic!("expected a rebootstrap");
+        };
+        assert_eq!(evidence.missing[0].kind, "source_batch");
+        assert_eq!(evidence.missing[0].rows.count, 1);
+    }
+
+    #[test]
+    fn a_parser_run_whose_batch_is_gone_is_a_missing_batch_on_its_own() {
+        let w = world();
+        let scratch = rebuilt(&w);
+        let batch = Uuid::now_v7();
+        exec(
+            scratch.worker(),
+            "INSERT INTO source_batches (id, source_type, source_name, status, created_at, updated_at)
+             VALUES (?1, 'other', 'run only', 'staged', 't', 't')",
+            params![batch],
+        );
+        exec(
+            scratch.worker(),
+            "INSERT INTO parser_runs
+                (id, source_batch_id, parser_name, parser_version, status, started_at)
+             VALUES (?1, ?2, 'p', '1', 'ok', 't')",
+            params![Uuid::now_v7(), batch],
+        );
+        scratch
+            .worker()
+            .lock()
+            .conn
+            .execute_batch("PRAGMA foreign_keys = OFF;")
+            .unwrap();
+        exec(
+            scratch.worker(),
+            "DELETE FROM source_batches WHERE id = ?1",
+            params![batch],
+        );
+        let RebaseError::ArtifactRebootstrapRequired(evidence) = scratch
+            .check_class_1b_closure(&crate::rebase::NoRetainedClosure)
+            .unwrap_err()
+        else {
+            panic!("expected a rebootstrap");
+        };
+        assert_eq!(
+            (evidence.missing[0].kind, evidence.missing[0].rows.count),
+            ("source_batch", 1)
+        );
+    }
+
+    #[test]
+    fn the_decided_rows_of_an_import_still_in_progress_travel_with_it_and_a_finished_import_does_not(
+    ) {
+        let w = world();
+        let (batch, record, _staged) = in_flight_import(&w);
+        // A second record of the same import was already skipped; the import is still in progress.
+        let record2 = Uuid::now_v7();
+        exec(
+            &w.live,
+            "INSERT INTO source_records
+                (id, source_batch_id, external_id, source_hash, normalized_json,
+                 parse_confidence_bps, created_at)
+             VALUES (?1, ?2, 'ext2', 'hash2', '{}', 10000, 't')",
+            params![record2, batch],
+        );
+        let skipped = Uuid::now_v7();
+        stage(&w.live, record2, w.account, skipped, 10);
+        exec(
+            &w.live,
+            "UPDATE staged_transactions SET commit_status = 'skipped' WHERE id = ?1",
+            params![skipped],
+        );
+        let (mut scratch, image) = ready(&w);
+        scratch.overlay_class3(&image).unwrap();
+        assert_eq!(row_count(scratch.worker(), "source_records", record), 1);
+        assert_eq!(row_count(scratch.worker(), "source_records", record2), 1);
+
+        // An import whose every staged row is decided is not in progress: nothing of it is
+        // carried, so its staged rows have nothing to point at.
+        let w = world();
+        let (_batch, record, staged) = in_flight_import(&w);
+        exec(
+            &w.live,
+            "UPDATE staged_transactions SET commit_status = 'skipped' WHERE id = ?1",
+            params![staged],
+        );
+        let (mut scratch, image) = ready(&w);
+        let blocked = blocked(scratch.overlay_class3(&image).unwrap_err());
+        assert!(matches!(
+            blocked.cause,
+            BlockCause::MissingReference {
+                target: "source_records",
+                ..
+            }
+        ));
+        assert_eq!(row_count(scratch.worker(), "source_records", record), 0);
+    }
+}

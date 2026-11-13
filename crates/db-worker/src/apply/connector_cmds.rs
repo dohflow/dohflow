@@ -158,11 +158,23 @@ pub(crate) fn apply_set_connector_link_account(
             "unknown connector account link".to_owned(),
         ));
     }
+    clear_link_cursor(tx, connection_id, external_id)?;
+    Ok(*connection_id)
+}
+
+/// The class-3 half of a (re)mapping: forget this device's refresh watermark for the account. Shared
+/// with the rebase's registry of pulled class-3 effects (`rebase::effects`), so a device that
+/// rebuilds its vault from a pulled mapping does what a device that applied it live does.
+pub(crate) fn clear_link_cursor(
+    tx: &Connection,
+    connection_id: &Uuid,
+    external_id: &str,
+) -> Result<(), DbError> {
     tx.execute(
         "DELETE FROM connector_link_cursors WHERE connection_id = ?1 AND external_id = ?2",
         params![connection_id, external_id],
     )?;
-    Ok(*connection_id)
+    Ok(())
 }
 
 /// Applies [`WriteCommand::DeleteConnectorConnection`]: TOMBSTONE the identity (`deleted_at` =
@@ -184,10 +196,21 @@ pub(crate) fn apply_delete_connector_connection(
         "UPDATE connector_connections SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
         params![id, at],
     )?;
+    remove_local_connection_state(tx, meta, id)?;
+    Ok(*id)
+}
+
+/// The class-3 half of a delete: scrub this device's secret, cursors and notice for the connection
+/// and, if a token was removed, record the audit row ("token removed: connection deleted") keyed by
+/// the command so a replay cannot write it twice. Returns whether a token was removed. Shared with
+/// the rebase's registry of pulled class-3 effects (`rebase::effects`).
+pub(crate) fn remove_local_connection_state(
+    tx: &rusqlite::Transaction<'_>,
+    meta: &CommandMeta,
+    id: &Uuid,
+) -> Result<bool, DbError> {
     let had_secret = scrub_local_rows(tx, *id)?;
     if had_secret {
-        // The audit row ("token removed: connection deleted") is keyed by the command, so a
-        // replay of the same command cannot write it twice.
         tx.execute(
             "INSERT OR IGNORE INTO audit_events (id, event_type, command_id, correlation_id, created_at)
              VALUES (?1, ?2, ?1, ?3, ?4)",
@@ -195,9 +218,9 @@ pub(crate) fn apply_delete_connector_connection(
                 meta.command_id,
                 crate::connectors::CONNECTOR_SECRET_REMOVED_EVENT,
                 meta.correlation_id,
-                at
+                crate::apply::issued_at_text(meta)
             ],
         )?;
     }
-    Ok(*id)
+    Ok(had_secret)
 }

@@ -46,6 +46,15 @@ const KEYED_ID_LABEL: &[u8] = b"dohflow/keyed-id/v1";
 /// The domain label of [`DerivedIdKey::singleton_id`].
 const SINGLETON_ID_LABEL: &[u8] = b"dohflow/singleton-id/v1";
 
+/// The domain label of [`DerivedIdKey::provider_txn_id`] (ADR 0013 Addendum A, section 9).
+const PROVIDER_TXN_ID_LABEL: &[u8] = b"dohflow/provider-txn-id/v1";
+
+/// The domain label of [`DerivedIdKey::file_row_id`] (ADR 0013 Addendum A, section 12).
+const FILE_ROW_ID_LABEL: &[u8] = b"dohflow/file-row-id/v1";
+
+/// The longest provider account key or transaction id, in bytes (ADR 0013 Addendum A, section 9).
+pub const MAX_PROVIDER_COMPONENT_LEN: usize = 1024;
+
 /// How many ids one command may mint: ordinals `0..MAX_ORDINALS` fit `rand_a`'s 12 bits.
 pub const MAX_ORDINALS: u32 = 4096;
 
@@ -88,6 +97,100 @@ pub enum DerivedIdError {
     /// A genesis snapshot carried an id key that is not the one its vault id derives.
     #[error("the genesis id key does not match the key derived from the vault id")]
     GenesisKeyMismatch,
+    /// A provider identifier is empty, longer than 1,024 bytes, or holds a C0 control character or
+    /// DEL: the transaction has no provider identity (ADR 0013 Addendum A, section 9).
+    #[error("the provider {component} must be 1 to {MAX_PROVIDER_COMPONENT_LEN} bytes with no control character")]
+    ProviderComponentInvalid {
+        /// Which component failed: `"account key"` or `"transaction id"`.
+        component: &'static str,
+    },
+    /// A file fingerprint is not `sha256:` followed by 64 lowercase hexadecimal characters: the row
+    /// has no file-row identity (ADR 0013 Addendum A, section 12).
+    #[error(
+        "a file fingerprint must be \"sha256:\" followed by 64 lowercase hexadecimal characters"
+    )]
+    FileFingerprintInvalid,
+    /// A file row ordinal is zero: ordinals count from 1.
+    #[error("a file row ordinal counts from 1")]
+    RowOrdinalZero,
+}
+
+/// The content fingerprint of an imported file, as its 32 decoded digest bytes.
+///
+/// The stored form is the text `sha256:` plus 64 lowercase hexadecimal characters (the content
+/// fingerprint of `importer-core`, over the file's raw bytes only). [`Self::parse`] accepts exactly
+/// that form: an uppercase digest, another prefix, a different length, or no fingerprint at all (a
+/// connector batch) gives no file-row identity (ADR 0013 Addendum A, section 12).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileFingerprint([u8; 32]);
+
+impl FileFingerprint {
+    /// The fingerprint from its stored text form.
+    ///
+    /// # Errors
+    /// [`DerivedIdError::FileFingerprintInvalid`] for anything but `sha256:` and 64 lowercase hex.
+    pub fn parse(text: &str) -> Result<Self, DerivedIdError> {
+        let hex = text
+            .strip_prefix("sha256:")
+            .ok_or(DerivedIdError::FileFingerprintInvalid)?;
+        if hex.len() != 64 {
+            return Err(DerivedIdError::FileFingerprintInvalid);
+        }
+        let mut bytes = [0_u8; 32];
+        let (pairs, _) = hex.as_bytes().as_chunks::<2>();
+        for (slot, [high, low]) in bytes.iter_mut().zip(pairs) {
+            *slot = (lower_hex(*high)? << 4) | lower_hex(*low)?;
+        }
+        Ok(Self(bytes))
+    }
+
+    /// The fingerprint of 32 digest bytes.
+    #[must_use]
+    pub const fn from_digest(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// The 32 digest bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for FileFingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FileFingerprint(..)")
+    }
+}
+
+fn lower_hex(digit: u8) -> Result<u8, DerivedIdError> {
+    match digit {
+        b'0'..=b'9' => Ok(digit - b'0'),
+        b'a'..=b'f' => Ok(digit - b'a' + 10),
+        _ => Err(DerivedIdError::FileFingerprintInvalid),
+    }
+}
+
+/// A provider identifier: 1 to 1,024 bytes (a `&str` is already valid UTF-8) with no C0 control
+/// character and no DEL. Byte for byte as the adapter received it; nothing is folded or normalized.
+fn validate_provider_component(value: &str, component: &'static str) -> Result<(), DerivedIdError> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > MAX_PROVIDER_COMPONENT_LEN
+        || bytes.iter().any(|b| *b <= 0x1f || *b == 0x7f)
+    {
+        return Err(DerivedIdError::ProviderComponentInvalid { component });
+    }
+    Ok(())
+}
+
+/// The last step of every UUID version 8 derivation here: the first sixteen digest bytes with the
+/// version nibble set to 8 and the variant bits to `10`.
+fn uuid_v8_from_digest(digest: &[u8; 32]) -> Uuid {
+    let mut bytes: [u8; 16] = digest[..16].try_into().expect("sixteen bytes");
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
 }
 
 /// The per-vault, non-secret key that identifiers are derived under.
@@ -232,6 +335,76 @@ impl DerivedIdKey {
         bytes[6] = (bytes[6] & 0x0f) | 0x80;
         bytes[8] = (bytes[8] & 0x3f) | 0x80;
         Ok(Uuid::from_bytes(bytes))
+    }
+
+    /// The id of a PROVIDER transaction (ADR 0013 Addendum A, section 9): the same on every device
+    /// that fetches the transaction from the provider, whichever command carries it and whenever it
+    /// was fetched. Computed when the commit command is constructed and carried in its payload;
+    /// never derived from `issued_at`, a command id or an ordinal.
+    ///
+    /// ```text
+    /// message = u8(26) || "dohflow/provider-txn-id/v1" || connection_id.bytes
+    ///        || u16_be(len(account_key)) || account_key || u16_be(len(txn_id)) || txn_id
+    /// id      = HMAC-SHA256(id_key, message)[0..16] with the version nibble 8 and the variant bits 10
+    /// ```
+    ///
+    /// The two strings are used byte for byte as the adapter received them. The id carries no time,
+    /// so nothing may rely on `ORDER BY id` for creation order of provider-derived rows.
+    ///
+    /// # Errors
+    /// [`DerivedIdError::ProviderComponentInvalid`] if either string is empty, longer than 1,024
+    /// bytes, or holds a C0 control character or DEL. Such a transaction has no provider identity.
+    pub fn provider_txn_id(
+        &self,
+        connection_id: &Uuid,
+        account_key: &str,
+        txn_id: &str,
+    ) -> Result<Uuid, DerivedIdError> {
+        validate_provider_component(account_key, "account key")?;
+        validate_provider_component(txn_id, "transaction id")?;
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&self.0)
+            .expect("HMAC accepts a key of any length");
+        mac.update(&[u8::try_from(PROVIDER_TXN_ID_LABEL.len()).expect("label is 26 bytes")]);
+        mac.update(PROVIDER_TXN_ID_LABEL);
+        mac.update(connection_id.as_bytes());
+        for part in [account_key, txn_id] {
+            let length = u16::try_from(part.len()).expect("at most 1,024 bytes, checked above");
+            mac.update(&length.to_be_bytes());
+            mac.update(part.as_bytes());
+        }
+        Ok(uuid_v8_from_digest(&mac.finalize().into_bytes().into()))
+    }
+
+    /// The identity of one ROW of an imported FILE (ADR 0013 Addendum A, section 12), not the
+    /// ledger id of the transaction committed for it. Computed when the commit command is
+    /// constructed and carried in its payload; never derived from `issued_at`, a command id or an
+    /// ordinal.
+    ///
+    /// ```text
+    /// message = u8(22) || "dohflow/file-row-id/v1" || fingerprint (32 bytes) || u32_be(row_ordinal)
+    /// id      = HMAC-SHA256(id_key, message)[0..16] with the version nibble 8 and the variant bits 10
+    /// ```
+    ///
+    /// The row ordinal depends on the parser version and, for a routed import, on the account map,
+    /// so a consumer compares what the identity names rather than trusting it.
+    ///
+    /// # Errors
+    /// [`DerivedIdError::RowOrdinalZero`] for an ordinal of zero.
+    pub fn file_row_id(
+        &self,
+        fingerprint: &FileFingerprint,
+        row_ordinal: u32,
+    ) -> Result<Uuid, DerivedIdError> {
+        if row_ordinal == 0 {
+            return Err(DerivedIdError::RowOrdinalZero);
+        }
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&self.0)
+            .expect("HMAC accepts a key of any length");
+        mac.update(&[u8::try_from(FILE_ROW_ID_LABEL.len()).expect("label is 22 bytes")]);
+        mac.update(FILE_ROW_ID_LABEL);
+        mac.update(fingerprint.as_bytes());
+        mac.update(&row_ordinal.to_be_bytes());
+        Ok(uuid_v8_from_digest(&mac.finalize().into_bytes().into()))
     }
 
     /// The 32 key bytes.

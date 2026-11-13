@@ -26,7 +26,7 @@ A new mint is therefore a deliberate row here, in the same change.
 
 | File | Function | Mints | Class | Why it is not a derived id |
 | --- | --- | --- | --- | --- |
-| `connectors.rs` | `scrub_tombstoned_connector_secrets` | 2 | keep-class-3 | The post-rebase device-local cleanup writes a class-3 audit row for a system event; not reached from `apply_command`. |
+| `connectors.rs` | `scrub_tombstoned_in` | 2 | keep-class-3 | The device-local cleanup (after a rebase swap, and on the scratch vault before it) writes a class-3 audit row for a system event; not reached from `apply_command`. |
 | `connectors.rs` | `local_meta` | 2 | keep-caller | The producer's command metadata (a command id and a correlation id) for the connector writes, built at the `DbWorker` method; not a row `apply` writes and not reached from `apply_command`. |
 | `forecast_persist.rs` | `capture_snapshot` | 1 | keep-class-2 | A rebuilt forecast input snapshot (class 2). |
 | `forecast_persist.rs` | `persist_run_and_rows` | 1 | keep-class-2 | A rebuilt forecast run (class 2). |
@@ -50,8 +50,12 @@ A new mint is therefore a deliberate row here, in the same change.
 fails on any random or time-based mint, or SQLite random or clock function, in a reachable function. A
 reachable mint that cannot be derived is a row here: the function, the token, the call edge the row
 excuses (`root -> ... -> function`) and the bead that removes it. A row whose finding is gone fails as
-stale. There are none today. The linked workspace crates are scanned by token in the same test
-(`core-ids`, which defines the mint helpers, and `job-runtime` are named exceptions in the test).
+stale. There are none today. The linked workspace crates are scanned by token in the same test.
+`job-runtime` is a named exception (`personal-cfo-32fmp.4`: durable jobs run outside apply). `core-ids`
+has no wholesale exemption: only its `lib.rs` may name
+the tokens that define `monotonic_v7` (`new_v7`, `ContextV7`, `monotonic_v7`; `personal-cfo-0g528.3`),
+and a token beyond those, or an exception row whose token is gone, fails, so `derived.rs` and every
+derivation added there are scanned like any other crate.
 
 | Function | Token | Call edge | Bead |
 | --- | --- | --- | --- |
