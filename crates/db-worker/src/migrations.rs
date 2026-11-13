@@ -3359,6 +3359,10 @@ mod tests {
                 "no migration {version}"
             );
             assert!(super::writes_class_1_rows(*version));
+            assert!(
+                super::POST_UP.iter().any(|(v, _)| v == version),
+                "migration {version} is marked as writing class-1 rows but has no POST step"
+            );
         }
         assert_eq!(super::first_row_writing_migration_after(0), Some(76));
         assert_eq!(super::first_row_writing_migration_after(75), Some(76));

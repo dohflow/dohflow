@@ -2222,7 +2222,7 @@ build does not replicate, or omits one it does, is refused whole. A snapshot tha
 non-empty closure, an attachment row) is refused by the installer on its own and built whole by the
 bootstrap: its proof moves to the end of the build, after the closure is materialized. A snapshot of a **newer** schema is update-required and never installed; one of
 an equal or older schema installs by migrating the new vault to the snapshot's version first and to the
-build's afterwards, so no migration ever runs over rows it was not written for. **The one exception is
+build's afterwards, so no migration ever runs over rows it was not written for. **A snapshot below a row-writing migration is
 refused up front:** a snapshot of a schema below a migration that writes class-1 rows outside a command
 (a backfill; the build lists them in one place, and the armed-vault refusal reads the same list) is
 refused before anything is created, as a deterministic failure that names the snapshot's schema and that

@@ -461,8 +461,6 @@ pub(crate) struct CommitTarget {
     pub(crate) occurred_at: DateTime<Utc>,
 }
 
-/// Resolve the staged row's account, amount and date, or say which check it
-/// fails. The outer `Result` is a storage error, which always propagates.
 /// The instant a staged row's `posted_at` commits as: an RFC 3339 timestamp in UTC, or a bare date at
 /// noon UTC. The one parse, so the identity backfill's snapshot date is the date a commit would give.
 pub(crate) fn parse_staged_posted_at(posted_at: &str) -> Option<DateTime<Utc>> {
@@ -475,6 +473,8 @@ pub(crate) fn parse_staged_posted_at(posted_at: &str) -> Option<DateTime<Utc>> {
         .ok()
 }
 
+/// Resolve the staged row's account, amount and date, or say which check it
+/// fails. The outer `Result` is a storage error, which always propagates.
 pub(crate) fn commit_target(
     tx: &Connection,
     staged: &ingestion::StagedTransaction,
