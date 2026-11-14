@@ -4714,7 +4714,8 @@ mod tests {
         )
         .is_ok());
 
-        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 1);
+        // 75 (the live closure) sits above 74: stepping to 73 reverts both.
+        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 2);
         let columns: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('sync_artifacts')
@@ -4898,7 +4899,7 @@ mod tests {
             .unwrap();
         assert_eq!(index, 1);
 
-        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 1);
+        assert_eq!(migrate_down(&mut conn, 74).unwrap(), 1);
         let tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'sync_live_closure%'",
