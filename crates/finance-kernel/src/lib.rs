@@ -82,6 +82,8 @@ use observability::diagnostics::{
 };
 use uuid::Uuid;
 
+mod rebase_swap;
+pub use rebase_swap::RebaseRecovery;
 mod rekey;
 pub use rekey::RekeyRecovery;
 mod vault;
@@ -2932,6 +2934,27 @@ pub enum KernelError {
         /// The page size every vault uses.
         expected_page_size: u32,
     },
+    /// The live vault changed after the rebase was built from it (a command, a device-local write
+    /// or a staged import since the preservation was captured), so the rebuilt vault would drop
+    /// that change. Nothing was swapped and the vault is as it was; the rebase is built again
+    /// (personal-cfo-bxsbz.7).
+    #[error("the vault changed while the sync was being applied; nothing was swapped")]
+    RebaseLiveMovedOn,
+    /// The rebase is not finished, or the vault has no usable base image to swap in
+    /// (personal-cfo-bxsbz.7). Nothing was swapped.
+    #[error("the sync is not ready to be swapped in")]
+    RebaseNotReady,
+    /// A rebase swap was interrupted and its journal is still on disk: the vault is settled by
+    /// opening it through the vault controller (which finishes or undoes the swap), never by a
+    /// direct unlock (personal-cfo-bxsbz.7).
+    #[error("a sync swap was interrupted; reopen the vault to finish or undo it")]
+    RebaseInProgress,
+    /// A key-rotation journal and a rebase-swap journal are both on disk. The two protocols are
+    /// mutually exclusive, so the vault is not opened and nothing was changed or deleted: this is
+    /// a state only a fault can produce, and it needs a person's recovery (personal-cfo-bxsbz.7,
+    /// F9).
+    #[error("a key rotation and a sync swap were both interrupted; the vault was left as it is")]
+    ConflictingJournals,
     /// A vault state transition not permitted by the §6.2.1 state machine
     /// (`personal-cfo-tg5`).
     #[error("illegal vault transition from {from:?} to {to:?}")]
@@ -2951,6 +2974,18 @@ impl From<vault_crypto::VaultCryptoError> for KernelError {
             E::KeyUnwrap => KernelError::VaultUnlockFailed,
             // Everything else is an internal/format failure; flatten to text.
             other => KernelError::Vault(other.to_string()),
+        }
+    }
+}
+
+impl From<db_worker::rebase::RebaseError> for KernelError {
+    fn from(error: db_worker::rebase::RebaseError) -> Self {
+        use db_worker::rebase::RebaseError as E;
+        match error {
+            E::LiveMovedOn => KernelError::RebaseLiveMovedOn,
+            E::NotReadyToSwap | E::NoUsableBase(_) => KernelError::RebaseNotReady,
+            E::Db(error) => error.into(),
+            other => KernelError::Persistence(other.to_string()),
         }
     }
 }
@@ -3052,6 +3087,91 @@ impl Kernel {
     #[must_use]
     pub fn close_into_lease(self) -> VaultLease {
         self.worker.close_into_lease()
+    }
+
+    /// Start a rebase: roll back to the base image (`target_seq` must be the recorded base seq)
+    /// into the scratch vault at the place the swap expects it (`sync/rebase-scratch.db`, beside
+    /// the vault, so installing it is a rename). The live vault is only read. The scratch vault
+    /// borrows this kernel, so the kernel cannot be locked, rotated or swapped until the rebase is
+    /// finished with [`db_worker::rebase::Scratch::into_swap`] or dropped
+    /// (personal-cfo-bxsbz.7).
+    ///
+    /// # Errors
+    /// [`KernelError::RebaseNotReady`] when there is no usable base, or [`KernelError::Persistence`]
+    /// for any other refusal of the rollback.
+    pub fn rollback_to_base(
+        &self,
+        target_seq: i64,
+    ) -> Result<db_worker::rebase::Scratch<'_>, KernelError> {
+        let scratch = db_worker::base_image::rebase_scratch_path(self.worker.db_path());
+        Ok(self.worker.rollback_to(target_seq, &scratch)?)
+    }
+
+    /// Read everything a rebase must carry over from the live vault, for
+    /// [`db_worker::rebase::Scratch::overlay_class3`] and
+    /// [`VaultController::swap_rebased`], which refuses the swap if the live vault moved on since.
+    ///
+    /// # Errors
+    /// [`KernelError::Persistence`] if the vault cannot be read.
+    pub fn capture_rebase_preservation(
+        &self,
+    ) -> Result<db_worker::rebase::Preservation, KernelError> {
+        Ok(self.worker.capture_preservation()?)
+    }
+
+    /// Remove a rebase's working files: the rebuilt vault, the new base image, trial copies and the
+    /// runner-lock sidecars under `sync/rebase-*`. The caller drops its
+    /// [`db_worker::rebase::Scratch`] first (a rebase that stops after `rebase_local`, a block, an
+    /// overlay error or an error inside `into_swap` leaves them behind, and each is a full copy of the
+    /// vault under the current key). A swap that ends or is refused removes them itself
+    /// ([`VaultController::swap_rebased`]), and every open and every rotation's prepare removes any
+    /// that are left. Returns how many files it removed. Never touches `base.db`, `pre-rebase.db` or
+    /// the saved snapshots.
+    ///
+    /// # Errors
+    /// [`KernelError::Vault`] if the directory cannot be listed or a file cannot be removed.
+    pub fn abandon_rebase(&self) -> Result<usize, KernelError> {
+        db_worker::base_image::remove_rebase_artifacts(self.worker.db_path())
+            .map_err(|error| KernelError::Vault(format!("removing rebase files: {error}")))
+    }
+
+    /// Remove `sync/pre-rebase.db`, the vault a rebase swap replaced, which the swap keeps until
+    /// the next accepted push (ADR 0074 decision 2; personal-cfo-bxsbz.7). The caller is the sync
+    /// push path, which is not wired yet (its bead, per planning's 2026-11-11 ruling on
+    /// personal-cfo-bxsbz.7): it must call this once the service has accepted a push after the swap,
+    /// because from then on the rebased vault is the device's history and the previous one is only
+    /// a full copy of the data (connector credentials included) that must not linger. Until then
+    /// the copy stays. Returns whether a copy existed. A missing copy is not an error, and nothing
+    /// else under `sync/` is touched.
+    ///
+    /// # Errors
+    /// [`KernelError::Vault`] if the file cannot be removed or the directory cannot be synced.
+    pub fn discard_pre_rebase_copy(&self) -> Result<bool, KernelError> {
+        let image = db_worker::base_image::pre_rebase_path(self.worker.db_path());
+        let existed = image.exists();
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let mut name = image.clone().into_os_string();
+            name.push(suffix);
+            match std::fs::remove_file(&name) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(KernelError::Vault(format!(
+                        "removing the previous vault copy: {error}"
+                    )))
+                }
+            }
+        }
+        if existed {
+            if let Some(dir) = image.parent() {
+                std::fs::File::open(dir)
+                    .and_then(|d| d.sync_all())
+                    .map_err(|error| {
+                        KernelError::Vault(format!("syncing the sync directory: {error}"))
+                    })?;
+            }
+        }
+        Ok(existed)
     }
 
     /// Build a kernel over an already-open db-worker.
@@ -5041,6 +5161,8 @@ pub fn failure_category(error: &KernelError) -> FailureCategory {
         | KernelError::VaultUnlockFailed
         | KernelError::ReleasedUnlock(_)
         | KernelError::Vault(_)
+        | KernelError::RebaseInProgress
+        | KernelError::ConflictingJournals
         | KernelError::IllegalVaultTransition { .. } => FailureCategory::Vault,
         _ => FailureCategory::Internal,
     }

@@ -363,9 +363,14 @@ rule is therefore **re-encrypt, never refuse**: a non-empty outbox does not bloc
   can re-run it from any interruption, including between the two images.
 - **A capture that died before its strip** leaves `sync/base.db.tmp` (and any SQLite side file):
   a full copy of the vault, connector secrets included. Prepare removes it before anything is
-  re-encrypted, under the same gate that keeps a capture from recreating it, and every open
-  removes it too (the vault lease means no capture is running then), so no copy under the retired
-  key survives a rotation.
+  re-encrypted, and holds the base gate (the lock every capture holds for its whole run) from before
+  the copy of the vault until the images are re-encrypted and recorded, so no capture lands between
+  the two copies. From prepare to the apply, the controller's exclusive borrow of the kernel (the
+  worker is owned by value and never shared) keeps every capture out, and the apply closes the
+  worker. A rebase's working files (`sync/rebase-*`) are removed by prepare too, and a rotation
+  refuses to prepare while a rebase journal exists (`personal-cfo-bxsbz.7`). Every open removes the
+  capture's leftover as well (the vault lease means no capture is running then), so no copy under
+  the retired key survives a rotation.
 - **Rollback** removes both `.rekey-new` copies whether or not the journal names them.
 - **Disk space** (section 5) counts the images, since they are re-encrypted beside the live ones.
 - **Delete** removes the whole `sync/` directory, and **restore** clears any stale one at its
@@ -382,6 +387,7 @@ never reads them (class-4 rows are materialized from the live vault, not restore
 - `personal-cfo-7ie.17` (keys through `sqlite3_key_v2`; Addendum A)
 - `personal-cfo-bxsbz.2` (the vault lease across apply, recovery, delete and restore; Addendum B)
 - `personal-cfo-bxsbz.3` (the Sync images across a rotation; Addendum C)
+- `personal-cfo-bxsbz.7` (the rebase swap never overlaps a rotation; the base gate across prepare; Addendum C)
 - `personal-cfo-2y8` (implementation)
 - `personal-cfo-g3m.5` (engine remediation; implementation follows it)
 - `personal-cfo-zxq` (password change — the KEK-only re-wrap this extends)

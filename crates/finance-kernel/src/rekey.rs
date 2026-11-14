@@ -608,11 +608,23 @@ pub(crate) fn prepare_and_commit(
             "a previous key rotation was not cleaned up; reopen the vault first".to_owned(),
         ));
     }
+    // The rotation and a rebase swap never overlap (personal-cfo-bxsbz.7): a rebase journal means a
+    // swap is half done, and re-encrypting the files it is moving would split them across two keys.
+    if crate::rebase_swap::journal_present(&paths.db) {
+        return Err(KernelError::RebaseInProgress);
+    }
 
     let needed = rotation_space_needed(kernel, &paths)?;
     check_space(needed, db_worker::available_space(paths.dir())?)?;
 
-    let result = prepare_inner(kernel, password, &paths, stop);
+    // The base gate (the lock every capture holds for its whole run) is held from before the copy
+    // of the vault until the images are re-encrypted and recorded, so no capture lands between the
+    // two copies (bxsbz.7, rule 1). From prepare to the apply, the controller's exclusive borrow of
+    // the kernel keeps every capture out (the worker is owned by value, never shared), and the
+    // apply closes the worker.
+    let hold = kernel.worker.hold_base_gate();
+    let result = prepare_inner(kernel, password, &paths, &hold, stop);
+    drop(hold);
     if let Err(error) = &result {
         if !is_simulated_crash(error) {
             let journal = read_journal(&paths).ok().flatten();
@@ -641,6 +653,7 @@ fn prepare_inner(
     kernel: &Kernel,
     password: &[u8],
     paths: &RekeyPaths,
+    hold: &db_worker::base_image::BaseGateHold<'_>,
     stop: Option<CrashPoint>,
 ) -> Result<(), KernelError> {
     let new_dek = generate_dek()?;
@@ -665,7 +678,7 @@ fn prepare_inner(
     // copy of the vault records the new base digest (bxsbz.3).
     let images = kernel
         .worker
-        .prepare_rekeyed_images(&new_dek, &paths.new_db)?
+        .prepare_rekeyed_images_held(&new_dek, &paths.new_db, hold)?
         .into_iter()
         .map(|RekeyedImage { file, new_sha256 }| ImageRecord {
             file: file.to_owned(),

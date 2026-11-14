@@ -384,17 +384,30 @@ impl DbWorker {
         target_seq: i64,
         scratch_path: &Path,
     ) -> Result<Scratch<'_>, RebaseError> {
+        // The status check and the copy of `base.db` are one hold of the base gate, the gate every
+        // capture and every key rotation holds for its whole run: the Sync loop cannot advance the
+        // base between the two, so the copy is the base the check vouched for (bxsbz.4 review F3).
+        // Only the rollback holds it, so a rebase never blocks a capture for its replay.
+        let _one_at_a_time = self
+            .base_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let base_seq = match self.base_image_status()? {
             BaseImageStatus::Ready { base_seq } => base_seq,
             other => return Err(RebaseError::NoUsableBase(other)),
         };
+        #[cfg(test)]
+        crate::base_image::observe::at("rollback-checked");
         if target_seq != base_seq {
             return Err(RebaseError::TargetNotTheBase {
                 requested: target_seq,
                 base_seq,
             });
         }
-        self.scratch_from(&base_image_path(&self.path), base_seq, scratch_path)
+        let scratch = self.scratch_from(&base_image_path(&self.path), base_seq, scratch_path)?;
+        #[cfg(test)]
+        crate::base_image::observe::at("rollback-copied");
+        Ok(scratch)
     }
 
     /// A scratch vault built from a base image **other than this vault's own** (the genesis gap's

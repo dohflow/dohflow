@@ -23,6 +23,7 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
+use db_worker::rebase::{Preservation, SwapInputs};
 use db_worker::{DbError, DbWorker, IntegrityOutcome, VaultLease, WorkerState};
 use subtle::ConstantTimeEq;
 use vault_crypto::{
@@ -31,6 +32,7 @@ use vault_crypto::{
     RELEASED_LEN,
 };
 
+use crate::rebase_swap::{self, RebaseRecovery, SwapPaths};
 use crate::rekey::{self, CrashPoint, RekeyPaths, RekeyRecovery};
 use crate::{Kernel, KernelError, ReleasedUnlockError};
 
@@ -91,6 +93,20 @@ fn remove_if_present(path: &Path) -> Result<(), KernelError> {
             path.display()
         ))),
     }
+}
+
+/// Refuse to open a vault whose rebase-swap journal is still on disk: the swap is settled (finished
+/// or undone) by the vault controller before it classifies the vault, never by a direct unlock, and
+/// a rotation journal beside it means the two protocols are both interrupted, which only a fault
+/// produces. Nothing is changed either way (personal-cfo-bxsbz.7, F9).
+fn refuse_unsettled_journals(db_path: &Path) -> Result<(), KernelError> {
+    if !rebase_swap::journal_present(db_path) {
+        return Ok(());
+    }
+    if rekey::journal_present(db_path) {
+        return Err(KernelError::ConflictingJournals);
+    }
+    Err(KernelError::RebaseInProgress)
 }
 
 impl Kernel {
@@ -189,6 +205,7 @@ impl Kernel {
         options: UnlockOptions,
         lease: Option<VaultLease>,
     ) -> Result<Self, KernelError> {
+        refuse_unsettled_journals(db_path)?;
         let sidecar = sidecar_path(db_path);
 
         let bytes = match std::fs::read(&sidecar) {
@@ -277,6 +294,7 @@ impl Kernel {
         options: UnlockOptions,
     ) -> Result<Self, KernelError> {
         let db_path = path.as_ref();
+        refuse_unsettled_journals(db_path)?;
         // A rotation journal means the database and envelope may be a half-rotated pair; the
         // vault controller recovers it when it opens. Never probe that pair: the item would
         // look stale or wrong and be deleted for a fault that is not its own.
@@ -918,14 +936,15 @@ impl VaultState {
 /// exactly one → [`CorruptNeedsRecovery`](VaultState::CorruptNeedsRecovery) (an
 /// interrupted create, or a DB whose envelope was lost — unopenable as-is).
 ///
-/// A key-rotation journal still on disk (ADR 0083 §4) also means
-/// `CorruptNeedsRecovery`: [`VaultController::open`] runs rotation recovery
-/// first, and a journal survives it only when the files contradict it.
+/// A key-rotation journal or a rebase-swap journal still on disk (ADR 0083 §4,
+/// `personal-cfo-bxsbz.7`) also means `CorruptNeedsRecovery`: [`VaultController::open`] runs both
+/// recoveries first, and a journal survives them only when the files contradict it (or when both
+/// journals are present, which neither recovery acts on).
 /// Classification itself never modifies the disk.
 #[must_use]
 pub fn classify_vault(path: impl AsRef<Path>) -> VaultState {
     let db_path = path.as_ref();
-    if rekey::journal_present(db_path) {
+    if rekey::journal_present(db_path) || rebase_swap::journal_present(db_path) {
         return VaultState::CorruptNeedsRecovery;
     }
     classify_files(db_path)
@@ -986,23 +1005,41 @@ pub struct VaultController {
     kernel: Option<Kernel>,
     /// What startup recovery did with an interrupted key rotation.
     rekey_recovery: RekeyRecovery,
+    /// What startup recovery did with an interrupted rebase swap.
+    rebase_recovery: RebaseRecovery,
 }
 
-/// [`rekey::recover_interrupted_rekey`] under the vault's lease, so a second process starting
-/// while the first is running, rotating or deleting never rolls its files back or forward
-/// (personal-cfo-bxsbz.2). When another process holds the vault nothing is touched and the result
-/// is [`RekeyRecovery::Deferred`]. A lock that cannot be taken for another reason (no directory
-/// yet, a read-only one) is not a reason to skip recovery: there is then no owner to protect.
-fn recover_under_lease(path: &Path) -> RekeyRecovery {
+/// Startup recovery under the vault's lease, so a second process starting while the first is
+/// running, rotating, swapping or deleting never rolls its files back or forward
+/// (personal-cfo-bxsbz.2). When another process holds the vault nothing is touched and both results
+/// are `Deferred`. A lock that cannot be taken for another reason (no directory yet, a read-only
+/// one) is not a reason to skip recovery: there is then no owner to protect.
+///
+/// The key rotation's recovery ([`rekey::recover_interrupted_rekey`]) and the rebase swap's
+/// ([`rebase_swap::recover_interrupted_rebase`]) are mutually exclusive: if both journals are
+/// present neither runs, nothing is touched, and the vault stays unopened
+/// ([`KernelError::ConflictingJournals`]).
+fn recover_under_lease(path: &Path) -> (RekeyRecovery, RebaseRecovery) {
     match VaultLease::acquire(path) {
-        Err(DbError::VaultInUse) => RekeyRecovery::Deferred,
-        Ok(_lease) => rekey::recover_interrupted_rekey(path),
-        Err(_) => rekey::recover_interrupted_rekey(path),
+        Err(DbError::VaultInUse) => (RekeyRecovery::Deferred, RebaseRecovery::Deferred),
+        Ok(_lease) => recover_files(path),
+        Err(_) => recover_files(path),
     }
+}
+
+fn recover_files(path: &Path) -> (RekeyRecovery, RebaseRecovery) {
+    if rekey::journal_present(path) && rebase_swap::journal_present(path) {
+        return (RekeyRecovery::Contradiction, RebaseRecovery::BothJournals);
+    }
+    (
+        rekey::recover_interrupted_rekey(path),
+        rebase_swap::recover_interrupted_rebase(path),
+    )
 }
 
 /// The state to enter after recovery: from the files alone when recovery was deferred.
 fn classify_after(path: &Path, recovery: RekeyRecovery) -> VaultState {
+    // Both recoveries are deferred together (one lease), so the rotation's answer stands for both.
     if recovery == RekeyRecovery::Deferred {
         classify_files(path)
     } else {
@@ -1021,14 +1058,22 @@ impl VaultController {
     #[must_use]
     pub fn open(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref().to_path_buf();
-        let rekey_recovery = recover_under_lease(&path);
+        let (rekey_recovery, rebase_recovery) = recover_under_lease(&path);
         let state = classify_after(&path, rekey_recovery);
         Self {
             path,
             state,
             kernel: None,
             rekey_recovery,
+            rebase_recovery,
         }
+    }
+
+    /// What startup recovery did with an interrupted rebase swap when this controller was opened
+    /// (or last re-pointed at a vault).
+    #[must_use]
+    pub fn rebase_recovery(&self) -> RebaseRecovery {
+        self.rebase_recovery
     }
 
     /// What startup recovery did with an interrupted key rotation when this
@@ -1059,6 +1104,16 @@ impl VaultController {
         self.kernel.as_ref()
     }
 
+    /// The typed refusal for a vault that startup recovery could not settle because a rebase-swap
+    /// journal is still on disk (alone, or beside a rotation journal). Only a vault classified as
+    /// needing recovery is asked, so a healthy `Locked` vault never reads the disk here.
+    fn refuse_unsettled_journals(&self) -> Result<(), KernelError> {
+        if self.state == VaultState::CorruptNeedsRecovery {
+            return refuse_unsettled_journals(&self.path);
+        }
+        Ok(())
+    }
+
     /// Apply a happy-path transition, rejecting edges the state machine forbids.
     fn transition_to(&mut self, next: VaultState) -> Result<(), KernelError> {
         if !self.state.can_transition_to(next) {
@@ -1082,7 +1137,7 @@ impl VaultController {
     /// wherever the controller starts treating a vault path as current without
     /// going through [`Self::open`] — a switch, or a failed restore.
     fn recover_and_reclassify(&mut self) {
-        self.rekey_recovery = recover_under_lease(&self.path);
+        (self.rekey_recovery, self.rebase_recovery) = recover_under_lease(&self.path);
         self.state = classify_after(&self.path, self.rekey_recovery);
     }
 
@@ -1130,6 +1185,7 @@ impl VaultController {
         password: &[u8],
         options: UnlockOptions,
     ) -> Result<(), KernelError> {
+        self.refuse_unsettled_journals()?;
         self.transition_to(VaultState::Unlocking)?;
         match Kernel::unlock_vault_with_options(&self.path, password, options) {
             Ok(kernel) => {
@@ -1159,6 +1215,7 @@ impl VaultController {
         released: SecretBytes<RELEASED_LEN>,
         options: UnlockOptions,
     ) -> Result<(), KernelError> {
+        self.refuse_unsettled_journals()?;
         self.transition_to(VaultState::Unlocking)?;
         match Kernel::unlock_vault_with_dek_options(&self.path, released, options) {
             Ok(kernel) => {
@@ -1334,6 +1391,116 @@ impl VaultController {
         }
     }
 
+    /// Swap in a finished rebase (personal-cfo-bxsbz.7; ADR 0074 decision 2): the rebuilt vault
+    /// `inputs` names replaces the live vault, the new base image replaces `sync/base.db`, and the
+    /// previous live vault is kept as `sync/pre-rebase.db`. Requires `Unlocked`; ends `Unlocked` on
+    /// the rebuilt vault, the same key, with the controller's lease held throughout.
+    ///
+    /// `captured` is what the rebase carried over from the live vault
+    /// ([`Kernel::capture_rebase_preservation`]); the swap refuses if the live vault moved on since
+    /// ([`KernelError::RebaseLiveMovedOn`]), and nothing changes. Otherwise the live vault is frozen
+    /// (`sync_base` records `Rebasing`), closed, and the swap runs as a journaled, `fsync`'d rename
+    /// sequence under the vault lease: a crash at any step is finished or undone by the next
+    /// [`VaultController::open`] (see `rebase_swap`). A failure before the commit point leaves the
+    /// live vault as it was (and `Unlocked`); a failure after it finishes or reports the swap
+    /// through recovery.
+    ///
+    /// The rebase's [`Scratch`](db_worker::rebase::Scratch) borrows the kernel, so it is consumed
+    /// (`Scratch::into_swap`) before this `&mut self` call.
+    ///
+    /// # Errors
+    /// [`KernelError::IllegalVaultTransition`] if the vault is not `Unlocked`;
+    /// [`KernelError::RebaseLiveMovedOn`] or [`KernelError::RebaseNotReady`] (nothing changed);
+    /// [`KernelError::Vault`] / [`KernelError::Persistence`] on an I/O or database failure.
+    pub fn swap_rebased(
+        &mut self,
+        inputs: &SwapInputs,
+        captured: &Preservation,
+    ) -> Result<(), KernelError> {
+        self.swap_rebased_with(inputs, captured, None)
+    }
+
+    /// [`Self::swap_rebased`] with a test-only crash point: at `stop` the swap returns immediately,
+    /// leaving the files as a process death would.
+    pub(crate) fn swap_rebased_with(
+        &mut self,
+        inputs: &SwapInputs,
+        captured: &Preservation,
+        stop: Option<rebase_swap::CrashPoint>,
+    ) -> Result<(), KernelError> {
+        self.transition_to(VaultState::Rekeying)?;
+        let Some(kernel) = self.kernel.take() else {
+            self.state = VaultState::Unlocked;
+            return Err(KernelError::Vault(
+                "a sync swap requires an unlocked vault".to_owned(),
+            ));
+        };
+        // Freeze the live vault: still what the rebase was built from, `Rebasing` recorded, the WAL
+        // folded in. A refusal changes nothing.
+        let frozen = kernel
+            .worker
+            .swap_key()
+            .map_err(KernelError::from)
+            .and_then(|key| {
+                kernel.worker.begin_swap(captured)?;
+                Ok(key)
+            });
+        let key = match frozen {
+            Ok(key) => key,
+            Err(error) => {
+                self.kernel = Some(kernel);
+                self.transition_to(VaultState::Unlocked)?;
+                // The swap is abandoned, and the rebuilt vault is a full copy of the vault under
+                // the current key: its files go now (the rebase is built again), the runner-lock
+                // sidecars of the scratch and trial vaults with them. Best effort: the next open
+                // removes what is left.
+                let _ = db_worker::base_image::remove_rebase_artifacts(&self.path);
+                return Err(error);
+            }
+        };
+        // Close the kernel into the lease: the journal, the renames and the reopen run under it, so
+        // a second process never finds the vault unowned while its files are half-swapped.
+        let Kernel {
+            worker,
+            diagnostics,
+        } = kernel;
+        let lease = worker.close_into_lease();
+        #[cfg(test)]
+        rekey::observe::at("rebase:closed");
+
+        let applied = rebase_swap::prepare_and_commit(&self.path, inputs, stop)
+            .and_then(|()| rebase_swap::finish_swap(&self.path, stop));
+        let failure = match applied {
+            Ok(()) => None,
+            // A simulated crash leaves the files and the controller as a process death would.
+            Err(error) if rebase_swap::is_simulated_crash(&error) => return Err(error),
+            Err(error) => {
+                // Before the commit point the swap was already undone; after it, recovery under the
+                // lease finishes it (or reports a contradiction and leaves the journal).
+                self.rebase_recovery = rebase_swap::recover_interrupted_rebase(&self.path);
+                if rebase_swap::journal_present(&self.path) {
+                    self.state = classify_vault(&self.path);
+                    return Err(error);
+                }
+                Some(error)
+            }
+        };
+        match DbWorker::reopen_after_swap(&self.path, key, lease) {
+            Ok(worker) => {
+                self.kernel = Some(Kernel {
+                    worker,
+                    diagnostics,
+                });
+                self.transition_to(VaultState::Unlocked)?;
+                failure.map_or(Ok(()), Err)
+            }
+            Err(error) => {
+                self.transition_to(VaultState::Locked)?;
+                Err(failure.unwrap_or_else(|| error.into()))
+            }
+        }
+    }
+
     /// Permanently delete the vault (personal-cfo-j0cg.5): drop the in-memory kernel (zeroizing the
     /// DEK) and remove the vault's files from disk — the DB, its `.envelope` sidecar (the unlock
     /// material), the SQLite WAL/SHM, and the blob store — leaving the controller in `NoVault`.
@@ -1376,6 +1543,10 @@ impl VaultController {
         let _ = std::fs::remove_dir_all(db_worker::base_image::sync_dir(&db));
         // Key-rotation artifacts (ADR 0083): best-effort like the side files.
         for artifact in RekeyPaths::new(&db).all_artifacts() {
+            let _ = std::fs::remove_file(artifact);
+        }
+        // Rebase-swap artifacts beside the vault (the files under `sync/` went with that folder).
+        for artifact in SwapPaths::new(&db).all_artifacts() {
             let _ = std::fs::remove_file(artifact);
         }
 
