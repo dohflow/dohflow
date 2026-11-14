@@ -1,4 +1,4 @@
-//! The migration to schema version 76 (personal-cfo-0g528.3, ADR 0074 Addendum J item 7): the guard
+//! The migration to schema version 77 (personal-cfo-0g528.3, ADR 0074 Addendum J item 7): the guard
 //! that refuses an armed vault, and the backfill of `import_identities` for what a vault imported
 //! before cross-device identity existed.
 //!
@@ -79,7 +79,7 @@ enum Kind {
     },
 }
 
-/// The PRE step of migration 76: refuse on a vault where Sync is armed.
+/// The PRE step of migration 77: refuse on a vault where Sync is armed.
 ///
 /// # Errors
 /// [`DbError::MigrationRefusedSyncArmed`] when a `sync_base` or a `sync_genesis` row exists; the
@@ -107,7 +107,7 @@ fn armed_case(conn: &Connection) -> rusqlite::Result<Option<&'static str>> {
     Ok(None)
 }
 
-/// The POST step of migration 76: the backfill. A fresh vault has no `vault_metadata` row yet and
+/// The POST step of migration 77: the backfill. A fresh vault has no `vault_metadata` row yet and
 /// nothing to backfill.
 pub(crate) fn migrate_up(conn: &Connection) -> rusqlite::Result<()> {
     let report = backfill(conn)?;
@@ -429,7 +429,7 @@ fn write_resolved(
 
 #[cfg(test)]
 mod tests {
-    //! The refusal and the backfill, driven at the schema before 76 and migrated.
+    //! The refusal and the backfill, driven at the schema before 77 and migrated.
 
     use super::*;
     use crate::migrations::{apply, migrate_down, MIGRATIONS};
@@ -446,14 +446,14 @@ mod tests {
         Uuid::from_u128(n)
     }
 
-    /// A vault at schema 75 with a household vault id and one account.
+    /// A vault at schema 76 with a household vault id and one account.
     fn before() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
-        apply(&mut conn, &MIGRATIONS[..75]).unwrap();
+        apply(&mut conn, &MIGRATIONS[..76]).unwrap();
         conn.execute(
             "INSERT INTO vault_metadata (singleton, vault_id, schema_version, envelope_version,
                  kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism, created_at)
-             VALUES (1, ?1, 75, 1, 'argon2id', 1, 1, 1, 't')",
+             VALUES (1, ?1, 76, 1, 'argon2id', 1, 1, 1, 't')",
             [uid(VAULT)],
         )
         .unwrap();
@@ -813,7 +813,7 @@ mod tests {
             conn.execute(sql, []).unwrap();
             let error = apply(&mut conn, MIGRATIONS).unwrap_err();
             assert!(
-                matches!(&error, DbError::MigrationRefusedSyncArmed { version: 76, case: c } if *c == case),
+                matches!(&error, DbError::MigrationRefusedSyncArmed { version: 77, case: c } if *c == case),
                 "{error:?}"
             );
             assert!(error.to_string().contains(case));
@@ -829,7 +829,7 @@ mod tests {
             let latest: i64 = conn
                 .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(latest, 75);
+            assert_eq!(latest, 76);
         }
     }
 
@@ -931,14 +931,14 @@ mod tests {
             [],
         )
         .unwrap();
-        assert!(migrate_down(&mut conn, 75).is_err());
+        assert!(migrate_down(&mut conn, 76).is_err());
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM import_dispositions", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 1, "a refused down drops no row");
         conn.execute("DELETE FROM import_dispositions", []).unwrap();
-        // The refused down left the vault at 76 (77's own down had already run); now it can go.
-        assert_eq!(migrate_down(&mut conn, 75).unwrap(), 1);
+        // The refused down left the vault at 77 (78's own down had already run); now it can go.
+        assert_eq!(migrate_down(&mut conn, 76).unwrap(), 1);
         assert_eq!(apply(&mut conn, MIGRATIONS).unwrap(), 2, "and up again");
     }
 }

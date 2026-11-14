@@ -393,3 +393,22 @@ pub fn loaded_verified_mark(conn: &Connection) -> Result<Option<VerifiedMark>, G
         verified_mark_of(&state, 1).ok_or(GenesisStoreError::Corrupt)?,
     ))
 }
+
+impl crate::DbWorker {
+    /// Whether Sync is being enabled on this vault: a genesis is persisted and not yet published (its
+    /// state is `Persisted` or `Installed`).
+    ///
+    /// # Errors
+    /// [`crate::DbError`] if the vault cannot be read.
+    pub fn genesis_in_flight(&self) -> Result<bool, crate::DbError> {
+        let conn = self.read_connection()?;
+        let state: Option<String> = conn
+            .query_row(
+                "SELECT state FROM sync_genesis WHERE singleton = 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(matches!(state.as_deref(), Some("Persisted" | "Installed")))
+    }
+}

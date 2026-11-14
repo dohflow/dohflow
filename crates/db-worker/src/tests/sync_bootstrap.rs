@@ -325,7 +325,7 @@ fn a_snapshot_of_a_newer_schema_is_update_required_and_writes_nothing() {
 
 /// A snapshot of a schema below a migration that writes class-1 rows outside a command is refused up
 /// front (ADR 0074 Addendum J item 7): a replica installs the snapshot's rows and then migrates them,
-/// so the backfill of migration 76 would run over installed rows and write class-1 rows no log row
+/// so the backfill of migration 77 would run over installed rows and write class-1 rows no log row
 /// explains. The marker is the one the armed-vault refusal reads.
 #[test]
 fn a_snapshot_below_a_row_writing_migration_is_refused_before_anything_is_created() {
