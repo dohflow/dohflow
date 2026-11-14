@@ -14,6 +14,7 @@ const HOST_CODES = [
   "biometry_unknown",
   "signed_build_needed",
   "store_unavailable",
+  "store_refused",
   "not_enabled",
   "prompt_not_completed",
   "unlock_unavailable",
@@ -47,6 +48,15 @@ describe("Touch ID reason copy", () => {
   it("says a retired item needs setting up again, with no unsupported cause", () => {
     expect(touchIdReasonCopy("retired")).toBe(
       "Touch ID needs to be set up again for this vault. Enter your master password, then turn Touch ID on again in Settings.",
+    );
+  });
+});
+
+describe("the store_refused line", () => {
+  // Studio's formal verdict on xuu: the exact words, pinned so a rewording is a review, not an edit.
+  it("is Studio's approved sentence", () => {
+    expect(touchIdReasonCopy("store_refused")).toBe(
+      "DohFlow couldn't turn on Touch ID. It stays off for this vault. Use your master password.",
     );
   });
 });

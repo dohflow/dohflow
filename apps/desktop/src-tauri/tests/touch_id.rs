@@ -30,7 +30,7 @@ use platform_mock::{
 };
 use platform_traits::{
     AccessPolicy, AuthPrompt, BiometricAvailability, PublicTag, SecretError, SecretKey,
-    SecretStore, SecretValue, StoreCapabilities, UnavailableReason,
+    SecretStore, SecretValue, StoreCapabilities, StoreStep, UnavailableReason,
 };
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -47,6 +47,12 @@ struct Spy {
     fail_delete: AtomicBool,
     fail_update: AtomicBool,
     load_error: Mutex<Option<SecretError>>,
+    /// When set, storing the biometric item fails with it (the add or an earlier step refused).
+    store_error: Mutex<Option<SecretError>>,
+    /// When set, storing the markers' sibling item fails with it.
+    markers_store_error: Mutex<Option<SecretError>>,
+    /// When set, reading a tag fails with it (the store cannot answer).
+    tag_read_error: Mutex<Option<SecretError>>,
     /// While set, `load_secret` blocks (the prompt is up) until `release_load` is called.
     hold_load: AtomicBool,
     loads_entered: AtomicU32,
@@ -79,6 +85,14 @@ impl SecretStore for Spy {
         policy: AccessPolicy,
         tag: Option<&PublicTag>,
     ) -> Result<(), SecretError> {
+        let slot = if key.service().ends_with(".markers") {
+            &self.markers_store_error
+        } else {
+            &self.store_error
+        };
+        if let Some(error) = slot.lock().unwrap().clone() {
+            return Err(error);
+        }
         self.inner.store_secret_tagged(key, value, policy, tag)
     }
 
@@ -87,8 +101,10 @@ impl SecretStore for Spy {
         key: &SecretKey,
         prompt: &AuthPrompt,
     ) -> Result<SecretValue, SecretError> {
-        // What the item's tag says WHILE the prompt would be showing.
-        if let Ok(Some(tag)) = self.inner.public_tag(key) {
+        // What the markers say WHILE the prompt would be showing: they sit on the sibling item, since a
+        // biometric item's own attributes cannot be read without a prompt.
+        let markers = SecretKey::new(&format!("{}.markers", key.service()), key.account()).unwrap();
+        if let Ok(Some(tag)) = self.inner.public_tag(&markers) {
             self.counter_seen_at_prompt
                 .lock()
                 .unwrap()
@@ -130,6 +146,9 @@ impl SecretStore for Spy {
     }
 
     fn public_tag(&self, key: &SecretKey) -> Result<Option<PublicTag>, SecretError> {
+        if let Some(error) = self.tag_read_error.lock().unwrap().clone() {
+            return Err(error);
+        }
         self.inner.public_tag(key)
     }
 
@@ -158,6 +177,9 @@ impl Rig {
             fail_delete: AtomicBool::new(false),
             fail_update: AtomicBool::new(false),
             load_error: Mutex::default(),
+            store_error: Mutex::default(),
+            markers_store_error: Mutex::default(),
+            tag_read_error: Mutex::default(),
             hold_load: AtomicBool::new(false),
             loads_entered: AtomicU32::new(0),
             load_released: (Mutex::new(false), Condvar::new()),
@@ -212,15 +234,26 @@ impl Rig {
         self.store.inner.script_biometry(script);
     }
 
+    /// The sibling item that holds the markers (the biometric item's tag cannot be read without a prompt).
+    fn markers_key() -> SecretKey {
+        SecretKey::new(&format!("{SERVICE}.markers"), ACCOUNT).unwrap()
+    }
+
+    /// Both the biometric item and its markers are stored.
     fn item_exists(&self) -> bool {
-        self.store.inner.public_tag(&Self::key()).is_ok()
+        self.store.inner.contains(&Self::key()) && self.store.inner.contains(&Self::markers_key())
+    }
+
+    /// Neither the biometric item nor its markers are stored: a removal leaves no half behind.
+    fn nothing_left(&self) -> bool {
+        !self.store.inner.contains(&Self::key()) && !self.store.inner.contains(&Self::markers_key())
     }
 
     /// The failed-prompt counter as the item's public tag holds it.
     fn counter(&self) -> u8 {
         self.store
             .inner
-            .public_tag(&Self::key())
+            .public_tag(&Self::markers_key())
             .unwrap()
             .unwrap()
             .as_bytes()[COUNTER]
@@ -269,7 +302,7 @@ fn enabling_needs_the_vault_password_again_and_a_wrong_one_changes_nothing() {
     let rig = Rig::new();
     let error = touch_id_enable_impl(&rig.state, enable_input("not the password")).unwrap_err();
     assert!(matches!(error, IpcError::VaultUnlockFailed), "{error:?}");
-    assert!(!rig.item_exists());
+    assert!(rig.nothing_left());
     assert_eq!(rig.status().state, TouchIdStateDto::Off);
 }
 
@@ -286,10 +319,194 @@ fn enabling_on_a_device_that_cannot_store_it_stays_password_only_with_the_reason
         let outcome = touch_id_enable_impl(&rig.state, enable_input(PASSWORD)).unwrap();
         assert!(!outcome.enabled);
         assert_eq!(outcome.reason.as_deref(), Some(code));
-        assert!(!rig.item_exists(), "{state:?}");
+        assert!(rig.nothing_left(), "{state:?}");
         // The vault is untouched and the password still opens it.
         rig.lock();
         rig.password_unlock();
+    }
+}
+
+/// personal-cfo-xuu: the markers used to sit in the biometric item's own tag, and on a real Mac every read
+/// or update of one is refused without a prompt (`errSecInteractionNotAllowed`, which the app showed as
+/// "secure storage unavailable" right after Turn on, on every Mac with a sensor). The mock now refuses
+/// them the same way, so this whole flow fails if the markers go back on the biometric item.
+#[test]
+fn turn_on_then_status_then_a_touch_unlock_work_when_a_biometric_items_tag_cannot_be_read() {
+    let rig = Rig::new();
+    // The default, spelled out: a tag read on the biometric item is Locked, as on a real Mac.
+    assert_eq!(
+        rig.store.inner.public_tag(&Rig::key()).unwrap_err(),
+        SecretError::NotFound,
+        "before Turn on there is nothing"
+    );
+    rig.enable();
+    assert_eq!(
+        rig.store.inner.public_tag(&Rig::key()).unwrap_err(),
+        SecretError::Unavailable(UnavailableReason::Locked),
+        "a tag read on the biometric item is refused"
+    );
+    // The status read right after Turn on (what the settings card does) says On, not "unavailable".
+    let status = rig.status();
+    assert_eq!(status.state, TouchIdStateDto::On, "{status:?}");
+    assert!(status.offered);
+    rig.lock();
+    assert!(rig.touch().unlocked);
+    assert_eq!(rig.counter(), 0, "a success restores the counter");
+    // And the biometric item itself carries no tag at all.
+    rig.store.inner.allow_tag_access_on_biometric_items(true);
+    assert_eq!(rig.store.inner.public_tag(&Rig::key()).unwrap(), None);
+}
+
+#[test]
+fn the_markers_are_written_after_the_item_and_a_failure_to_write_them_leaves_nothing() {
+    let rig = Rig::new();
+    *rig.store.markers_store_error.lock().unwrap() = Some(SecretError::StoreFailed {
+        step: StoreStep::Add,
+        code: -25299,
+    });
+    let outcome = touch_id_enable_impl(&rig.state, enable_input(PASSWORD)).unwrap();
+    assert!(!outcome.enabled, "{outcome:?}");
+    assert_eq!(outcome.reason.as_deref(), Some("store_refused"));
+    assert!(
+        rig.nothing_left(),
+        "the item written first is removed again: Touch ID stays off, not half on"
+    );
+    // Once the markers can be written, Turn on works.
+    *rig.store.markers_store_error.lock().unwrap() = None;
+    rig.enable();
+    assert!(rig.item_exists());
+}
+
+#[test]
+fn turning_on_again_replaces_both_halves_and_turning_off_removes_both() {
+    let rig = Rig::new();
+    rig.enable();
+    rig.lock();
+    assert!(rig.touch().unlocked);
+    rig.lock();
+    rig.password_unlock();
+    rig.enable();
+    assert!(rig.item_exists());
+    assert_eq!(rig.counter(), 0);
+    touch_id_disable_impl(&rig.state).unwrap();
+    assert!(rig.nothing_left());
+}
+
+/// Turning Touch ID on when the store refuses: the reason the app reports, and whether an item lingers.
+fn enable_reason_when_the_store_fails_with(error: SecretError) -> String {
+    let rig = Rig::new();
+    *rig.store.store_error.lock().unwrap() = Some(error);
+    let outcome = touch_id_enable_impl(&rig.state, enable_input(PASSWORD)).unwrap();
+    assert!(!outcome.enabled, "{outcome:?}");
+    assert!(rig.nothing_left(), "a failed enable leaves no item");
+    outcome.reason.expect("a reason")
+}
+
+#[test]
+fn a_store_that_refuses_with_a_status_is_not_reported_as_secure_storage_being_unavailable() {
+    // The platform answered with a status of its own: the add refused, the access control could not
+    // be created, a delete failed, or an authentication error came back from a store step.
+    for error in [
+        SecretError::StoreFailed {
+            step: StoreStep::Add,
+            code: -25293,
+        },
+        SecretError::StoreFailed {
+            step: StoreStep::AccessControl,
+            code: 0,
+        },
+        SecretError::StoreFailed {
+            step: StoreStep::Delete,
+            code: -50,
+        },
+        SecretError::AuthFailed,
+        SecretError::Platform { code: -50 },
+    ] {
+        assert_eq!(
+            enable_reason_when_the_store_fails_with(error.clone()),
+            "store_refused",
+            "{error:?}"
+        );
+    }
+    // A locked or missing keychain still is "unavailable", and the other typed reasons are unchanged.
+    assert_eq!(
+        enable_reason_when_the_store_fails_with(SecretError::Unavailable(
+            UnavailableReason::Locked
+        )),
+        "store_unavailable"
+    );
+    assert_eq!(
+        enable_reason_when_the_store_fails_with(SecretError::Unavailable(
+            UnavailableReason::MissingEntitlement
+        )),
+        "signed_build_needed"
+    );
+    assert_eq!(
+        enable_reason_when_the_store_fails_with(SecretError::BiometryNotEnrolled),
+        "biometry_not_enrolled"
+    );
+}
+
+/// The warn line a refused store leaves (personal-cfo-xuu): the step and the numeric status, through the
+/// redacting writer, and nothing else the platform or the app knows.
+#[test]
+fn a_refused_store_logs_one_line_with_the_step_and_the_status_and_nothing_else() {
+    use observability::RedactingMakeWriter;
+    use std::io::Write;
+    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::prelude::*;
+
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl Write for Buffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> MakeWriter<'a> for Buffer {
+        type Writer = Buffer;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    let buffer = Buffer::default();
+    let layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(RedactingMakeWriter::new(buffer.clone()));
+    observability::testing::install_global_test_subscriber();
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
+        let rig = Rig::new();
+        *rig.store.store_error.lock().unwrap() = Some(SecretError::StoreFailed {
+            step: StoreStep::Add,
+            code: -25293,
+        });
+        let outcome = touch_id_enable_impl(&rig.state, enable_input(PASSWORD)).unwrap();
+        assert!(!outcome.enabled);
+    });
+    let logged = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    let lines: Vec<&str> = logged
+        .lines()
+        .filter(|line| line.contains("could not store the Touch ID key"))
+        .collect();
+    assert_eq!(lines.len(), 1, "exactly one line: {logged}");
+    let line = lines[0];
+    for needle in [
+        "WARN",
+        "outcome=\"failed\"",
+        "step=\"add\"",
+        "code=-25293",
+        "variant=\"store_failed\"",
+    ] {
+        assert!(line.contains(needle), "{needle} missing from {line}");
+    }
+    // Nothing that names the vault, the account, the service or the password.
+    for forbidden in [PASSWORD, SERVICE, ACCOUNT, "vault.db"] {
+        assert!(!line.contains(forbidden), "{forbidden} leaked into {line}");
     }
 }
 
@@ -315,7 +532,7 @@ fn disabling_removes_the_item_and_is_idempotent() {
         touch_id_disable_impl(&rig.state).unwrap().state,
         TouchIdStateDto::Off
     );
-    assert!(!rig.item_exists());
+    assert!(rig.nothing_left());
     assert_eq!(
         touch_id_disable_impl(&rig.state).unwrap().state,
         TouchIdStateDto::Off
@@ -323,15 +540,37 @@ fn disabling_removes_the_item_and_is_idempotent() {
 }
 
 #[test]
-fn an_item_removed_behind_the_apps_back_leaves_the_password_working() {
+fn a_markers_item_removed_behind_the_apps_back_reads_as_off_and_leaves_the_password_working() {
+    // An item with no markers is "off": the next Turn on replaces it, and nothing is offered meanwhile.
     let rig = Rig::new();
     rig.enable();
     rig.lock();
-    rig.store.inner.delete_secret(&Rig::key()).unwrap();
+    rig.store.inner.delete_secret(&Rig::markers_key()).unwrap();
     assert_eq!(rig.status().state, TouchIdStateDto::Off);
     let outcome = rig.touch();
     assert!(!outcome.unlocked);
     assert_eq!(reason(&outcome), "not_enabled");
+    rig.password_unlock();
+}
+
+#[test]
+fn a_secret_removed_behind_the_apps_back_is_cleaned_up_at_the_next_attempt() {
+    // The platform invalidated the item (a changed fingerprint set) or someone deleted it, and the
+    // markers are left: the markers alone offer Touch ID, the load finds nothing, and the attempt
+    // retires both and asks for the password (the same path as a changed fingerprint set).
+    let rig = Rig::new();
+    rig.enable();
+    rig.lock();
+    rig.store.inner.delete_secret(&Rig::key()).unwrap();
+    assert!(
+        !rig.item_exists() && !rig.nothing_left(),
+        "only the markers are left"
+    );
+    let outcome = rig.touch();
+    assert!(!outcome.unlocked);
+    assert_eq!(reason(&outcome), "retired");
+    assert!(rig.nothing_left(), "both are removed");
+    assert_eq!(rig.status().state, TouchIdStateDto::Off);
     rig.password_unlock();
 }
 
@@ -500,7 +739,7 @@ fn k2_an_unwritable_counter_means_the_password_and_no_prompt() {
     // The item's tag is replaced by one the app does not understand: nothing can be counted.
     rig.store
         .inner
-        .update_public_tag(&Rig::key(), Some(&PublicTag::new(b"junk").unwrap()))
+        .update_public_tag(&Rig::markers_key(), Some(&PublicTag::new(b"junk").unwrap()))
         .unwrap();
     let outcome = rig.touch();
     assert!(!outcome.unlocked);
@@ -716,7 +955,7 @@ fn a_changed_fingerprint_set_deletes_the_item_and_offers_enrollment_after_the_pa
     let outcome = rig.touch();
     assert!(!outcome.unlocked);
     assert_eq!(reason(&outcome), "retired");
-    assert!(!rig.item_exists());
+    assert!(rig.nothing_left());
     assert_eq!(rig.status().state, TouchIdStateDto::Off);
     rig.password_unlock();
 }
@@ -727,21 +966,20 @@ fn an_item_that_is_not_released_material_is_deleted() {
     rig.enable();
     rig.lock();
     // Right tag, wrong value length: an item this build cannot read.
-    let tag = rig.store.inner.public_tag(&Rig::key()).unwrap().unwrap();
     rig.store
         .inner
         .store_secret_tagged(
             &Rig::key(),
             &SecretValue::new(b"short").unwrap(),
             AccessPolicy::DeviceOnlyBiometryCurrentSet,
-            Some(&tag),
+            None,
         )
         .unwrap();
     rig.script(BiometryScript::Match);
     let outcome = rig.touch();
     assert!(!outcome.unlocked);
     assert_eq!(reason(&outcome), "retired");
-    assert!(!rig.item_exists());
+    assert!(rig.nothing_left());
 }
 
 /// Replaces the stored item with the vault's real release, altered by `alter`, under the same markers.
@@ -757,14 +995,13 @@ fn plant_altered_item(rig: &Rig, alter: impl FnOnce(&mut [u8])) {
     let mut plaintext = material.expose().to_vec();
     assert_eq!(plaintext.len(), 81);
     alter(&mut plaintext);
-    let tag = rig.store.inner.public_tag(&Rig::key()).unwrap().unwrap();
     rig.store
         .inner
         .store_secret_tagged(
             &Rig::key(),
             &SecretValue::new(&plaintext).unwrap(),
             AccessPolicy::DeviceOnlyBiometryCurrentSet,
-            Some(&tag),
+            None,
         )
         .unwrap();
 }
@@ -785,7 +1022,7 @@ fn an_item_for_another_vault_or_an_unknown_version_is_retired_after_the_load() {
         let outcome = rig.touch();
         assert!(!outcome.unlocked, "{fault}");
         assert_eq!(reason(&outcome), "retired", "{fault}");
-        assert!(!rig.item_exists(), "{fault}: the item is gone");
+        assert!(rig.nothing_left(), "{fault}: the item is gone");
         assert_eq!(
             rig.store.loads_entered.load(Ordering::SeqCst),
             1,
@@ -895,7 +1132,7 @@ fn a_password_change_removes_the_item() {
         },
     )
     .unwrap();
-    assert!(!rig.item_exists());
+    assert!(rig.nothing_left());
     assert_eq!(rig.status().state, TouchIdStateDto::Off);
 }
 
@@ -910,7 +1147,7 @@ fn a_key_rotation_removes_the_item() {
         },
     )
     .unwrap();
-    assert!(!rig.item_exists());
+    assert!(rig.nothing_left());
 }
 
 #[test]
@@ -954,7 +1191,7 @@ fn deleting_the_vault_removes_the_item() {
     let rig = Rig::new();
     rig.enable();
     delete_vault_impl(&rig.state).unwrap();
-    assert!(!rig.item_exists());
+    assert!(rig.nothing_left());
 }
 
 #[test]
@@ -995,6 +1232,71 @@ fn a_change_does_not_start_when_the_item_cannot_be_removed_first() {
     assert!(rig.item_exists());
 }
 
+// An item with no markers item is one no flow would ever use or remove, so the sweep removes it. It
+// happens after the 0.4.0 layout (the markers on the item itself), a crash between writing the item and
+// its markers, and a cleanup that failed halfway.
+#[test]
+fn an_item_with_no_markers_item_is_removed_by_the_launch_sweep() {
+    let rig = Rig::new();
+    rig.enable();
+    rig.store.inner.delete_secret(&Rig::markers_key()).unwrap();
+    assert!(!rig.nothing_left(), "only the item is left");
+    assert_eq!(rig.status().state, TouchIdStateDto::Off);
+    touch::sweep(&rig.state);
+    assert!(
+        rig.nothing_left(),
+        "the sweep removes the item with no markers"
+    );
+}
+
+#[test]
+fn an_item_with_no_markers_item_is_removed_by_the_next_password_unlock() {
+    let rig = Rig::new();
+    rig.enable();
+    rig.lock();
+    rig.store.inner.delete_secret(&Rig::markers_key()).unwrap();
+    rig.password_unlock();
+    assert!(rig.nothing_left());
+}
+
+#[test]
+fn the_layout_0_4_0_wrote_is_removed_not_left_behind() {
+    // 0.4.0 stored the markers as the biometric item's own tag and wrote no sibling.
+    let rig = Rig::new();
+    rig.store.inner.allow_tag_access_on_biometric_items(true);
+    rig.store
+        .inner
+        .store_secret_tagged(
+            &Rig::key(),
+            &SecretValue::new(&[7_u8; 81]).unwrap(),
+            AccessPolicy::DeviceOnlyBiometryCurrentSet,
+            Some(&PublicTag::new(b"0.4.0 markers").unwrap()),
+        )
+        .unwrap();
+    assert!(rig.store.inner.contains(&Rig::key()));
+    assert!(!rig.store.inner.contains(&Rig::markers_key()));
+    assert_eq!(rig.status().state, TouchIdStateDto::Off);
+    touch::sweep(&rig.state);
+    assert!(rig.nothing_left(), "the old layout's item is removed");
+    // And Turn on works again.
+    rig.store.inner.allow_tag_access_on_biometric_items(false);
+    rig.enable();
+}
+
+#[test]
+fn a_store_that_cannot_answer_leaves_the_item_alone() {
+    let rig = Rig::new();
+    rig.enable();
+    *rig.store.tag_read_error.lock().unwrap() =
+        Some(SecretError::Unavailable(UnavailableReason::Locked));
+    touch::sweep(&rig.state);
+    *rig.store.tag_read_error.lock().unwrap() = None;
+    assert!(
+        rig.item_exists(),
+        "an unanswered read is not a reason to delete"
+    );
+}
+
 #[test]
 fn a_crash_between_the_change_and_the_removal_is_swept_at_launch() {
     let rig = Rig::new();
@@ -1015,7 +1317,7 @@ fn a_crash_between_the_change_and_the_removal_is_swept_at_launch() {
     assert!(!outcome.unlocked, "a stale item is never asked for");
 
     touch::sweep(&rig.state);
-    assert!(!rig.item_exists(), "the launch sweep removes it");
+    assert!(rig.nothing_left(), "the launch sweep removes it");
 }
 
 #[test]
@@ -1032,7 +1334,7 @@ fn a_password_unlock_removes_an_item_that_no_longer_matches_the_vault() {
     let status =
         unlock_vault_impl(&rig.state, "changed behind the apps back".to_owned()).expect("unlock");
     assert_eq!(status.state, VaultStateDto::Unlocked);
-    assert!(!rig.item_exists());
+    assert!(rig.nothing_left());
 }
 
 #[test]
@@ -1042,11 +1344,14 @@ fn an_item_whose_markers_are_unreadable_is_swept_and_never_offered() {
     rig.lock();
     rig.store
         .inner
-        .update_public_tag(&Rig::key(), Some(&PublicTag::new(b"not markers").unwrap()))
+        .update_public_tag(
+            &Rig::markers_key(),
+            Some(&PublicTag::new(b"not markers").unwrap()),
+        )
         .unwrap();
     assert!(!rig.status().offered);
     touch::sweep(&rig.state);
-    assert!(!rig.item_exists());
+    assert!(rig.nothing_left());
 }
 
 #[test]

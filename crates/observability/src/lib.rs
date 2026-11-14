@@ -277,6 +277,12 @@ mod tests {
             "op_seq=7",
             "command.kind=create_account actor.type=User",
             "error_code=VaultLocked",
+            // The line a refused Touch ID store leaves (personal-cfo-xuu): the step and the platform's
+            // numeric status must survive the redactor, or the line is useless.
+            "outcome=failed step=add code=-25293 variant=store_failed",
+            "outcome=failed step=access_control code=0 variant=store_failed",
+            "outcome=failed step=delete code=-50 variant=store_failed",
+            "outcome=failed step=unknown code=-34018 variant=platform",
         ] {
             assert_eq!(redact(safe), safe, "over-redacted a safe string");
         }

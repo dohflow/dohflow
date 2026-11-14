@@ -1,10 +1,22 @@
 //! Touch ID unlock, the app-side half (`personal-cfo-xuu`, PR 3 of 4).
 //!
 //! One keychain item per vault holds the released unlock material, protected by the platform's own
-//! access control (`biometryCurrentSet`, device-only, never synchronized). Next to it, in the item's
-//! non-secret public tag, sit the markers that decide WHEN Touch ID is offered (`tag`, `policy`): the
-//! owner's rule is that the VAULT password is required after a restart, after 3 failed or cancelled
-//! prompts and 30 days after the last password unlock, all of it app-side.
+//! access control (`biometryCurrentSet`, device-only, never synchronized). Next to it, in a SIBLING item
+//! (the same account, the service plus `.markers`, device-only with no access control), sit the markers
+//! that decide WHEN Touch ID is offered (`tag`, `policy`): the owner's rule is that the VAULT password
+//! is required after a restart, after 3 failed or cancelled prompts and 30 days after the last password
+//! unlock, all of it app-side.
+//!
+//! The markers are NOT kept on the biometric item. Reading or updating an attribute of an item whose
+//! access control requires a fingerprint makes the platform evaluate that access control, and without a
+//! prompt it answers "interaction not allowed" (`-25308`): the status read right after Turn on then
+//! failed on every Mac with a sensor (personal-cfo-xuu). A sibling item with no access control can be
+//! read and written with no prompt, and it holds nothing secret: the access group already limits it to
+//! DohFlow-signed code, and it only governs when the app OFFERS Touch ID, never access to the key.
+//!
+//! The item is written first and the sibling second. An item with no sibling reads as "off" and the next
+//! Turn on replaces it; a sibling with no item ends at the next unlock, where the load finds nothing and
+//! both are removed. Every delete removes the item first, then the sibling.
 //!
 //! **Key-bearing code lives here and never in `src/ipc`** (`tests/dek_boundary.rs` forbids the key types
 //! and the word "dek" there). The IPC commands call the plain functions at the bottom of this file,
@@ -42,6 +54,10 @@ use tag::Markers;
 
 /// The keychain service name of the item (`SecretKey` requires the `app.dohflow.` prefix).
 const SERVICE: &str = "app.dohflow.touch-id-unlock";
+/// What is added to the item's service for the sibling that holds the markers.
+const MARKERS_SERVICE_SUFFIX: &str = ".markers";
+/// The sibling needs a non-empty secret value; the markers are its public tag, so this is only a filler.
+const MARKERS_PLACEHOLDER: &[u8] = b"m";
 /// The account used when the host has no vault registry id (a single-vault test host).
 const DEFAULT_ACCOUNT: &str = "default";
 /// The reason text the system shows with the Touch ID prompt: fixed, no vault data in it.
@@ -171,10 +187,37 @@ impl TouchId {
         SecretKey::new(SERVICE, account).ok()
     }
 
+    /// The sibling item that holds the markers of the item under `key`.
+    fn markers_key(key: &SecretKey) -> Result<SecretKey, SecretError> {
+        SecretKey::new(
+            &format!("{}{MARKERS_SERVICE_SUFFIX}", key.service()),
+            key.account(),
+        )
+        .map_err(|_| SecretError::InvalidKey)
+    }
+
+    /// The markers' tag, read without a prompt from the sibling. `NotFound`: there is no sibling.
+    fn markers_tag(&self, key: &SecretKey) -> Result<Option<PublicTag>, SecretError> {
+        self.store.public_tag(&Self::markers_key(key)?)
+    }
+
+    /// Replaces the markers' tag on the sibling, without a prompt. It never creates the sibling.
+    fn write_markers(&self, key: &SecretKey, tag: &PublicTag) -> Result<(), SecretError> {
+        self.store
+            .update_public_tag(&Self::markers_key(key)?, Some(tag))
+    }
+
+    /// Removes the item and then its sibling. The item goes first: it is the part that holds the key, so
+    /// a failure after it leaves only markers, which describe nothing and are removed on the next try.
+    fn delete_pair(&self, key: &SecretKey) -> Result<(), SecretError> {
+        self.store.delete_secret(key)?;
+        self.store.delete_secret(&Self::markers_key(key)?)
+    }
+
     /// Reads the markers without any prompt. `Ok(None)`: there is no item. `Err`: a reason the markers
     /// cannot be used (the caller fails closed).
     fn read_markers(&self, key: &SecretKey) -> Result<Option<Markers>, Reason> {
-        match self.store.public_tag(key) {
+        match self.markers_tag(key) {
             Ok(Some(tag)) => Markers::decode(&tag)
                 .map(Some)
                 .ok_or(Reason::MarkersUnreadable),
@@ -257,7 +300,7 @@ impl TouchId {
             // A failed enable is password-only, whatever the cause: an older item is removed too (a
             // refused store keeps the item it would have replaced, and an item that no longer matches
             // what the user just did must not linger).
-            let _ = self.store.delete_secret(&key);
+            let _ = self.delete_pair(&key);
         }
         outcome
     }
@@ -287,14 +330,34 @@ impl TouchId {
             failed_prompts: 0,
         };
         let value = SecretValue::new(material.expose()).map_err(|_| Reason::StoreUnavailable)?;
+        // The item first, with no tag: its access control would gate every read of one.
         self.store
             .store_secret_tagged(
                 key,
                 &value,
                 AccessPolicy::DeviceOnlyBiometryCurrentSet,
+                None,
+            )
+            .map_err(|error| {
+                log_store_failure(&error);
+                reason_for_store_error(&error)
+            })?;
+        // Then the sibling with the markers. If it cannot be written the caller removes the item, so
+        // Touch ID stays off rather than half on.
+        let placeholder =
+            SecretValue::new(MARKERS_PLACEHOLDER).map_err(|_| Reason::StoreUnavailable)?;
+        let markers_key = Self::markers_key(key).map_err(|_| Reason::StoreUnavailable)?;
+        self.store
+            .store_secret_tagged(
+                &markers_key,
+                &placeholder,
+                AccessPolicy::DeviceOnly,
                 Some(&markers.encode()),
             )
-            .map_err(|error| reason_for_store_error(&error))
+            .map_err(|error| {
+                log_store_failure(&error);
+                reason_for_store_error(&error)
+            })
     }
 
     /// Turns Touch ID off: the item (and its markers) is deleted.
@@ -304,7 +367,7 @@ impl TouchId {
     pub fn disable(&self, account: &str) -> Result<(), SecretError> {
         let key = Self::key(account).ok_or(SecretError::InvalidKey)?;
         let _step = self.serialized();
-        self.store.delete_secret(&key)
+        self.delete_pair(&key)
     }
 
     /// Whether an item can be removed for a change of the vault's key material. A store that is
@@ -332,7 +395,7 @@ impl TouchId {
             return;
         };
         if fingerprint != Some(markers.fingerprint) {
-            let _ = self.store.delete_secret(&key);
+            let _ = self.delete_pair(&key);
             return;
         }
         let stamped = match (self.clock.boot_id(), self.clock.monotonic_ns()) {
@@ -344,15 +407,11 @@ impl TouchId {
             }),
             _ => None,
         };
-        let updated = stamped.and_then(|markers| {
-            self.store
-                .update_public_tag(&key, Some(&markers.encode()))
-                .ok()
-        });
+        let updated = stamped.and_then(|markers| self.write_markers(&key, &markers.encode()).ok());
         if updated.is_none() {
             // Cannot re-stamp: the old stamp would be wrong in the user's favor or against them, and
             // either way the markers cannot be trusted. Password-only until Touch ID is enabled again.
-            let _ = self.store.delete_secret(&key);
+            let _ = self.delete_pair(&key);
         }
     }
 
@@ -368,16 +427,22 @@ impl TouchId {
 
     /// `sweep` for a caller that already holds the markers step.
     fn sweep_key(&self, key: &SecretKey, fingerprint: Option<[u8; 32]>) {
-        let stale = match self.store.public_tag(key) {
+        let stale = match self.markers_tag(key) {
             Ok(Some(tag)) => match Markers::decode(&tag) {
                 Some(markers) => fingerprint.is_some_and(|current| current != markers.fingerprint),
                 None => true,
             },
             Ok(None) => true,
+            // No markers item. Nothing offers Touch ID without one (the status reads Off), so an item
+            // that has none is one no flow will ever use or remove: the layout 0.4.0 wrote (the markers
+            // on the item itself), a crash between writing the item and its markers, or a cleanup that
+            // failed halfway. Removing it is safe: deleting what is not there is not an error.
+            Err(SecretError::NotFound) => true,
+            // The store could not answer (no entitlement, a locked keychain): leave everything alone.
             Err(_) => false,
         };
         if stale {
-            let _ = self.store.delete_secret(key);
+            let _ = self.delete_pair(key);
         }
     }
 
@@ -419,11 +484,7 @@ impl TouchId {
             // The counter goes up BEFORE the prompt, so a prompt that never returns (a crash, a killed
             // app) still counts. If it cannot be written the password is required and nothing is shown.
             let counted = before.with_failed_prompts(before.failed_prompts.saturating_add(1));
-            if self
-                .store
-                .update_public_tag(&key, Some(&counted.encode()))
-                .is_err()
-            {
+            if self.write_markers(&key, &counted.encode()).is_err() {
                 return Attempt::PasswordRequired(Reason::MarkersUnreadable);
             }
             (before, counted)
@@ -445,7 +506,7 @@ impl TouchId {
         let Some(released) = released_from(&value) else {
             // Not 81 bytes: an item this build cannot read. Retire it.
             let _step = self.serialized();
-            let _ = self.store.delete_secret(&key);
+            let _ = self.delete_pair(&key);
             return Attempt::PasswordRequired(Reason::Retired);
         };
         drop(value);
@@ -461,7 +522,7 @@ impl TouchId {
                 if cause.requires_reenrollment() {
                     // The item no longer matches the vault, or cannot be read: retire it.
                     let _step = self.serialized();
-                    let _ = self.store.delete_secret(&key);
+                    let _ = self.delete_pair(&key);
                     Attempt::PasswordRequired(Reason::Retired)
                 } else {
                     // The item matched the envelope: keep it (it may be the user's only practical
@@ -484,13 +545,13 @@ impl TouchId {
     fn restore(&self, key: &SecretKey, before: &Markers, counted: &Markers) {
         let _step = self.serialized();
         let unchanged = matches!(
-            self.store.public_tag(key),
+            self.markers_tag(key),
             Ok(Some(tag)) if Markers::decode(&tag) == Some(*counted)
         );
         if unchanged {
             // Best effort: if this fails the counter stays one higher, which only moves toward the
             // password.
-            let _ = self.store.update_public_tag(key, Some(&before.encode()));
+            let _ = self.write_markers(key, &before.encode());
         }
     }
 
@@ -512,14 +573,14 @@ impl TouchId {
             SecretError::BiometryLockedOut => {
                 let locked = before.with_failed_prompts(MAX_FAILED_PROMPTS);
                 let _step = self.serialized();
-                let _ = self.store.update_public_tag(key, Some(&locked.encode()));
+                let _ = self.write_markers(key, &locked.encode());
                 Attempt::PasswordRequired(Reason::BiometryLockedOut)
             }
             // The enrolled set changed (or was removed): the item is invalidated by the platform. Delete
             // it (a no-op if it is already gone) and offer enrollment again after the password.
             SecretError::NotFound => {
                 let _step = self.serialized();
-                let _ = self.store.delete_secret(key);
+                let _ = self.delete_pair(key);
                 Attempt::PasswordRequired(Reason::Retired)
             }
             SecretError::BiometryNotEnrolled => {
@@ -562,8 +623,49 @@ fn reason_for_store_error(error: &SecretError) -> Reason {
             Reason::SignedBuildNeeded
         }
         SecretError::Unavailable(UnavailableReason::Unsupported) => Reason::BiometryNotPresent,
+        // The store answered with a status of its own: not "secure storage is unavailable", which is
+        // what a locked or missing keychain is.
+        SecretError::StoreFailed { .. }
+        | SecretError::AuthFailed
+        | SecretError::Platform { .. } => Reason::StoreRefused,
         _ => Reason::StoreUnavailable,
     }
+}
+
+/// The three fixed fields of the line logged when turning Touch ID on fails at the store: the step that
+/// refused (`access_control`, `delete`, `add`, or `unknown` when the store did not say), the platform's
+/// numeric status (`0` when there is none) and a fixed label for the kind of error. Nothing the
+/// platform said, no account, no path and no key ever reaches this line.
+fn store_failure_fields(error: &SecretError) -> (&'static str, i64, &'static str) {
+    match error {
+        SecretError::StoreFailed { step, code } => (step.label(), *code, "store_failed"),
+        SecretError::Platform { code } => ("unknown", *code, "platform"),
+        SecretError::AuthFailed => ("unknown", 0, "auth_failed"),
+        SecretError::AuthCancelled => ("unknown", 0, "auth_cancelled"),
+        SecretError::BiometryNotEnrolled => ("unknown", 0, "biometry_not_enrolled"),
+        SecretError::BiometryLockedOut => ("unknown", 0, "biometry_locked_out"),
+        SecretError::Unavailable(UnavailableReason::MissingEntitlement) => {
+            ("unknown", 0, "missing_entitlement")
+        }
+        SecretError::Unavailable(UnavailableReason::NoPasscode) => ("unknown", 0, "no_passcode"),
+        SecretError::Unavailable(UnavailableReason::Locked) => ("unknown", 0, "locked"),
+        SecretError::Unavailable(UnavailableReason::Unsupported) => ("unknown", 0, "unsupported"),
+        SecretError::Unavailable(_) => ("unknown", 0, "unavailable"),
+        _ => ("unknown", 0, "other"),
+    }
+}
+
+/// One warn line when the store refuses to hold the Touch ID key. Before this, the cause was not
+/// recorded anywhere (personal-cfo-xuu): the screen only said "secure storage unavailable".
+fn log_store_failure(error: &SecretError) {
+    let (step, code, variant) = store_failure_fields(error);
+    tracing::warn!(
+        outcome = "failed",
+        step,
+        code,
+        variant,
+        "could not store the Touch ID key"
+    );
 }
 
 /// The released plaintext from a loaded secret, built in place in the protected buffer. `None` unless it
@@ -647,4 +749,77 @@ impl BootClock for AbsentClock {
 #[must_use]
 pub const fn default_account() -> &'static str {
     DEFAULT_ACCOUNT
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use platform_traits::StoreStep;
+
+    #[test]
+    fn the_logged_fields_are_a_fixed_step_a_number_and_a_fixed_label() {
+        assert_eq!(
+            store_failure_fields(&SecretError::StoreFailed {
+                step: StoreStep::AccessControl,
+                code: -50
+            }),
+            ("access_control", -50, "store_failed")
+        );
+        assert_eq!(
+            store_failure_fields(&SecretError::StoreFailed {
+                step: StoreStep::Delete,
+                code: 7
+            }),
+            ("delete", 7, "store_failed")
+        );
+        assert_eq!(
+            store_failure_fields(&SecretError::StoreFailed {
+                step: StoreStep::Add,
+                code: -25293
+            }),
+            ("add", -25293, "store_failed")
+        );
+        assert_eq!(
+            store_failure_fields(&SecretError::Platform { code: -34018 }),
+            ("unknown", -34018, "platform")
+        );
+        assert_eq!(
+            store_failure_fields(&SecretError::Unavailable(UnavailableReason::Locked)),
+            ("unknown", 0, "locked")
+        );
+        assert_eq!(
+            store_failure_fields(&SecretError::AuthFailed),
+            ("unknown", 0, "auth_failed")
+        );
+    }
+
+    #[test]
+    fn every_refusal_maps_to_the_reason_the_screen_will_explain() {
+        for (error, reason) in [
+            (
+                SecretError::BiometryNotEnrolled,
+                Reason::BiometryNotEnrolled,
+            ),
+            (SecretError::BiometryLockedOut, Reason::BiometryLockedOut),
+            (
+                SecretError::Unavailable(UnavailableReason::MissingEntitlement),
+                Reason::SignedBuildNeeded,
+            ),
+            (
+                SecretError::Unavailable(UnavailableReason::Locked),
+                Reason::StoreUnavailable,
+            ),
+            (
+                SecretError::StoreFailed {
+                    step: StoreStep::Add,
+                    code: 1,
+                },
+                Reason::StoreRefused,
+            ),
+            (SecretError::AuthFailed, Reason::StoreRefused),
+            (SecretError::Platform { code: 9 }, Reason::StoreRefused),
+        ] {
+            assert_eq!(reason_for_store_error(&error), reason, "{error:?}");
+        }
+    }
 }

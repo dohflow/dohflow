@@ -20,6 +20,18 @@
 #   ./scripts/keychain-smoke.sh --check      # everything except signing and running
 #   ./scripts/keychain-smoke.sh              # the full run
 #
+# To run the entitled tests on ANOTHER Mac (for example an Intel Mac, or the oldest supported macOS),
+# build and sign the bundle here for that Mac's architecture and keep it:
+#
+#   ./scripts/keychain-smoke.sh --target x86_64-apple-darwin --sign-only --keep ~/Desktop/smoke-x86_64
+#
+# `--target` builds for another target triple; `--sign-only` stops after the bundle is signed and verified
+# (it cannot be run here when this Mac cannot run that architecture); `--keep DIR` copies the signed bundle
+# and the steps for running it to DIR, which the script leaves in place (the temporary directory is still
+# removed). A kept bundle is signed like the release app but is never notarized, so a Mac that receives it
+# needs the quarantine flag cleared (the steps in DIR say how). It is a throwaway for running the tests,
+# not something to ship.
+#
 # Environment (read from the environment only, never the repo):
 #   APPLE_SIGNING_IDENTITY       the Developer ID Application identity, ending in (TEAMID). When unset and
 #                                exactly one valid "Developer ID Application" identity is installed, that
@@ -59,12 +71,24 @@ if [[ "${KEYCHAIN_SMOKE_SOURCE_ONLY:-0}" == "1" ]]; then
 fi
 
 mode="run"
-case "${1:-}" in
-  "") ;;
-  --check) mode="check" ;;
-  -h|--help) sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  *) fail "unknown argument '$1' (use --check or no argument)" ;;
-esac
+target=""
+keep_dir=""
+sign_only=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check) mode="check" ;;
+    --target)
+      [[ -n "${2:-}" ]] || fail "--target needs a target triple (for example x86_64-apple-darwin)."
+      target="$2"; shift ;;
+    --keep)
+      [[ -n "${2:-}" ]] || fail "--keep needs a directory."
+      keep_dir="$2"; shift ;;
+    --sign-only) sign_only=1 ;;
+    -h|--help) sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) fail "unknown argument '$1' (use --check, --target TRIPLE, --sign-only, --keep DIR)." ;;
+  esac
+  shift
+done
 
 [[ "$(uname -s)" == "Darwin" ]] || fail "macOS only."
 command -v cargo >/dev/null 2>&1 || fail "'cargo' not on PATH."
@@ -103,7 +127,7 @@ trap 'rm -rf "$work"' EXIT
 # ── Build the test binary (the code under test, exactly as `cargo test` builds it) ──
 echo "==> building platform-macos's keychain tests"
 messages="$work/cargo-messages.json"
-cargo test -p platform-macos --test keychain --no-run --message-format=json >"$messages" \
+cargo test -p platform-macos --test keychain --no-run ${target:+--target "$target"} --message-format=json >"$messages" \
   || fail "the test build failed."
 test_binary="$(python3 -c "
 import json, sys
@@ -162,6 +186,56 @@ python3 -I "$repo_root/scripts/check-signed-entitlements.py" --bundle-id "$bundl
   <<<"$signed_entitlements" || fail "the throwaway bundle's entitlements are not the release's."
 cmp -s "$app/Contents/embedded.provisionprofile" "$profile" || fail "the embedded profile differs from the profile."
 
+# The bundle's architecture: a Mac that cannot run it (an Intel build on Apple silicon without Rosetta) must
+# use --sign-only, never a run that would fail with "Bad CPU type" and read as a failed test.
+bundle_archs="$(lipo -archs "$app/Contents/MacOS/DohFlowKeychainSmoke" 2>/dev/null || true)"
+[[ -n "$bundle_archs" ]] || fail "cannot read the test binary's architecture."
+if [[ "$sign_only" != "1" ]] && ! grep -qw -- "$(uname -m)" <<<"$bundle_archs"; then
+  fail "the bundle is $bundle_archs and this Mac is $(uname -m): it cannot be run here. Use --sign-only (and --keep DIR) to build it for another Mac."
+fi
+
+# ── Keep the signed bundle, with the steps for running it on another Mac ──
+if [[ -n "$keep_dir" ]]; then
+  mkdir -p "$keep_dir"
+  kept="$keep_dir/DohFlowKeychainSmoke.app"
+  [[ ! -e "$kept" ]] || fail "$kept already exists: this script never overwrites or deletes it. Choose another --keep directory."
+  ditto "$app" "$kept"
+  codesign --verify --strict "$kept" || fail "the kept bundle does not verify."
+  cmp -s "$kept/Contents/MacOS/DohFlowKeychainSmoke" "$app/Contents/MacOS/DohFlowKeychainSmoke" \
+    || fail "the kept bundle's binary differs from the signed one."
+  head_for_steps="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  git -C "$repo_root" diff --quiet HEAD 2>/dev/null || head_for_steps="$head_for_steps+uncommitted"
+  cat >"$keep_dir/RUN-ON-THE-OTHER-MAC.txt" <<STEPS
+DohFlow keychain smoke bundle (a throwaway: signed like the release app, never notarized, never shipped).
+Built from commit $head_for_steps for $bundle_archs, access group $access_group.
+Run these in Terminal on the Mac that should run it, from the folder that holds the .app:
+
+  1. xattr -dr com.apple.quarantine DohFlowKeychainSmoke.app
+       (a copy that came by AirDrop, a download or a zip carries the quarantine flag, and macOS refuses an app
+        that is signed but not notarized; this clears it for this one app)
+  2. DOHFLOW_KEYCHAIN_ACCESS_GROUP=$access_group \\
+       ./DohFlowKeychainSmoke.app/Contents/MacOS/DohFlowKeychainSmoke --ignored --test-threads=1 --nocapture \\
+       --exact entitled_the_store_passes_the_conformance_suite \\
+       manual_the_tag_of_a_biometric_item_cannot_be_read_or_updated_without_authentication \\
+       manual_the_markers_sibling_reads_and_updates_without_authentication_next_to_a_biometric_item \\
+       2>&1 | tee ~/Desktop/keychain-smoke-output.txt
+  3. Touch the sensor if a prompt appears. These tests need a Mac with Touch ID and a fingerprint enrolled.
+     Each one reports ok or names the exact failure; a failure is information, not a mistake of yours. Send
+     back ~/Desktop/keychain-smoke-output.txt. It holds no vault, no password and no key: the tests add a
+     few throwaway items in this app's access group and delete them again.
+STEPS
+  echo "==> kept the signed bundle: $kept"
+  echo "    steps for the other Mac: $keep_dir/RUN-ON-THE-OTHER-MAC.txt"
+fi
+
+if [[ "$sign_only" == "1" ]]; then
+  echo
+  echo "SIGNED keychain-smoke bundle ($bundle_archs, access group $access_group); nothing was run."
+  [[ -n "$keep_dir" ]] && echo "  kept at $kept: copy it to the other Mac and follow RUN-ON-THE-OTHER-MAC.txt" \
+    || echo "  not kept (no --keep DIR): the temporary directory is removed on exit."
+  exit 0
+fi
+
 # ── The entitled run, inside the bundle ──
 # The tests are named, and exactly that many must pass: a rename that leaves nothing to run must not read
 # as a pass. The conformance suite adapts to the machine's RUNTIME biometric state (a Mac with nothing
@@ -174,6 +248,7 @@ entitled_tests=(
   entitled_the_access_group_is_the_signed_entitlement
   entitled_the_store_passes_the_conformance_suite
   entitled_a_public_tag_is_updated_without_authentication_and_the_secret_is_untouched
+  entitled_a_markers_sibling_round_trips_next_to_a_device_only_item
   entitled_report_the_biometric_availability
 )
 echo "==> entitled run (inside the signed bundle)"
