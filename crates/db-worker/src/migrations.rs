@@ -5011,7 +5011,9 @@ mod tests {
         );
         assert_eq!(identity(&conn).0.map(|id| id.len()), Some(16));
 
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 5);
+        // The vault was migrated through 76 here (77 refuses a vault where Sync is armed), so
+        // 73 to 76 revert.
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 4);
         let columns: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('sync_genesis')
@@ -5154,7 +5156,8 @@ mod tests {
             .unwrap();
         assert_eq!(leftover, 0, "the refusal leaves no temporary table");
         conn.execute("DELETE FROM sync_artifacts", []).unwrap();
-        assert_eq!(migrate_down(&mut conn, 75).unwrap(), 2);
+        // The refused attempt stepped 77 down first, so only 76 is left to revert.
+        assert_eq!(migrate_down(&mut conn, 75).unwrap(), 1);
         assert_eq!(count(&conn), 1);
         let duplicate = conn.execute(
             "INSERT INTO attachments (id, storage_id, wrapped_content_key, content_key_nonce,
