@@ -11,8 +11,9 @@ use sync_core::artifact::{
     LogicalBinding, TransportPlaintext, MAX_ARTIFACT_CONTAINER,
 };
 use vault_crypto::sync_artifact::{
-    first_artifact_id, open_artifact, readdress_container, readdress_id, readdress_plaintext,
-    seal_artifact, Fixity, OpenArtifactError, ReaddressError, SealArtifactError,
+    first_artifact_id, first_attachment_artifact_id, open_artifact, readdress_container,
+    readdress_id, readdress_plaintext, seal_artifact, Fixity, OpenArtifactError, ReaddressError,
+    SealArtifactError,
 };
 use vault_crypto::sync_envelope::EpochKey;
 use vault_crypto::sync_keys::epoch_key_commitment;
@@ -680,4 +681,39 @@ fn the_container_size_bound_is_exact() {
         seal_artifact(&k1(), &past, Fixity::First).map(|_| ()),
         Err(SealArtifactError::ContainerTooLarge)
     );
+}
+
+/// An attachment's first id names its logical id as well as its bytes (C.3, the attachment-address
+/// amendment): C.9 seals `attachment_id` into the plaintext, so an address that named the bytes
+/// alone would carry two plaintexts after a shred and a re-import.
+#[test]
+fn an_attachments_address_matches_the_spec_vectors_and_names_its_logical_id() {
+    let (one, two) = ([0x07_u8; 16], [0x08_u8; 16]);
+    assert_eq!(
+        first_attachment_artifact_id(&k1(), &STORAGE, &one)
+            .as_bytes()
+            .as_slice(),
+        vector("attachment_artifact_id_epoch1")
+    );
+    assert_eq!(
+        first_attachment_artifact_id(&k1(), &STORAGE, &two)
+            .as_bytes()
+            .as_slice(),
+        vector("attachment_artifact_id_epoch1_other_id")
+    );
+    // The same bytes under two attachment ids are two addresses, and neither is the bytes-only one
+    // a batch part uses.
+    let (a, b) = (
+        first_attachment_artifact_id(&k1(), &STORAGE, &one),
+        first_attachment_artifact_id(&k1(), &STORAGE, &two),
+    );
+    assert_ne!(a, b);
+    assert_ne!(a, first_artifact_id(&k1(), &STORAGE));
+    // Other bytes, another vault and another epoch's key are other addresses too.
+    assert_ne!(first_attachment_artifact_id(&k1(), &[0x6b; 32], &one), a);
+    assert_ne!(
+        first_attachment_artifact_id(&key_of([0x12; 16], 1, 0x00), &STORAGE, &one),
+        a
+    );
+    assert_ne!(first_attachment_artifact_id(&k2(), &STORAGE, &one), a);
 }

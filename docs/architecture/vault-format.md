@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=45 -->
-<!-- vault-format: schema-version=73 -->
+<!-- vault-format: spec-version=46 -->
+<!-- vault-format: schema-version=74 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -272,6 +272,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 46` (personal-cfo-1cltt.7, slice C, schema version 74; provisional: it settles at merge) **fixes the plaintext under an artifact's address** (planning ruling 2026-11-13 on a review of the genesis closure). C.3 addressed an attachment by its bytes alone while C.9 seals the attachment's id into its plaintext, so a shred followed by a re-import of the same bytes put a second, different plaintext under one address's key and zero nonce. (1) **An attachment's first id names its logical id**: `HMAC-SHA256(Expand(K_e, label "dohflow/sync-attachment-address/v1" ‖ uuid vault_id), storage_id_raw ‖ uuid attachment_id)`; a source batch part keeps the bytes-only address; re-addressing at a key-changing epoch is unchanged; only the producer computes a first id, so no receiver, decoder or engine rule changes. Vectors `attachment_artifact_id_epoch1` and `attachment_artifact_id_epoch1_other_id` are new; every existing vector is unchanged. (2) C.9's fixed-plaintext rule is stated as a producer procedure: at an artifact's first seal in an epoch, **before** the put, the producer records the SHA-256 of the complete transport plaintext and the `logical_metadata` bytes in its `sync_artifacts` row (two nullable device-local columns, `transport_plaintext_sha256` and `logical_metadata`; a producer's row writes both, a receiver's leaves them NULL), finds the row **by the logical id** on every later seal (never by an address recomputed from a storage id), rebuilds the plaintext from the stored metadata and the blob, and seals with the stored digest as its fixity; a mismatch is `ArtifactDescriptorChanged`, refused before any encryption, for batch parts as for attachments. (3) A resume of a genesis that names a saved closure asks the service which of its artifacts it holds, verifies each present one against the recorded `ciphertext_sha256`, and puts again only the missing ones. No wire layout, write-set rule, `engine_version` or existing vector change.
 - `spec-version = 45` (personal-cfo-1cltt.7, slice B; provisional: it settles at merge) replaces the sentence of C.9 "Bounds by object type" that said a client refuses a closure above the service's advertised maximum until the service accepts a closure sidecar of that size: a closure of more than 4096 ids is staged with `stageSnapshotClosure` and the request carries an empty list (sync-service-protocol 4.14), and a bootstrap reads a closure back with `getSnapshotClosure` and checks its commitment itself. No wire layout, write-set rule, vector, engine_version or schema change.
 - `spec-version = 44` (personal-cfo-1cltt.8; provisional: it settles at merge): a replica derives its class-2 state from the class-1 rows it installed, before the base is captured; every cursor and watermark is in the device's own op_seq space; transaction lists order by the sort key, then the creating command id, then the transaction id, then the account id. No wire layout, write-set rule, vector, engine_version or schema change.
 - `spec-version = 43` (personal-cfo-1cltt.5, slice C, schema version 73; provisional: it settles at merge) records, in the device-local `sync_genesis` row, **which snapshot the genesis was and the SHA-256 of the container this device sent for it** (`genesis_snapshot_id` and `genesis_container_sha256`), and adds the device-local `operation_log.issued_at` (the instant a command was issued, Unix microseconds, written by `apply` on every row, Sync on or off; NULL before the column), which the genesis-gap replay reads because a command taken before Sync was armed has no outbox row to hold it. The identity columns are written in the transaction that records the genesis as `Published` and before the saved container is dropped (C.8 "The genesis snapshot's id and a resume"): the saved container is the only other place either lives. A bootstrap that reconciles the genesis gap fetches the genesis snapshot and checks it against these, so it never trusts the service's copy of what this device published. A row recorded by an earlier build has neither (NULL). No wire layout, write-set rule, vector or `engine_version` change.
@@ -706,7 +707,7 @@ therefore requires reviewing this inventory.
 | `sync_saved_snapshot` | 3 | exclude | exclude | Device-local state: the sealed snapshot saved beside the register for an exact-byte retransmission, with the hashes of what it was sealed from. |
 | `sync_genesis` | 3 | exclude | exclude | Device-local state: the genesis records this device minted at sync-enable, persisted before any key is installed from them, how far enabling got (`Persisted`, `Installed`, `Published`, or a terminal `VaultKnown` or `GenesisResumeLost`), the `operation_log` high-water mark of the export, and, once the genesis is `Published`, the id of the genesis snapshot and the SHA-256 of the container this device sent for it (`genesis_snapshot_id`, `genesis_container_sha256`; both or neither, NULL for a genesis recorded by an earlier build). The records never change. |
 | `sync_notices` | 3 | exclude | exclude | Device-local notices that Sync discarded something the user was in the middle of. The only kind is `import_discarded`: a received batch replaced the rows of an import still being reviewed on this device, and the staged import for that batch (`staged_transactions`, `staged_balances`, `staged_accounts`, `dedupe_decisions`) was removed in the same transaction (C.9), so the user must run the import again. `source_name` is the file name the user chose, so the notice can name it; it is shown to the user and never logged. |
-| `sync_artifacts` | 3 | exclude | exclude | Device-local mapping from a class-1b artifact's service address in an epoch (`sync_artifact_id_e`) to the local identity that carries it, with the `ciphertext_sha256` this device verified when it published the artifact or fetched it (the only hash a producer binds; a cache for the no-refetch rule that never decides a verdict, C.9) and, for a producer, whether a durable receipt matched. For an attachment received from a peer, the `staged_*` columns hold the receiver-local crypto fields from materialization until the attach command's `apply` creates the class-4 `attachments` row from them; the same transaction sets them to `NULL`, so the `attachments` row is the only long-lived copy of the key material. While staged, a key rotation re-wraps and re-addresses them like an `attachments` row. A backup carries the database and every blob as they are, so a restore returns a staged row together with its blob; a staged row whose blob is missing is a cache miss, and the artifact is fetched again from the retained closure. The portable export and every Sync snapshot exclude the table. Their presence is tied to `kind` = attachment, all present or all absent. |
+| `sync_artifacts` | 3 | exclude | exclude | Device-local mapping from a class-1b artifact's service address in an epoch (`sync_artifact_id_e`) to the local identity that carries it, with the `ciphertext_sha256` this device verified when it published the artifact or fetched it (the only hash a producer binds; a cache for the no-refetch rule that never decides a verdict, C.9) and, for a producer, whether a durable receipt matched, the `transport_plaintext_sha256` of the complete transport plaintext it first sealed and the `logical_metadata` bytes that plaintext carried (both written at the first seal and before the put, both NULL on a receiver's row; C.9 "Fixed plaintext"). For an attachment received from a peer, the `staged_*` columns hold the receiver-local crypto fields from materialization until the attach command's `apply` creates the class-4 `attachments` row from them; the same transaction sets them to `NULL`, so the `attachments` row is the only long-lived copy of the key material. While staged, a key rotation re-wraps and re-addresses them like an `attachments` row. A backup carries the database and every blob as they are, so a restore returns a staged row together with its blob; a staged row whose blob is missing is a cache miss, and the artifact is fetched again from the retained closure. The portable export and every Sync snapshot exclude the table. Their presence is tied to `kind` = attachment, all present or all absent. |
 | `sync_voids` | 3 | exclude | exclude | Device-local state: the void ledger, one row per void this replica skips (the void id, the range of log positions it skips, a dense `ordinal` in write order) with its `origin`: `seeded` from the snapshot the replica bootstrapped from, or `honored` here. Append-only; a row is never updated or deleted. The key is the `ordinal`, not the void id: one id can hold more than one entry (a snapshot may record one id at two ranges, and a recorded void may later be honored here as a new void). |
 | `sync_position` | 3 | exclude | exclude | Device-local state: the applied cursor of a replica that has bootstrapped: `snapshot_root` (the last position of the snapshot it was built from; NULL for an origin; never changes) and `next_to_apply` (only increases). Written with the void ledger in one transaction. |
 <!-- inventory:end -->
@@ -1296,7 +1297,8 @@ HKDF-SHA256-Expand with PRK `K` and output length 32.
 | `idempotency_key_tag` | `HMAC-SHA256(tag key, label "dohflow/sync-idem-tag/v1" ‖ uuid canonical_idempotency_key)` |
 | `immutable_metadata_commitment` | `SHA-256(label "dohflow/sync-meta-commit/v1" ‖ uuid command_id ‖ uuid correlation_id ‖ opt(uuid) causation_id ‖ u8 actor_type ‖ text(256) actor_id ‖ uuid idempotency_key ‖ i64 issued_at ‖ uuid device_id)` |
 | Key commitments | `SHA-256(label "dohflow/sync-epoch-key-commit/v1" ‖ key32 K_e)` and `SHA-256(label "dohflow/sync-tag-key-commit/v1" ‖ key32 S)` |
-| `sync_artifact_id_e` (first publication) | `HMAC-SHA256(Expand(K_e, label "dohflow/sync-artifact-address/v1" ‖ uuid vault_id), storage_id_raw)`, where `storage_id_raw` is the artifact's 32-byte local address (below) |
+| `sync_artifact_id_e` (first publication, source batch part) | `HMAC-SHA256(Expand(K_e, label "dohflow/sync-artifact-address/v1" ‖ uuid vault_id), storage_id_raw)`, where `storage_id_raw` is the part's 32-byte local address (below) |
+| `sync_artifact_id_e` (first publication, attachment) | `HMAC-SHA256(Expand(K_e, label "dohflow/sync-attachment-address/v1" ‖ uuid vault_id), storage_id_raw ‖ uuid attachment_id)`, where `storage_id_raw` is the attachment's 32-byte local address (below) and `attachment_id` is its logical id (C.9 seals the same id into the plaintext) |
 | `sync_artifact_id_{e+1}` (re-address at a key-changing epoch) | `HMAC-SHA256(Expand(K_{e+1}, label "dohflow/sync-artifact-readdress/v1" ‖ uuid vault_id ‖ u64 key_epoch_{e+1}), digest sync_artifact_id_e)` |
 | Artifact object key | `Expand(K_e, label "dohflow/sync-artifact-object/v1" ‖ u16 protocol_version ‖ uuid vault_id ‖ u64 key_epoch ‖ digest sync_artifact_id)` |
 | Artifact manifest commitment | `SHA-256(label "dohflow/sync-artifact-manifest/v1" ‖ list(digest, N) of the ids in strictly ascending byte order)`, with `N` = 4096 for an envelope's delta manifest and `N` = 2^20 for a snapshot's full closure. The label and the bytes are the same for both (a CBE1 list count is a `u32`); only the bound a producer and a receiver enforce differs. |
@@ -1320,6 +1322,20 @@ epoch `e+1` holds `sync_artifact_id_e` in its local mapping, so any member can c
 while a device that knows `sync_artifact_id_e` but not `K_{e+1}` (a revoked device, the service)
 cannot link the two ids. A guessed plaintext cannot confirm an artifact's presence: the first id is
 keyed under the DEK and then under `K_e`. A client stores no address input; it keeps the ids.
+
+**An attachment's first id names its logical id.** C.9 seals the attachment's id into the plaintext
+(its `logical_metadata` carries `attachment_id`), so the address of an attachment is a function of
+the attachment id as well as the bytes: `storage_id_raw ‖ uuid attachment_id` is the HMAC message
+(the table above). An address that named the bytes alone would let one address carry two plaintexts:
+a shred followed by a re-import of the same bytes gives a new `attachment_id` at the same
+`storage_id_raw` in the same epoch, and a second plaintext under one address's key and zero nonce is
+exactly what the fixed-plaintext rule of C.9 forbids. The same bytes under two attachment ids are two
+addresses (vectors `attachment_artifact_id_epoch1` and `attachment_artifact_id_epoch1_other_id`). A
+source batch part keeps the bytes-only address: its blob carries the batch and record ids, so the
+plaintext is a function of the address. Only the producer ever computes a first id (a receiver cannot
+without the origin's DEK), so no receiver, decoder or engine rule changes; re-addressing is unchanged.
+The `artifact_id_epoch1` vector below uses the bytes-only derivation: the sample artifact exercises
+sealing and opening, which do not check how an address was derived.
 
 ## C.4 AEAD objects: envelopes and snapshots
 
@@ -2423,7 +2439,18 @@ moment. Before every seal it rebuilds the plaintext, hashes it, and **never seal
 different plaintext under the same `(key_epoch, sync_artifact_id)`**: any mismatch (the descriptor, the
 blob bytes or the id) is refused before encryption with the typed error `ArtifactDescriptorChanged`.
 The record is written before the object is put, so a retry after a crash rebuilds identical bytes
-(the encryption is deterministic) and the service answers with the original receipt. A later
+(the encryption is deterministic) and the service answers with the original receipt. **Where it is
+kept:** the producer's `sync_artifacts` row carries the digest (`transport_plaintext_sha256`) **and**
+the `logical_metadata` bytes that plaintext carried, written in the transaction that records the
+mapping, at the first seal and before the put (a crash between the put and the receipt must still leave
+them). Every later seal of that logical object finds the row by the **logical id** (the attachment id,
+or the batch id and part index), never by an address recomputed from a storage id, which a key
+rotation changes; it rebuilds the plaintext from the stored metadata and the blob, and seals with the
+stored digest as its fixity, so a changed blob, descriptor or id is `ArtifactDescriptorChanged`.
+Because the metadata is stored, a later MIME or filename edit never re-seals and never strands the
+artifact. A resume asks the service which artifacts it holds (`getArtifactStatus`), accepts a present
+one only if its `ciphertext_sha256` is the recorded one, and puts again only a missing one, from the
+stored descriptor. A later
 change to a row's filename or MIME type updates only the class-1 attachment row
 (which Sync already replicates as a field) and never re-seals the artifact; the
 object keeps its original descriptor until the next epoch re-seals it under a new
@@ -2896,6 +2923,7 @@ written `N x 0xNN`.
 | Genesis snapshot id | `genesis_epoch_record_id` 32 x `0x5a` (the input of `genesis_snapshot_id`, C.8) |
 | Envelope plaintext | `write_set_hash` 32 x `0x44`; payload `{"amount_minor":"-1250","currency":"USD"}`; the delta manifest is the two sample artifact ids in ascending byte order, each followed by its ciphertext hash (32 x `0x31` for `artifact_id_epoch1`, 32 x `0x32` for the other); the sample envelope and snapshot headers carry field 17 `artifact_manifest_commitment` and field 18 `artifact_binding_commitment` (the binding of those two hashes in id order) |
 | Local storage ids | 32 x `0x5a` and 32 x `0x6b`; the manifest commitment covers the two epoch-1 artifact ids |
+| Attachment ids (the attachment-address vectors) | 16 x `0x07` for `attachment_artifact_id_epoch1`, 16 x `0x08` for `attachment_artifact_id_epoch1_other_id`; both over the storage id 32 x `0x5a` and `K_e` of epoch 1 |
 | Sample artifact | `artifact_kind` 1; plaintext `synthetic document` (18 bytes); `logical_metadata` `{"mime_type":"text/plain"}`; the address and keys of the first storage id at epoch 1 |
 | Void | `seq` 42; `command_id` and `envelope_digest` those of the sample envelope; `reason` 1; signer device A; `issued_at` 1_790_000_003_000_000 |
 | Membership | record 1: `version` 1, `prev_id` absent, `action` 1 (add), signer and added device A, `issued_at` 1_790_000_001_000_000; record 2: `version` 2, `prev_id` the id of record 1, `action` 1, signer device A, added device B, `issued_at` 1_790_000_002_000_000 |
@@ -2995,6 +3023,8 @@ the canonical manifest whose bytes the export vectors seal.
 <!-- sync-vector: artifact_id_epoch1=d250092c040686d891c21151a01b44a593e22451b71f872fbf367c9327fd90de -->
 <!-- sync-vector: artifact_id_epoch2=b8532c2b8f48fc07410d0fcaab93293882b32a0dc4cbb6d9263ddd4d5b708273 -->
 <!-- sync-vector: artifact_id_readdress_epoch2=684c15bc0b06fbaa3d36a0ee22f46e32c230390ab1b98f934c004016d0dba999 -->
+<!-- sync-vector: attachment_artifact_id_epoch1=82d7d60728017d61dfb971b8d8ac4f484cb432b88bd4ddef742880aa787e4f3f -->
+<!-- sync-vector: attachment_artifact_id_epoch1_other_id=347c6a6e9d8143f366d297b4616729b5e0c6d92e542cbd1486b3a868c5344185 -->
 <!-- sync-vector: genesis_snapshot_id=2485cd189d53493584d44603bc2083d4 -->
 <!-- sync-vector: artifact_manifest_commitment=e9f048d0e627a918249c19bd2df94315be7373469a5af23869cd32c65cd88631 -->
 <!-- sync-vector: artifact_binding_commitment=f646c659aaa2849bee882e638824f465c31be3d29ecdd49416278e34c3d71817 -->

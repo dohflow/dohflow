@@ -72,25 +72,36 @@ pub fn publish(
     plaintext: &TransportPlaintext<'_>,
     fixity: Fixity,
 ) -> Result<Published, PublishError> {
-    let SealedArtifact {
-        container,
-        receipt,
-        plaintext_digest,
-    } = seal_artifact(key, plaintext, fixity).map_err(PublishError::Seal)?;
+    let sealed = seal_artifact(key, plaintext, fixity).map_err(PublishError::Seal)?;
+    put_sealed(transport, key, &plaintext.artifact_id, &sealed)
+}
+
+/// Put an already sealed artifact and verify the receipt against the one computed from its bytes.
+/// [`publish`] is [`seal_artifact`] and this; a producer that records what it sealed **before** the
+/// put (the transport plaintext digest, C.9) seals, records, then calls this.
+///
+/// # Errors
+/// [`PublishError::Transport`] or [`PublishError::ReceiptMismatch`].
+pub fn put_sealed(
+    transport: &impl ArtifactTransport,
+    key: &EpochKey,
+    artifact_id: &ArtifactId,
+    sealed: &SealedArtifact,
+) -> Result<Published, PublishError> {
     let answered = transport
         .put(
             key.vault_id(),
             key.key_epoch(),
-            &plaintext.artifact_id,
-            &container,
+            artifact_id,
+            &sealed.container,
         )
         .map_err(PublishError::Transport)?;
-    if answered != receipt {
+    if answered != sealed.receipt {
         return Err(PublishError::ReceiptMismatch);
     }
     Ok(Published {
-        receipt,
-        plaintext_digest,
+        receipt: sealed.receipt,
+        plaintext_digest: sealed.plaintext_digest,
     })
 }
 

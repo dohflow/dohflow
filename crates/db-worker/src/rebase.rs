@@ -743,6 +743,7 @@ pub fn is_command_refusal(error: &DbError) -> bool {
         | E::Io(_)
         | E::Crypto(_)
         | E::KeyUnavailable
+        | E::RekeyRefusedGenesisInFlight
         | E::QueuedForDisposition { .. } => false,
     }
 }

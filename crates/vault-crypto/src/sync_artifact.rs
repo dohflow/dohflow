@@ -78,6 +78,32 @@ pub fn first_artifact_id(key: &EpochKey, storage_id_raw: &[u8; 32]) -> ArtifactI
     ArtifactId::from_derived(hmac_sha256(&expand(key, &info), storage_id_raw))
 }
 
+/// The label of an attachment's first-publication address derivation.
+pub const ATTACHMENT_ADDRESS_LABEL: &str = "dohflow/sync-attachment-address/v1";
+
+/// The id of an **attachment** at its first publication in epoch `key.key_epoch()` (C.3):
+/// `HMAC-SHA256(Expand(K_e, label "dohflow/sync-attachment-address/v1" ‖ uuid vault_id),
+/// storage_id_raw ‖ uuid attachment_id)`.
+///
+/// The logical id is part of the address because C.9 seals it into the plaintext: an address that
+/// named the bytes alone would let one address carry two plaintexts (a shred and a re-import of the
+/// same bytes gives a new `attachment_id`), and a second plaintext under the zero nonce is the one
+/// thing C.9's fixed-plaintext rule forbids. Re-addressing at a key-changing epoch is unchanged: it
+/// chains from the id ([`readdress_id`]).
+#[must_use]
+pub fn first_attachment_artifact_id(
+    key: &EpochKey,
+    storage_id_raw: &[u8; 32],
+    attachment_id: &[u8; 16],
+) -> ArtifactId {
+    let mut info = label_bytes(ATTACHMENT_ADDRESS_LABEL);
+    info.extend_from_slice(key.vault_id());
+    let mut message = Vec::with_capacity(48);
+    message.extend_from_slice(storage_id_raw);
+    message.extend_from_slice(attachment_id);
+    ArtifactId::from_derived(hmac_sha256(&expand(key, &info), &message))
+}
+
 /// The id of an artifact in the next key-changing epoch (C.3):
 /// `HMAC-SHA256(Expand(K_{e+1}, label ‖ uuid vault_id ‖ u64 key_epoch_{e+1}), previous_id)`.
 ///

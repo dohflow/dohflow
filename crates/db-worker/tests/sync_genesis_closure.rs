@@ -49,6 +49,8 @@ struct Bridged<'a> {
     fail_put: Cell<Option<usize>>,
     /// Run once, right after the first put of every production (what arrives under it).
     on_first_put: RefCell<Option<Box<dyn FnMut() + 'a>>>,
+    /// Every container this device ever sent, by address, whatever the service answered.
+    seen: RefCell<Vec<(ArtifactId, Vec<u8>)>>,
 }
 
 impl<'a> Bridged<'a> {
@@ -60,7 +62,21 @@ impl<'a> Bridged<'a> {
             puts: Cell::new(0),
             fail_put: Cell::new(None),
             on_first_put: RefCell::new(None),
+            seen: RefCell::new(Vec::new()),
         }
+    }
+
+    /// How many addresses were sent two different containers (C.9: never one).
+    fn addresses_with_two_containers(&self) -> usize {
+        let mut by_id: std::collections::BTreeMap<[u8; 32], Vec<&Vec<u8>>> = Default::default();
+        let seen = self.seen.borrow();
+        for (id, container) in seen.iter() {
+            let held = by_id.entry(*id.as_bytes()).or_default();
+            if !held.contains(&container) {
+                held.push(container);
+            }
+        }
+        by_id.values().filter(|held| held.len() > 1).count()
     }
 }
 
@@ -73,6 +89,9 @@ impl ArtifactTransport for Bridged<'_> {
         container: &[u8],
     ) -> Result<ArtifactReceipt, TransportError> {
         self.puts.set(self.puts.get() + 1);
+        self.seen
+            .borrow_mut()
+            .push((*artifact_id, container.to_vec()));
         if self.fail_put.get() == Some(self.puts.get()) {
             self.fail_put.set(None);
             return Err(TransportError::Unavailable);
@@ -264,6 +283,40 @@ impl Device {
         batch
     }
 
+    /// Remove a batch and everything of it, as discarding an import does.
+    fn remove_batch(&self, id: u8) {
+        let batch_id = [id; 16];
+        let conn = self.worker.read_connection().unwrap();
+        for sql in [
+            "DELETE FROM source_provenance_links WHERE source_record_id IN
+                 (SELECT id FROM source_records WHERE source_batch_id = ?1)",
+            "DELETE FROM source_records WHERE source_batch_id = ?1",
+            "DELETE FROM parser_runs WHERE source_batch_id = ?1",
+            "DELETE FROM source_batches WHERE id = ?1",
+        ] {
+            conn.execute(sql, [batch_id.as_slice()]).unwrap();
+        }
+    }
+
+    /// An attachment linked to an entity, as an import of a receipt leaves it.
+    fn attach(&self, bytes: &[u8], entity: u8) -> core_ledger::AttachmentId {
+        let id = self
+            .worker
+            .import_attachment(bytes, Some("application/pdf"), None)
+            .unwrap();
+        self.worker
+            .link_attachment(id, "transaction", uuid::Uuid::from_bytes([entity; 16]))
+            .unwrap();
+        id
+    }
+
+    /// Unlink the attachment's last link: it is crypto-shredded.
+    fn shred(&self, id: core_ledger::AttachmentId, entity: u8) {
+        self.worker
+            .unlink_attachment(id, "transaction", uuid::Uuid::from_bytes([entity; 16]))
+            .unwrap();
+    }
+
     /// The artifacts the closure holds, as production gives them.
     fn produced(&self) -> Vec<ArtifactId> {
         let service = artifacts::FakeService::default();
@@ -386,11 +439,13 @@ fn a_put_that_fails_stops_before_anything_is_sent_and_a_retry_finishes() {
 }
 
 /// A closure whose receipts the service does not hold is refused at `installEpoch` with
-/// `ArtifactMissing`, and nothing is pinned or published. Once the receipts exist, the saved
-/// container is sent with the same bytes: the resume puts the closure again from the local rows.
+/// `ArtifactMissing`, and nothing is pinned or published. When the service then lacks the objects,
+/// the resume asks it (`getArtifactStatus`), finds them missing and puts them again, by their
+/// logical ids through the mapping: the same ids and hashes, never an `ObjectConflict`, and the
+/// saved container is then sent with the same bytes.
 #[test]
-fn a_missing_receipt_is_refused_and_pins_nothing_and_the_resume_puts_the_closure_again() {
-    let device = Device::new();
+fn a_missing_receipt_is_refused_and_pins_nothing_and_the_resume_puts_what_is_missing_again() {
+    let mut device = Device::new();
     device
         .worker
         .import_attachment(PDF, Some("application/pdf"), None)
@@ -423,13 +478,15 @@ fn a_missing_receipt_is_refused_and_pins_nothing_and_the_resume_puts_the_closure
         .state;
     assert_ne!(state, GenesisState::Published);
 
-    // The service now holds the receipts. The resume sends the saved container, after putting the
-    // closure it names again from the local rows: the same bytes, never an ObjectConflict.
+    // The service lost the objects (a fresh one): the resume finds them missing and puts them again
+    // from the mapping, then sends the saved container.
+    drop(transport);
+    device.artifacts = artifacts::FakeService::default();
     let transport = device.bridged();
     assert_eq!(device.enable(&transport).unwrap(), EnableOutcome::Enabled);
     assert!(
         transport.puts.get() >= ids.len(),
-        "the resume put the saved closure again"
+        "the resume put what the service lacked"
     );
     assert!(ids.iter().all(|id| device.snapshots.is_pinned(id)));
     assert_eq!(
@@ -439,9 +496,11 @@ fn a_missing_receipt_is_refused_and_pins_nothing_and_the_resume_puts_the_closure
 }
 
 /// A crash after the container was sealed and saved (the install answer is lost) is resumed with the
-/// saved container and the closure put again: identical receipts, the genesis installed once.
+/// saved container: the service holds every artifact with its recorded hash, so nothing is put
+/// again, `installEpoch` is an exact retry, and the genesis is installed once (04a's probe 2, with
+/// the source still there).
 #[test]
-fn a_lost_install_response_resumes_with_the_closure_put_again_identically() {
+fn a_lost_install_response_resumes_by_resending_the_install_and_puts_nothing_again() {
     let device = Device::new();
     device
         .worker
@@ -465,9 +524,10 @@ fn a_lost_install_response_resumes_with_the_closure_put_again_identically() {
         ),
         "{outcome:?}"
     );
-    assert!(
-        transport.puts.get() > puts_before,
-        "the resume put the saved closure again from the rows"
+    assert_eq!(
+        transport.puts.get(),
+        puts_before,
+        "the service holds every artifact with its recorded hash: nothing is put again"
     );
     assert_eq!(device.snapshots.published().len(), 1, "installed once");
 }
@@ -518,4 +578,190 @@ fn a_vault_that_keeps_changing_is_never_exported_with_an_incomplete_closure() {
         "{result:?}"
     );
     assert!(device.snapshots.calls().is_empty(), "nothing was sent");
+}
+
+/// 04a's probe 1 (F1): an attachment is shredded and the same bytes are imported again between two
+/// enable attempts. The new attachment has a new id, so it has its own address (C.3: the address
+/// names the logical id), and no address ever receives two different containers.
+#[test]
+fn a_shred_and_a_reimport_between_enable_attempts_gives_the_new_attachment_its_own_address() {
+    let device = Device::new();
+    let first_id = device.attach(PDF, 0x77);
+    device.put_batch(0x10, true);
+    let transport = device.bridged();
+    transport.fail_put.set(Some(2)); // the batch part's put fails; the attachment's landed
+    assert!(device.enable(&transport).is_err());
+    let first_sent: Vec<ArtifactId> = transport.seen.borrow().iter().map(|(id, _)| *id).collect();
+
+    device.shred(first_id, 0x77);
+    let second_id = device.attach(PDF, 0x78);
+    assert_ne!(first_id, second_id, "a re-import is a new attachment");
+
+    assert_eq!(device.enable(&transport).unwrap(), EnableOutcome::Enabled);
+    assert_eq!(
+        transport.addresses_with_two_containers(),
+        0,
+        "no address was sent two different plaintexts"
+    );
+    let sent = device.snapshots.manifest_sent("install_epoch").unwrap();
+    assert_eq!(sent.len(), 2, "the new attachment and the batch part");
+    assert!(
+        !sent.contains(&first_sent[0]),
+        "the shredded attachment's address is not in the genesis"
+    );
+}
+
+/// 04a's probe 2 (F2): the service installed the genesis and its answer was lost, and then an
+/// attachment of the closure was shredded. The service holds every artifact with its recorded hash,
+/// so the resume puts nothing, re-sends `installEpoch` as an exact retry, and finishes.
+#[test]
+fn a_shred_after_a_lost_install_response_still_finishes_the_enable() {
+    let device = Device::new();
+    let attachment = device.attach(PDF, 0x78);
+    let transport = device.bridged();
+    device.snapshots.script(Fault::Pass);
+    device.snapshots.script(Fault::LoseResponse);
+    assert!(device.enable(&transport).is_err());
+    assert_eq!(
+        device.snapshots.published().len(),
+        1,
+        "the service installed it"
+    );
+    let puts = transport.puts.get();
+
+    device.shred(attachment, 0x78);
+    let outcome = device.enable(&transport);
+    assert!(
+        matches!(
+            outcome,
+            Ok(EnableOutcome::Enabled | EnableOutcome::GenesisResumeLost)
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(transport.puts.get(), puts, "nothing was put again");
+    assert_eq!(device.snapshots.published().len(), 1, "installed once");
+}
+
+/// The same, for a batch that was discarded after the lost response.
+#[test]
+fn a_batch_discard_after_a_lost_install_response_still_finishes_the_enable() {
+    let device = Device::new();
+    device.put_batch(0x10, true);
+    let transport = device.bridged();
+    device.snapshots.script(Fault::Pass);
+    device.snapshots.script(Fault::LoseResponse);
+    assert!(device.enable(&transport).is_err());
+    assert_eq!(device.snapshots.published().len(), 1);
+    let puts = transport.puts.get();
+
+    device.remove_batch(0x10);
+    let outcome = device.enable(&transport);
+    assert!(
+        matches!(
+            outcome,
+            Ok(EnableOutcome::Enabled | EnableOutcome::GenesisResumeLost)
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(transport.puts.get(), puts);
+    assert_eq!(device.snapshots.published().len(), 1);
+}
+
+/// A saved genesis whose artifacts the service lacks and whose attachment is gone cannot have been
+/// installed (the service pins the whole closure before the compare-and-swap): the saved container
+/// is discarded and one fresh genesis is produced from the vault as it is, which the service
+/// accepts; no address is ever sent two containers.
+#[test]
+fn a_missing_artifact_whose_source_is_gone_discards_the_saved_genesis_and_produces_a_fresh_one() {
+    let mut device = Device::new();
+    let attachment = device.attach(PDF, 0x79);
+    device.put_batch(0x10, true);
+    let mut transport = device.bridged();
+    transport.tell = false;
+    let refused = device.enable(&transport);
+    assert!(
+        matches!(refused, Err(EnableError::Publish(_))),
+        "{refused:?}"
+    );
+    assert!(device.snapshots.published().is_empty());
+
+    // The service lost its objects and its staged snapshot (an unpinned object and a staged
+    // snapshot are both collected after a while), and the attachment was shredded.
+    drop(transport);
+    device.artifacts = artifacts::FakeService::default();
+    device.snapshots.script(Fault::DropStaged);
+    device.shred(attachment, 0x79);
+    let transport = device.bridged();
+    assert_eq!(device.enable(&transport).unwrap(), EnableOutcome::Enabled);
+    let sent = device.snapshots.manifest_sent("install_epoch").unwrap();
+    assert_eq!(sent.len(), 1, "only the batch part is in the fresh genesis");
+    assert!(sent.iter().all(|id| device.snapshots.is_pinned(id)));
+    assert_eq!(transport.addresses_with_two_containers(), 0);
+    assert_eq!(device.snapshots.published().len(), 1);
+}
+
+/// An object the service holds at an address with another hash than the one this device recorded is
+/// a typed failure: nothing is put over it, nothing is installed, and the enable stops.
+#[test]
+fn an_object_with_another_hash_at_a_closure_address_stops_the_enable() {
+    let mut device = Device::new();
+    device.attach(PDF, 0x7a);
+    let mut transport = device.bridged();
+    transport.tell = false;
+    assert!(device.enable(&transport).is_err());
+    let ids = device.produced();
+    drop(transport);
+
+    // Something else sits at the address.
+    device.artifacts = artifacts::FakeService::default();
+    let squatter = sync_core::artifact::encode_container(&[0x5a; 48]);
+    let vault_id = *device.worker.vault_id().unwrap().as_bytes();
+    device
+        .artifacts
+        .put(&vault_id, 1, &ids[0], &squatter)
+        .unwrap();
+    let transport = device.bridged();
+    let result = device.enable(&transport);
+    assert!(
+        matches!(
+            result,
+            Err(EnableError::Closure(
+                ProduceError::ServiceHoldsAnotherObject(_)
+            ))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(transport.puts.get(), 0, "nothing was put over it");
+    assert!(device.snapshots.published().is_empty());
+}
+
+/// A key rotation is refused while Sync is being enabled (the genesis is persisted and not yet
+/// published), before anything is created; once the genesis is published it is allowed.
+#[test]
+fn a_key_rotation_is_refused_while_a_genesis_is_in_flight_and_allowed_after_it() {
+    let device = Device::new();
+    device.attach(PDF, 0x7b);
+    let transport = device.bridged();
+    transport.fail_put.set(Some(1));
+    assert!(device.enable(&transport).is_err());
+    assert!(device.worker.genesis_in_flight().unwrap());
+
+    let new_dek = vault_crypto::generate_dek().unwrap();
+    let dest = device._dir.path().join("rekeyed.copy");
+    let refused = device.worker.prepare_rekeyed_copy(&new_dek, &dest);
+    assert!(
+        matches!(
+            refused,
+            Err(db_worker::DbError::RekeyRefusedGenesisInFlight)
+        ),
+        "{refused:?}"
+    );
+    assert!(!dest.exists(), "nothing was created");
+
+    assert_eq!(device.enable(&transport).unwrap(), EnableOutcome::Enabled);
+    assert!(!device.worker.genesis_in_flight().unwrap());
+    device
+        .worker
+        .prepare_rekeyed_copy(&new_dek, &dest)
+        .expect("a rotation is allowed once the genesis is published");
 }

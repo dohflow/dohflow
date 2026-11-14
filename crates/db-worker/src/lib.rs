@@ -1710,6 +1710,11 @@ pub enum DbError {
     /// The referenced attachment id does not exist.
     #[error("attachment not found")]
     AttachmentNotFound,
+    /// A key rotation was refused because Sync is being enabled on this vault: the genesis is
+    /// persisted and not yet published, and a rotation re-addresses every attachment. Finish the
+    /// enable (or let it end) first; nothing was changed.
+    #[error("a key rotation cannot start while Sync is being enabled")]
+    RekeyRefusedGenesisInFlight,
     /// A replicated table's primary key would exceed the 256-byte limit of the canonical row
     /// encoding (vault-format.md C.1.5). The key is rejected, never truncated. The message
     /// names the table only, not the key.
