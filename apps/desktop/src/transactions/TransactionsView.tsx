@@ -914,7 +914,7 @@ function CategoryProvenanceBadge({
       // The LABEL is the foreground in the light theme: informational-blue text on its own tint over a
       // hovered (4.26:1) or selected (3.92:1) row is below 4.5:1 for 11px text (personal-cfo-4d8.56).
       // The mark, tint and outline stay informational; dark keeps its passing blue label.
-      className="inline-flex items-center gap-1 rounded-full border border-info/40 bg-info/10 px-2 py-0.5 text-[11px] font-medium text-foreground dark:text-info"
+      className="inline-flex items-center gap-1 rounded-full border border-info/40 bg-info/10 px-2 py-0.5 text-[0.6875rem] font-medium text-foreground dark:text-info"
     >
       <Sparkles className="size-3 text-info" aria-hidden />
       {label}
@@ -955,7 +955,7 @@ function CategoryCell({
       {swatch && (
         <span
           aria-hidden
-          className="pointer-events-none absolute top-1/2 left-1 z-10 flex size-5 -translate-y-1/2 items-center justify-center rounded-full border text-[11px] leading-none"
+          className="pointer-events-none absolute top-1/2 left-1 z-10 flex size-5 -translate-y-1/2 items-center justify-center rounded-full border text-[0.6875rem] leading-none"
           style={{ backgroundColor: swatch.color ?? "transparent" }}
         >
           {swatch.icon ?? ""}
@@ -966,7 +966,7 @@ function CategoryCell({
         value={categoryId ?? ""}
         onChange={(event) => onSelect(event.target.value || null)}
         className={cn(
-          "max-w-[9rem] cursor-pointer appearance-none truncate rounded-full border py-0.5 pr-6 text-[11px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "max-w-[9rem] cursor-pointer appearance-none truncate rounded-full border py-0.5 pr-6 text-[0.6875rem] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring",
           swatch ? "pl-7" : "pl-2.5",
           uncategorized
             ? "border-dashed border-warning/50 bg-warning/5 text-warning"

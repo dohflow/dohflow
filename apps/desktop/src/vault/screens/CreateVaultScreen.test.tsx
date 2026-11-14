@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { renderWithClient } from "@/test/renderWithClient";
 
@@ -57,5 +57,72 @@ describe("create-vault footer (personal-cfo-i93n3.9)", () => {
       "Test Device backups include your encrypted vault; your password is still required.",
     );
     expect(note).toHaveAttribute("role", "note");
+  });
+});
+
+// A fixed `h-10` clips a field's text when the system text size makes it taller than the box, so the
+// create-vault fields grow instead (FRONTEND.md 7.6: reflow, not clipping). At the desktop size the
+// content is shorter than 40px, so `min-h-10` renders the same height (personal-cfo-i93n3.25).
+describe("create-vault fields at the largest text size", () => {
+  test("the base currency select and the password fields grow rather than keep a fixed height", async () => {
+    mocks.buildInfo.mockResolvedValue(buildInfo(null));
+    renderWithClient(<CreateVaultScreen />);
+    await waitFor(() => expect(mocks.buildInfo).toHaveBeenCalled());
+    for (const field of [
+      screen.getByLabelText("Base currency"),
+      screen.getByLabelText("Master password"),
+      screen.getByLabelText("Confirm password"),
+    ]) {
+      expect(field).toHaveClass("min-h-10");
+      expect(field).not.toHaveClass("h-10");
+    }
+    // twMerge resolves `h-10` against `h-auto` for the shared Input, so the password fields carry it.
+    for (const field of [
+      screen.getByLabelText("Master password"),
+      screen.getByLabelText("Confirm password"),
+    ]) {
+      expect(field).toHaveClass("h-auto");
+    }
+  });
+
+  // `Button` is `h-10 whitespace-nowrap`; at the largest size "Create vault" spilled out of its own
+  // button, so the primary action wraps and grows here and `cn()` drops the primitive's two classes.
+  test("the Create vault button wraps and grows rather than spilling out of itself", async () => {
+    mocks.buildInfo.mockResolvedValue(buildInfo(null));
+    renderWithClient(<CreateVaultScreen />);
+    await waitFor(() => expect(mocks.buildInfo).toHaveBeenCalled());
+    const button = screen.getByRole("button", { name: "Create vault" });
+    expect(button).toHaveClass(
+      "h-auto",
+      "min-h-10",
+      "whitespace-normal",
+      "[overflow-wrap:anywhere]",
+      "compact:@max-[15rem]:px-1",
+    );
+    // A label this short is not hyphenated ("Cre-ate"); the button gives up padding instead.
+    expect(button).not.toHaveClass("compact:hyphens-auto");
+    expect(button.closest("form")).toHaveClass("@container");
+    expect(button).not.toHaveClass("h-10");
+    expect(button).not.toHaveClass("whitespace-nowrap");
+  });
+
+  // A native select cannot wrap, so at the largest size the closed value is cut off sideways ("US I").
+  // The full label is shown as text under it on a narrow card; it is not announced a second time
+  // because the select already announces its value (personal-cfo-i93n3.25).
+  test("shows the selected currency's full label as text under the select on a narrow card", async () => {
+    mocks.buildInfo.mockResolvedValue(buildInfo(null));
+    renderWithClient(<CreateVaultScreen />);
+    await waitFor(() => expect(mocks.buildInfo).toHaveBeenCalled());
+    const select = screen.getByLabelText("Base currency");
+    const text = screen.getByTestId("base-currency-value");
+    expect(text).toHaveTextContent("US Dollar (USD)");
+    expect(text).toHaveAttribute("aria-hidden", "true");
+    expect(text).toHaveClass("hidden", "compact:@max-[15rem]:block");
+    expect(text.closest("form")).toHaveClass("@container");
+    fireEvent.change(select, { target: { value: "EUR" } });
+    expect(text).toHaveTextContent("Euro (EUR)");
+    // Both options are still offered, with the same labels as before.
+    expect(screen.getByRole("option", { name: "US Dollar (USD)" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Euro (EUR)" })).toBeInTheDocument();
   });
 });

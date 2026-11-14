@@ -224,7 +224,7 @@ function FixtureBadge({ spec }: { spec: (typeof BADGE_CASES)[number] }) {
   switch (spec.body) {
     case "autopay":
       return (
-        <Badge variant={spec.variant} className="text-[10px] uppercase tracking-wide" data-case={spec.id}>
+        <Badge variant={spec.variant} className="text-[0.625rem] uppercase tracking-wide" data-case={spec.id}>
           Autopay
         </Badge>
       );
@@ -338,7 +338,7 @@ function Tiles({ theme, surface, consumers }: { theme: Theme; surface: Surface; 
             <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3 p-4">
               {consumers.map((c, i) =>
                 (["default", "hover", "focus"] as const).map((state) => (
-                  <div key={`${i}-${state}`} className="flex flex-col gap-1 text-[10px] text-muted-foreground">
+                  <div key={`${i}-${state}`} className="flex flex-col gap-1 text-[0.625rem] text-muted-foreground">
                     <div
                       data-consumer={i}
                       data-state={state}
@@ -535,7 +535,7 @@ function Audit() {
             ))}
           </ul>
           <h2 className="mt-4 text-sm font-semibold">All rows (JSON also in window.__contrastAudit)</h2>
-          <pre id="audit-json" className="max-h-96 overflow-auto text-[10px]">{JSON.stringify({ engine: engine(), meta: captureMeta(), rows }, null, 1)}</pre>
+          <pre id="audit-json" className="max-h-96 overflow-auto text-[0.625rem]">{JSON.stringify({ engine: engine(), meta: captureMeta(), rows }, null, 1)}</pre>
         </div>
       )}
     </div>

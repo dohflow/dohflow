@@ -1,5 +1,7 @@
 import { fireEvent, screen } from "@testing-library/react";
+import { compile } from "tailwindcss";
 
+import { COMPACT_QUERY } from "@/lib/compact";
 import { renderWithClient } from "@/test/renderWithClient";
 
 import { NoResetWarning } from "./NoResetWarning";
@@ -39,5 +41,69 @@ describe("NoResetWarning", () => {
 
     fireEvent.click(screen.getByRole("checkbox"));
     expect(onChange).toHaveBeenCalledWith(true);
+  });
+
+  // At the largest system text size an unbreakable word ("unrecoverable") is wider than the card's
+  // column. A flex child will not shrink below its content unless `min-width: 0`, and a long word only
+  // breaks with `overflow-wrap: anywhere`, so both the warning and the acknowledgement must carry them
+  // or the page grows sideways and the copy is clipped at the screen edge (personal-cfo-i93n3.25).
+  it("lets the warning and the acknowledgement shrink and wrap at the largest text size", async () => {
+    renderWithClient(
+      <NoResetWarning acknowledged={false} onAcknowledgedChange={() => {}} />,
+    );
+
+    const warning = await screen.findByTestId("no-reset-warning");
+    const acknowledgement = screen.getByText(
+      "I understand and have saved my password somewhere safe.",
+    );
+    const label = screen.getByRole("checkbox").closest("label");
+    for (const element of [warning, acknowledgement, label]) {
+      expect(element).toHaveClass("min-w-0");
+    }
+    for (const element of [warning, acknowledgement]) {
+      expect(element).toHaveClass("[overflow-wrap:anywhere]");
+    }
+    // At that size the column beside the icon is too narrow to read, so the icon moves above the text
+    // when the card is narrow, and the words break at syllables rather than mid-syllable.
+    expect(warning.closest(".\\@container")).not.toBeNull();
+    expect(warning.parentElement).toHaveClass("compact:@max-[15rem]:flex-col");
+    expect(label).toHaveClass("compact:@max-[15rem]:flex-col");
+    for (const element of [warning, acknowledgement]) {
+      expect(element).toHaveClass("compact:@max-[15rem]:hyphens-auto");
+      // A word breaks at a hyphen only with at least eight letters on each side of it, so the words
+      // the copy depends on ("password", "unrecoverable", "understand") are never cut (Studio F3).
+      // The prefixed pair is what WebKit honors; the standard `hyphenate-limit-chars` is ignored there.
+      expect(element).toHaveClass(
+        "compact:@max-[15rem]:[-webkit-hyphenate-limit-before:8]",
+        "compact:@max-[15rem]:[-webkit-hyphenate-limit-after:8]",
+      );
+    }
+    // The copy is untouched.
+    expect(warning.textContent).toBe(CANONICAL);
+  });
+
+  // A class that Tailwind does not know emits nothing and no DOM assertion notices, so the classes
+  // that carry the fix are compiled and the rules they must produce are checked.
+  it("compiles the narrow-card stack and the hyphenation to the rules they stand for", async () => {
+    const css = (
+      await compile(
+        `@custom-variant compact (@media ${COMPACT_QUERY});\n@tailwind utilities;`,
+      )
+    ).build([
+      "@container",
+      "compact:@max-[15rem]:flex-col",
+      "compact:@max-[15rem]:hyphens-auto",
+      "compact:@max-[15rem]:[-webkit-hyphenate-limit-before:8]",
+      "compact:@max-[15rem]:[-webkit-hyphenate-limit-after:8]",
+      "[overflow-wrap:anywhere]",
+    ]);
+    expect(css).toContain("container-type: inline-size");
+    expect(css).toMatch(/@container \(width < 15rem\)/);
+    expect(css).toMatch(/flex-direction: column/);
+    expect(css).toContain(`@media ${COMPACT_QUERY}`);
+    expect(css).toMatch(/@container \(width < 15rem\) \{[^}]*hyphens: auto/);
+    expect(css).toMatch(/@container \(width < 15rem\) \{[^}]*-webkit-hyphenate-limit-before: 8/);
+    expect(css).toMatch(/@container \(width < 15rem\) \{[^}]*-webkit-hyphenate-limit-after: 8/);
+    expect(css).toContain("overflow-wrap: anywhere");
   });
 });

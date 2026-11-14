@@ -290,7 +290,7 @@ export function DuplicateReviewPanel({
                         {field.a}
                       </span>
                     </div>
-                    <div className="w-16 text-center text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <div className="w-16 text-center text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
                       {field.label}
                     </div>
                     <div className="px-3 py-2.5">
@@ -330,7 +330,7 @@ export function DuplicateReviewPanel({
               {/* per-column context */}
               <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-2">
                 <div className="flex min-w-0 flex-col gap-1.5">
-                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
                     Source
                   </div>
                   <div className="flex min-w-0 items-center gap-1.5 rounded-md border bg-muted/30 px-2 py-1.5">
@@ -345,7 +345,7 @@ export function DuplicateReviewPanel({
                 </div>
                 <div className="w-16" />
                 <div className="flex flex-col gap-1.5">
-                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
                     In your ledger
                   </div>
                   <CounterpartActions

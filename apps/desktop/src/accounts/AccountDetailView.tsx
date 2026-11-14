@@ -305,7 +305,7 @@ export function AccountDetailView({
               )}
             </div>
             <div className="flex flex-col items-end gap-1.5">
-              <span className="text-[11px] text-muted-foreground">History & horizon</span>
+              <span className="text-[0.6875rem] text-muted-foreground">History & horizon</span>
               <div
                 role="group"
                 aria-label="History and horizon range"
@@ -498,7 +498,7 @@ function ActivityTable({
               <TableCell>
                 <span className="flex flex-wrap items-center gap-2">
                   <span className="font-medium text-muted-foreground">{u.label}</span>
-                  <Badge variant="outline" className="text-[10px]">
+                  <Badge variant="outline" className="text-[0.625rem]">
                     Projected
                   </Badge>
                   {u.detail && (
@@ -536,10 +536,10 @@ function SectionRow({
   return (
     <TableRow>
       <TableCell colSpan={span} className="border-b-0 pb-1 pt-4">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-muted-foreground">
           {label}
         </span>
-        {note && <span className="ml-2 text-[11px] text-muted-foreground">· {note}</span>}
+        {note && <span className="ml-2 text-[0.6875rem] text-muted-foreground">· {note}</span>}
       </TableCell>
     </TableRow>
   );
@@ -570,7 +570,7 @@ export function CardStatsStrip({
     <div className="flex flex-wrap items-center gap-x-8 gap-y-3 rounded-lg border border-border bg-card px-5 py-4">
       {cycle && (
         <div>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-[0.6875rem] text-muted-foreground">
             Statement balance{cycle.statement_is_actual ? "" : " (est.)"}
           </p>
           <p className="text-sm font-semibold tabular-nums">
@@ -583,7 +583,7 @@ export function CardStatsStrip({
       )}
       {cycle && (
         <div>
-          <p className="text-[11px] text-muted-foreground">Payment due</p>
+          <p className="text-[0.6875rem] text-muted-foreground">Payment due</p>
           <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm font-semibold">
             {formatIsoDate(cycle.due_date)}
             {/* Two elements, not one with a conditional variant: the words must say "due soon" when it is
@@ -602,11 +602,11 @@ export function CardStatsStrip({
       {utilization !== null && (
         <div className="min-w-52 flex-1">
           <div className="flex items-baseline justify-between">
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-[0.6875rem] text-muted-foreground">
               Credit limit{" "}
               {formatMoney({ minor_units: limit, currency: account.balance.currency })}
             </p>
-            <p className="text-[11px] font-semibold">{utilization.toFixed(0)}% used</p>
+            <p className="text-[0.6875rem] font-semibold">{utilization.toFixed(0)}% used</p>
           </div>
           <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-secondary">
             <div
@@ -614,7 +614,7 @@ export function CardStatsStrip({
               style={{ width: `${utilization}%` }}
             />
           </div>
-          <p className="mt-1.5 text-[11px] text-muted-foreground">
+          <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
             {formatMoney({
               minor_units: Math.max(0, limit - owedShown),
               currency: account.balance.currency,
