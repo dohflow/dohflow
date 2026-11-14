@@ -368,6 +368,26 @@ fn artifact_id(k_e: &[u8; 32], vault: &[u8; 16], storage_id: &[u8; 32]) -> [u8; 
     hmac256(&addr_key, storage_id)
 }
 
+/// The id of an attachment at its first publication (C.3): the same derivation under its own label,
+/// over the raw storage id and the attachment id, so the same bytes under two attachment ids are two
+/// addresses.
+fn attachment_artifact_id(
+    k_e: &[u8; 32],
+    vault: &[u8; 16],
+    storage_id: &[u8; 32],
+    attachment_id: &[u8; 16],
+) -> [u8; 32] {
+    let addr_key = hkdf_expand(
+        k_e,
+        &Enc::new("dohflow/sync-attachment-address/v1")
+            .fixed(vault)
+            .done(),
+    );
+    let mut message = storage_id.to_vec();
+    message.extend_from_slice(attachment_id);
+    hmac256(&addr_key, &message)
+}
+
 /// The id of an artifact in the next key-changing epoch, from its previous id (C.3): any member of
 /// epoch `e+1` holds the previous id and `K_{e+1}`, so none needs the origin's DEK.
 fn artifact_readdress_id(
@@ -818,6 +838,8 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
     let art_1 = artifact_id(&k_e, &VAULT, &storage_1);
     let art_1_e2 = artifact_id(&k_e2, &VAULT, &storage_1);
     let art_1_readdress_e2 = artifact_readdress_id(&k_e2, &VAULT, 2, &art_1);
+    let attachment_art_1 = attachment_artifact_id(&k_e, &VAULT, &storage_1, &[0x07; 16]);
+    let attachment_art_1_other = attachment_artifact_id(&k_e, &VAULT, &storage_1, &[0x08; 16]);
     let art_2 = artifact_id(&k_e, &VAULT, &storage_2);
     let man_commit = manifest_commitment(&[art_1, art_2]);
     let mut delta = vec![art_1, art_2];
@@ -1040,6 +1062,11 @@ fn vectors() -> Vec<(&'static str, Vec<u8>)> {
         ("artifact_id_epoch1", art_1.to_vec()),
         ("artifact_id_epoch2", art_1_e2.to_vec()),
         ("artifact_id_readdress_epoch2", art_1_readdress_e2.to_vec()),
+        ("attachment_artifact_id_epoch1", attachment_art_1.to_vec()),
+        (
+            "attachment_artifact_id_epoch1_other_id",
+            attachment_art_1_other.to_vec(),
+        ),
         // The genesis snapshot's object id (C.8) for a fixed genesis epoch record id.
         (
             "genesis_snapshot_id",
