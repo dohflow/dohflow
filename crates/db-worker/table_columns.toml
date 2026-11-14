@@ -494,7 +494,7 @@ name = "sync_artifacts"
 class = "3"
 write_set = "none"
 primary_key = ["key_epoch", "sync_artifact_id"]
-columns = ["key_epoch:int", "sync_artifact_id:uuid", "ciphertext_sha256:bytes", "kind:int", "logical_id:uuid", "part_index:int", "part_count:int", "receipt_at:text", "staged_storage_id:text", "staged_wrapped_content_key:bytes", "staged_content_key_nonce:bytes", "staged_content_nonce:bytes", "staged_content_alg:text", "staged_plaintext_size:int", "staged_mime_type:text"]
+columns = ["key_epoch:int", "sync_artifact_id:uuid", "ciphertext_sha256:bytes", "kind:int", "logical_id:uuid", "part_index:int", "part_count:int", "receipt_at:text", "staged_storage_id:text", "staged_wrapped_content_key:bytes", "staged_content_key_nonce:bytes", "staged_content_nonce:bytes", "staged_content_alg:text", "staged_plaintext_size:int", "staged_mime_type:text", "transport_plaintext_sha256:bytes", "logical_metadata:bytes"]
 
 [[table]]
 name = "sync_base"

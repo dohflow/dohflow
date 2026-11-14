@@ -34,6 +34,10 @@ const ALLOWED: &[&str] = &[
     // address when it was stored) as the `ArtifactId`s a `LiveClosure` is keyed by
     // (personal-cfo-1cltt.7).
     "crates/db-worker/src/sync_live_closure.rs",
+    // A producer wraps the id it stored in its own `sync_artifacts` row (it derived it at the
+    // artifact's first seal, C.3) to seal and put the artifact again by its logical id, never by an
+    // address recomputed from a storage id (personal-cfo-1cltt.7).
+    "crates/db-worker/src/sync_produce.rs",
     // 6b adds the commitment derivations here, and vault-crypto adds the tag and domain
     // derivations; list each file when it lands.
 ];
