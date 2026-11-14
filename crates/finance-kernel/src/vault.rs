@@ -1565,12 +1565,13 @@ mod old_backup_settings_tests {
             // later migration, and none of their objects (66 adds the device-local Sync state, 67 the
             // outbox's issue time, 68 the counter register and the genesis, 69 the void ledger and
             // the applied cursor, 70 the artifact mapping, 71 the Sync notices, 72 lets a bound outbox
-            // row have no result, 73 the genesis snapshot's identity, 74 the live closure, 75 the
-            // shared-blob index, 76 the import identity tables, 77 the dedupe decisions' new shape).
+            // row have no result, 73 the genesis snapshot's identity, 74 the artifact descriptor
+            // columns (which go with the mapping table), 75 the live closure, 76 the shared-blob
+            // index, 77 the import identity tables, 78 the dedupe decisions' new shape).
             let conn = kernel.worker.read_connection().unwrap();
             conn.execute_batch(
                 "UPDATE settings SET key = substr(key, 6) WHERE key LIKE 'user.%';
-                 DELETE FROM schema_migrations WHERE version IN (64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77);
+                 DELETE FROM schema_migrations WHERE version IN (64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78);
                  DROP INDEX idx_dedupe_decisions_batch;
                  DROP INDEX idx_dedupe_decisions_transaction;
                  DROP INDEX idx_dedupe_decisions_identity;
