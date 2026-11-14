@@ -1,4 +1,4 @@
-//! The data half of migration 77 (`personal-cfo-0g528.3`, ADR 0074 Addendum J item 6): `dedupe_decisions`
+//! The data half of migration 78 (`personal-cfo-0g528.3`, ADR 0074 Addendum J item 6): `dedupe_decisions`
 //! becomes a class-1 table keyed to a transaction or an identity instead of to a device-local staging
 //! row, and a *flagged* decision moves onto the staged row it is about.
 //!
@@ -17,11 +17,11 @@
 //!   `committed_transaction_id` for a decision that named a staged row, and otherwise the transaction
 //!   whose derived decision id the row carries (a decision written by `CommitImportedTransaction` names
 //!   no staged row; its id is a content id of the transaction and `committed`, recomputed here).
-//!   `identity_id` is the identity `import_identities` holds for that transaction, when migration 76
+//!   `identity_id` is the identity `import_identities` holds for that transaction, when migration 77
 //!   backfilled one. A committed row that cannot be keyed **stays, with NULL keys, and is counted**: a
 //!   migration does not delete committed history it cannot re-key.
 //!
-//! Like migration 76's backfill this writes class-1 rows outside a command, so the migration is in
+//! Like migration 77's backfill this writes class-1 rows outside a command, so the migration is in
 //! `CLASS_1_WRITING_MIGRATIONS` and refuses on a vault where Sync is armed; once Sync is user-reachable a
 //! backfill of class-1 rows is a command.
 
@@ -64,7 +64,7 @@ struct Legacy {
     decided_at: String,
 }
 
-/// The post-step of migration 77.
+/// The post-step of migration 78.
 pub(crate) fn migrate_up(conn: &Connection) -> rusqlite::Result<()> {
     let report = convert(conn)?;
     // Counts only (the redaction rule): what a support session needs to see that a conversion ran.
@@ -308,7 +308,7 @@ fn insert(
 
 #[cfg(test)]
 mod tests {
-    //! The conversion of migration 77, driven at the schema before it (76) with rows as the engine
+    //! The conversion of migration 78, driven at the schema before it (77) with rows as the engine
     //! before the reshape wrote them, then migrated.
 
     use super::*;
@@ -339,14 +339,14 @@ mod tests {
             .unwrap()
     }
 
-    /// A vault at schema 76 with a vault id, an account and one source batch.
+    /// A vault at schema 77 with a vault id, an account and one source batch.
     fn legacy_vault() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
-        apply(&mut conn, &MIGRATIONS[..76]).unwrap();
+        apply(&mut conn, &MIGRATIONS[..77]).unwrap();
         conn.execute(
             "INSERT INTO vault_metadata (singleton, vault_id, schema_version, envelope_version,
                  kdf_algorithm, kdf_memory_kib, kdf_time_cost, kdf_parallelism, created_at)
-             VALUES (1, ?1, 76, 1, 'argon2id', 1, 1, 1, 't')",
+             VALUES (1, ?1, 77, 1, 'argon2id', 1, 1, 1, 't')",
             [uid(VAULT)],
         )
         .unwrap();
@@ -505,7 +505,7 @@ mod tests {
     /// The rows as the engine before the reshape wrote them, one of each kind.
     fn populate(conn: &Connection) {
         // Committed through `CommitImportedTransaction`: no staged id, a derived id; its transaction 1
-        // has an identity from migration 76.
+        // has an identity from migration 77.
         committed(conn, 1, false);
         conn.execute(
             "INSERT INTO import_identities (identity_id, kind, file_fingerprint, row_ordinal,
@@ -636,7 +636,7 @@ mod tests {
             "2026-03-04T05",
         );
         conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
-        conn.execute_batch(MIGRATIONS[76].up).unwrap();
+        conn.execute_batch(MIGRATIONS[77].up).unwrap();
         assert_eq!(
             convert(&conn).unwrap(),
             ReshapeReport {
@@ -660,7 +660,7 @@ mod tests {
             committed_row(uid(0x8002), Some(uid(2)), None),
             // Nothing can key it, so it STAYS with NULL keys (no table CHECK demands a key).
             committed_row(uid(0x8003), None, None),
-            // Keyed through its derived id, and by the identity migration 76 wrote for it.
+            // Keyed through its derived id, and by the identity migration 77 wrote for it.
             committed_row(derived_decision_id(1), Some(uid(1)), Some(uid(0x9001))),
             // A matched source batch cannot be placed on a staged row: kept, unkeyed.
             (
@@ -750,7 +750,7 @@ mod tests {
             assert!(
                 matches!(
                     error,
-                    DbError::MigrationRefusedSyncArmed { version: 77, .. }
+                    DbError::MigrationRefusedSyncArmed { version: 78, .. }
                 ),
                 "{error:?}"
             );
@@ -759,7 +759,7 @@ mod tests {
                     r.get(0)
                 })
                 .unwrap();
-            assert_eq!(latest, 76);
+            assert_eq!(latest, 77);
             // Nothing was converted: the legacy shape and its rows are intact.
             let rows: i64 = conn
                 .query_row(
@@ -779,7 +779,7 @@ mod tests {
         apply(&mut conn, MIGRATIONS).unwrap();
         let (rows, flagged) = (decisions(&conn), flags(&conn));
 
-        assert_eq!(migrate_down(&mut conn, 76).unwrap(), 1);
+        assert_eq!(migrate_down(&mut conn, 77).unwrap(), 1);
         // The old shape: a flag is a decision again (its id is the staged row's), and a committed
         // row names the staged row that committed its transaction.
         let (staged_flagged, with_staged): (i64, i64) = conn

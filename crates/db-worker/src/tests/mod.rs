@@ -5793,10 +5793,10 @@ fn a_duplicate_fingerprint_is_flagged_not_committed() {
     assert_eq!(matched_id, Some(committed_txn));
 }
 
-/// personal-cfo-0g528.3, C9: the decisions apply writes under this engine, and what migration 77 makes of
+/// personal-cfo-0g528.3, C9: the decisions apply writes under this engine, and what migration 78 makes of
 /// the shape the engine before it wrote. Apply keys every committed decision by its transaction (the
 /// planner's `CommitImportedTransaction` and the retired `CommitStaged`'s replay alike); a flag is the
-/// staged row's own columns; a skip writes no decision row. Then the vault goes down to schema 76, its
+/// staged row's own columns; a skip writes no decision row. Then the vault goes down to schema 77, its
 /// rows are put into the form the engine before the reshape wrote (a committed decision that came from
 /// `CommitImportedTransaction` names no staged row), and it goes up again: the class-1 decisions and the
 /// staged flags are the same as the replay left them.
@@ -5926,7 +5926,7 @@ fn apply_keys_every_committed_decision_and_migration_77_gives_the_replayed_state
     // The engine before the reshape: down, then the planner's committed decision names no staged row.
     {
         let mut guard = worker.lock();
-        migrations::migrate_down(&mut guard.conn, 76).unwrap();
+        migrations::migrate_down(&mut guard.conn, 77).unwrap();
         let vault_id: Uuid = guard
             .conn
             .query_row(
@@ -5951,7 +5951,7 @@ fn apply_keys_every_committed_decision_and_migration_77_gives_the_replayed_state
     assert_eq!(
         read(&worker),
         (decisions, flags),
-        "the class-1 state after migration 77 is the state the replay left"
+        "the class-1 state after migration 78 is the state the replay left"
     );
 }
 
