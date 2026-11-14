@@ -2971,7 +2971,7 @@ impl From<DbError> for KernelError {
             DbError::UnsupportedSchema => KernelError::UnsupportedVaultSchema,
             // A migration that refuses while Sync is armed (ADR 0074 Addendum J item 7). The text is
             // fixed and names no vault content.
-            refused @ DbError::MigrationRefusedSyncArmed { .. } => {
+            refused @ (DbError::MigrationRefusedSyncArmed { .. } | DbError::BatchHasCommittedRows) => {
                 KernelError::Persistence(refused.to_string())
             }
             DbError::WorkerUnavailable(state) => KernelError::Unavailable(state),

@@ -583,9 +583,9 @@ reference_validation = "cursor names and op sequence references must be valid fo
 
 [[table]]
 table = "dedupe_decisions"
-class = "4"
-owner_bead = "personal-cfo-5ymg8"
-note = "A committed decision is written by CommitImportedTransaction (no staged id, content-derived id); a flagged or skipped decision names a device-local staging row and is still written outside the bus by the staged-import worker methods, so this stays a class-4 candidate until personal-cfo-5ymg8.6 makes the decision a command; ADR 0074 and SYNC-2 decide routing so a dedupe choice follows the related history."
+class = "1"
+owner_bead = "personal-cfo-0g528.3"
+note = "An import decision follows the related history (ADR 0074 Addendum J item 6). Keyed to what it is about: transaction_id (the committed ledger transaction) and identity_id (its import identity); both are nullable because a decision from before migration 77 may have neither. It names no staging row and no class-3 row. Written by apply only: a committed decision by CommitImportedTransaction, a merged one by the commit rule's no-op (a later part), a skipped one by the command personal-cfo-5ymg8.6 will add (until then a user skip is only the staged row's status). A flagged decision is not a row of this table: it is the staged row's own flag_reason and flag_matched_transaction_id (class 3). Migration 77 converted the old rows and, like 76, refuses on a vault where Sync is armed."
 
 [[table]]
 table = "balance_observations"
