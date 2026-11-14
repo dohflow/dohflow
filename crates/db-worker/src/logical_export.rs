@@ -42,8 +42,9 @@ const INVENTORY_VERSION: &str = "1";
 pub struct ExportInput<'a> {
     /// The honored voids this replica holds, ascending and disjoint (C.10).
     pub voids: &'a [RecordedVoid],
-    /// The closure manifest: each id with the ciphertext hash bound to it, ascending by id; empty
-    /// until personal-cfo-1cltt.7.
+    /// The closure manifest: each id with the ciphertext hash bound to it, ascending by id. The
+    /// enable sequence passes the artifacts it produced and put first
+    /// ([`crate::sync_produce`]); empty for a vault that holds none.
     pub artifacts: &'a [sync_core::envelope::BoundArtifact],
 }
 

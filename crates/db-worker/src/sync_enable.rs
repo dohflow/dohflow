@@ -11,7 +11,15 @@
 //! 3. **install** the keys from the persisted records (`install_genesis`, idempotent), then move the
 //!    genesis state to `Installed`;
 //! 4. **publish**: send the saved container of an earlier attempt if there is one, otherwise export
-//!    the live vault and publish it as the genesis (`installEpoch`, reason 1);
+//!    the live vault and publish it as the genesis (`installEpoch`, reason 1). **The closure comes
+//!    first** (`personal-cfo-1cltt.7`): every class-1b artifact the genesis names (each attachment's
+//!    bytes, each batch a provenance link reaches) is produced and put, so the service holds a
+//!    receipt for every id before the snapshot that names it is sent; the export then carries the
+//!    closure, and it is checked, against the state the export itself read, that nothing arrived
+//!    between producing and exporting. A resume that finds a saved container asks the service which
+//!    of the artifacts it names it holds, verifies those against the recorded hashes and puts again
+//!    only the missing ones (an exact retry), before it sends it; if a missing one's source is gone,
+//!    the saved genesis cannot have been installed, and one fresh genesis is produced instead;
 //! 5. record how it ended: `Published`, or `VaultKnown` when the service already knows the vault
 //!    (R39). A vault that is `VaultKnown` is never published, retried or re-minted, nothing in it is
 //!    discarded, and the device bootstraps as a replica (`personal-cfo-1cltt.5`).
@@ -23,6 +31,8 @@
 
 use chrono::Utc;
 use platform_traits::{RollbackWitness, SecretStore};
+use sync_core::artifact_transport::ArtifactTransport;
+use sync_core::envelope::BoundArtifact;
 use sync_core::membership::verify_chain;
 use sync_core::snapshot_service::{SnapshotService, SnapshotSource};
 use sync_core::status::SyncStatus;
@@ -32,13 +42,14 @@ use vault_crypto::sync_custody::{CustodyError, EnableError as CustodyEnableError
 use vault_crypto::sync_envelope::SealerIdentity;
 use vault_crypto::sync_snapshot::{SavedSnapshotFiles, SnapshotFields, SnapshotSealer};
 use vault_crypto::sync_snapshot_flow::{
-    genesis_snapshot_id, publish_keeping_saved, resume_saved_keeping, PublishError, PublishKind,
-    PublishOutcome, PublishRequest,
+    genesis_snapshot_id, publish_keeping_saved, resume_saved_keeping, saved_closure, PublishError,
+    PublishKind, PublishOutcome, PublishRequest,
 };
 
 use crate::base_image::saved_snapshots_dir;
-use crate::logical_export::{export_genesis_with_mark, ExportError, ExportInput};
+use crate::logical_export::{export_within, ExportError, ExportInput};
 use crate::sync_genesis::{self, GenesisState, GenesisStoreError};
+use crate::sync_produce::{closure_sources_in, ClosureSources, ProduceError, ProducedArtifact};
 use crate::sync_register::SqliteRegisterStore;
 use crate::{DbError, DbWorker, ENGINE_VERSION};
 
@@ -117,6 +128,15 @@ pub enum EnableError {
     /// The directory for the saved snapshot could not be created.
     #[error("the saved snapshot directory could not be created")]
     Io,
+    /// The closure's artifacts could not be produced or put (an attachment that cannot be read, a
+    /// batch that cannot be split, a put the service refused or could not answer). Nothing was
+    /// sealed or sent; calling again puts them again.
+    #[error("{0}")]
+    Closure(ProduceError),
+    /// Attachments or batches kept arriving between producing the closure and exporting the vault,
+    /// so no export carried a complete closure. Nothing was sealed or sent; calling again retries.
+    #[error("the vault changed while its closure was produced")]
+    ClosureMoved,
 }
 
 macro_rules! from_error {
@@ -137,6 +157,7 @@ from_error! {
     ExportError => Export,
     PublishError => Publish,
     DbError => Db,
+    ProduceError => Closure,
 }
 
 /// The largest `op_seq` of the operation log (`0` for an empty log): the high-water mark.
@@ -194,16 +215,78 @@ fn holds_sync_state(worker: &DbWorker) -> Result<bool, EnableError> {
     })?)
 }
 
+/// How many times the closure is produced again when an attachment or a batch arrives between
+/// producing it and exporting the vault.
+const CLOSURE_ATTEMPTS: usize = 3;
+
+/// Produce the closure, then export the vault with it, and check that the closure still is what the
+/// vault holds **as the export saw it**. An attachment or a batch that arrived in between makes the
+/// export name a row the closure lacks, so the closure is produced again (puts are idempotent); a
+/// vault that keeps changing is [`EnableError::ClosureMoved`], never an export with an incomplete
+/// closure.
+///
+/// The sources are read inside the export's own read transaction, so the comparison is against the
+/// very state the export was built from. A second read on another connection could see an
+/// attachment that was added before the export and removed after it, and so pass an export that
+/// names an attachment the closure lacks.
+fn export_with_closure<Artifacts: ArtifactTransport>(
+    worker: &DbWorker,
+    artifacts: &Artifacts,
+    key: &vault_crypto::sync_envelope::EpochKey,
+) -> Result<(Vec<u8>, u64), EnableError> {
+    export_with_closure_using(
+        worker,
+        &mut || worker.produce_closure(artifacts, key),
+        &mut || {},
+    )
+}
+
+/// [`export_with_closure`] with the production and a hook after the export left to the caller (a
+/// test's way to change the vault between the export and the check).
+pub(crate) fn export_with_closure_using(
+    worker: &DbWorker,
+    produce: &mut dyn FnMut() -> Result<(ClosureSources, Vec<ProducedArtifact>), ProduceError>,
+    after_export: &mut dyn FnMut(),
+) -> Result<(Vec<u8>, u64), EnableError> {
+    for _ in 0..CLOSURE_ATTEMPTS {
+        let (sources, produced) = produce()?;
+        let bound: Vec<BoundArtifact> = produced
+            .iter()
+            .map(|p| BoundArtifact {
+                id: *p.id.as_bytes(),
+                ciphertext_sha256: p.ciphertext_sha256,
+            })
+            .collect();
+        let conn = worker.read_connection()?;
+        let tx = conn.unchecked_transaction().map_err(DbError::from)?;
+        let exported = export_within(
+            &tx,
+            &ExportInput {
+                artifacts: &bound,
+                ..ExportInput::default()
+            },
+        )?;
+        after_export();
+        let seen = closure_sources_in(&tx)?;
+        drop(tx);
+        if seen == sources {
+            return Ok(exported);
+        }
+    }
+    Err(EnableError::ClosureMoved)
+}
+
 /// Enable Sync on this device for the vault `worker` holds, or finish an enabling that was
 /// interrupted. See the module comment for the order and for what a repeated call does.
 ///
 /// # Errors
 /// An [`EnableError`]; the state each step reached is persisted, so calling again resumes.
-pub fn enable_sync<W: RollbackWitness, Service: SnapshotService>(
+pub fn enable_sync<W: RollbackWitness, Service: SnapshotService, Artifacts: ArtifactTransport>(
     worker: &DbWorker,
     secrets: &dyn SecretStore,
     witness: &W,
     service: &Service,
+    artifacts: &Artifacts,
     status: &SyncStatus,
     device: &EnablingDevice,
 ) -> Result<EnableOutcome, EnableError> {
@@ -302,6 +385,24 @@ pub fn enable_sync<W: RollbackWitness, Service: SnapshotService>(
         membership_record: &genesis.membership_record,
         epoch_record: &genesis.epoch_record,
     };
+    // A saved container names a closure the service may not hold every receipt for (the crash can
+    // have fallen between the puts and the send). The service is asked which of those artifacts it
+    // holds: a present one is verified against the hash this device recorded, and only a missing one
+    // is put again, by its logical id through the mapping (C.9). A missing artifact whose source is
+    // gone from the vault means the saved genesis cannot have been installed (the service pins the
+    // whole closure before the compare-and-swap), so the saved container is discarded and ONE fresh
+    // genesis is produced below from the vault as it is now; a failure of that is a typed error.
+    if let Some(ids) = saved_closure(&sealer, &snapshot_id)? {
+        match worker.reput_closure(artifacts, &key, &ids) {
+            Ok(()) => {}
+            Err(ProduceError::SourceGone(_)) => {
+                sealer
+                    .discard(&snapshot_id)
+                    .map_err(PublishError::Snapshot)?;
+            }
+            Err(other) => return Err(other.into()),
+        }
+    }
     let outcome = match resume_saved_keeping(service, &sealer, status, &kind, &snapshot_id)? {
         Some(outcome) => outcome,
         None => {
@@ -311,8 +412,7 @@ pub fn enable_sync<W: RollbackWitness, Service: SnapshotService>(
             if holds_sync_state(worker)? {
                 return Err(EnableError::LiveVaultHasSyncState);
             }
-            let (plaintext, high_water) =
-                export_genesis_with_mark(&worker.read_connection()?, &ExportInput::default())?;
+            let (plaintext, high_water) = export_with_closure(worker, artifacts, &key)?;
             // The mark is persisted before anything is sealed; a later export replaces it.
             let now = Utc::now().to_rfc3339();
             worker.write_sync_state(|tx| sync_genesis::record_export_mark(tx, high_water, &now))?;

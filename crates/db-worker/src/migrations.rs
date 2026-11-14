@@ -2712,6 +2712,33 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Version 74 (personal-cfo-1cltt.7, slice C; planning ruling 2026-11-13 on 04a's #348):
+    // * `sync_artifacts` records, for an artifact THIS device produced, the SHA-256 of the complete
+    //   transport plaintext it first sealed (`transport_plaintext_sha256`) and the `logical_metadata`
+    //   bytes that plaintext carried (`logical_metadata`), at the artifact's first seal and BEFORE its
+    //   put (C.9). Every later seal of that id rebuilds the plaintext from the stored metadata and
+    //   the blob and passes the digest back as the fixity, so a changed plaintext is refused before
+    //   any encryption: the zero nonce is safe only while the plaintext under an address never
+    //   changes. Storing the metadata, not only the digest, is what lets a re-put survive a later
+    //   MIME or filename edit. A receiver's row leaves both NULL and never re-seals; a producer's
+    //   writes both (the metadata's CHECK ties it to a digest).
+    Migration {
+        version: 74,
+        name: "sync_artifacts_descriptor",
+        up: "ALTER TABLE sync_artifacts ADD COLUMN transport_plaintext_sha256 BLOB
+                 CHECK (transport_plaintext_sha256 IS NULL
+                        OR length(transport_plaintext_sha256) = 32);
+             ALTER TABLE sync_artifacts ADD COLUMN logical_metadata BLOB
+                 CHECK (logical_metadata IS NULL
+                        OR (length(logical_metadata) BETWEEN 1 AND 65536
+                            AND transport_plaintext_sha256 IS NOT NULL));",
+        down: Some(
+            "ALTER TABLE sync_artifacts DROP COLUMN logical_metadata;
+             ALTER TABLE sync_artifacts DROP COLUMN transport_plaintext_sha256;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
@@ -4254,9 +4281,9 @@ mod tests {
         );
         assert!(origin.is_ok(), "an unchanged cursor is not a move back");
 
-        // 70, 71, 72 and 73 (`sync_artifacts`, `sync_notices`, the outbox rebuild, the genesis
-        // identity) sit above 69: stepping to 68 reverts all five.
-        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 5);
+        // 70, 71, 72, 73 and 74 (`sync_artifacts`, `sync_notices`, the outbox rebuild, the genesis
+        // identity, the artifact descriptor) sit above 69: stepping to 68 reverts all six.
+        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 6);
         assert!(
             objects(&conn).is_empty(),
             "down drops both tables and every trigger"
@@ -4295,9 +4322,9 @@ mod tests {
                 "sync_artifacts"
             ]
         );
-        // 71, 72 and 73 (`sync_notices`, the outbox rebuild, the genesis identity) sit above 70:
-        // stepping to 69 reverts all four.
-        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 4);
+        // 71 to 74 (`sync_notices`, the outbox rebuild, the genesis identity, the artifact
+        // descriptor) sit above 70: stepping to 69 reverts all five.
+        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 5);
         assert!(objects(&conn).is_empty());
         apply(&mut conn, MIGRATIONS).unwrap();
         let rows: i64 = conn
@@ -4423,9 +4450,9 @@ mod tests {
         assert!(insert("something_else", 16, 3).is_err());
         assert!(insert("import_discarded", 15, 3).is_err());
         assert!(insert("import_discarded", 16, -1).is_err());
-        // 72 and 73 (the outbox rebuild, the genesis identity) sit above 71: stepping to 70
-        // reverts all three.
-        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 3);
+        // 72 to 74 (the outbox rebuild, the genesis identity, the artifact descriptor) sit above
+        // 71: stepping to 70 reverts all four.
+        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 4);
         let left: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%sync_notices%'",
@@ -4503,8 +4530,9 @@ mod tests {
         outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "zeroblob(2)").unwrap();
         outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
 
-        // 73 (the genesis identity) sits above 72: step past it first.
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 1);
+        // 73 and 74 (the genesis identity, the artifact descriptor) sit above 72: step past them
+        // first.
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 2);
         assert_eq!(migrate_down(&mut conn, 71).unwrap(), 1);
 
         let rows: i64 = conn
@@ -4553,7 +4581,7 @@ mod tests {
         outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "NULL").unwrap();
         outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
 
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 1);
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 2);
         assert!(migrate_down(&mut conn, 71).is_err());
 
         let applied: i64 = conn
@@ -4599,6 +4627,78 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(rows, [(1, None), (2, Some(vec![0, 0, 0]))]);
+    }
+
+    /// 74 adds a producer's descriptor to `sync_artifacts`: the digest of the transport plaintext and
+    /// its logical metadata, both nullable (a receiver's row has neither), the metadata tied to a
+    /// digest, the lengths checked; an existing row keeps NULL, down drops both and keeps the row.
+    #[test]
+    fn v74_adds_the_artifact_descriptor_to_the_mapping_and_down_drops_it() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..73]).unwrap();
+        conn.execute(
+            "INSERT INTO sync_artifacts (key_epoch, sync_artifact_id, ciphertext_sha256, kind, logical_id)
+             VALUES (1, zeroblob(32), zeroblob(32), 1, zeroblob(16))",
+            [],
+        )
+        .unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let held = |conn: &Connection| -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+            conn.query_row(
+                "SELECT transport_plaintext_sha256, logical_metadata FROM sync_artifacts",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(held(&conn), (None, None), "an earlier row keeps NULL");
+
+        let set = |sql: &str| conn.execute(sql, []);
+        assert!(
+            set("UPDATE sync_artifacts SET transport_plaintext_sha256 = zeroblob(31)").is_err()
+        );
+        assert!(
+            set("UPDATE sync_artifacts SET logical_metadata = x'7b7d'").is_err(),
+            "metadata without a digest"
+        );
+        assert!(
+            set(
+                "UPDATE sync_artifacts SET transport_plaintext_sha256 = zeroblob(32),
+                                          logical_metadata = zeroblob(0)"
+            )
+            .is_err(),
+            "empty metadata"
+        );
+        assert!(
+            set(
+                "UPDATE sync_artifacts SET transport_plaintext_sha256 = zeroblob(32),
+                                          logical_metadata = zeroblob(65537)"
+            )
+            .is_err(),
+            "metadata over its bound"
+        );
+        assert!(set(
+            "UPDATE sync_artifacts SET transport_plaintext_sha256 = zeroblob(32),
+                                       logical_metadata = zeroblob(65536)"
+        )
+        .is_ok());
+
+        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 1);
+        let columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sync_artifacts')
+                 WHERE name IN ('transport_plaintext_sha256', 'logical_metadata')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 0, "down drops both columns");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_artifacts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "and keeps the row");
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(held(&conn), (None, None));
     }
 
     /// 73 adds the genesis snapshot's identity to `sync_genesis`: two nullable columns, both or
@@ -4652,7 +4752,7 @@ mod tests {
         );
         assert_eq!(identity(&conn).0.map(|id| id.len()), Some(16));
 
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 1);
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 2);
         let columns: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('sync_genesis')

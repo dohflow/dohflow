@@ -314,6 +314,34 @@ where
     resume_inner(service, sealer, status, kind, snapshot_id, false)
 }
 
+/// The closure ids of the snapshot `snapshot_id` this device saved, if one is saved: read from the
+/// saved container's own plaintext through the receiver path, as a resume does. A caller that
+/// resumes a genesis puts these artifacts again before it sends the container, so the service holds
+/// every receipt the closure names.
+///
+/// # Errors
+/// A [`PublishError`] if the saved container cannot be read or opened.
+pub fn saved_closure<Store, Witness>(
+    sealer: &SnapshotSealer<'_, Store, Witness>,
+    snapshot_id: &[u8; 16],
+) -> Result<Option<Vec<ArtifactId>>, PublishError>
+where
+    Store: RegisterStore,
+    Witness: RollbackWitness,
+{
+    let Some(sealed) = sealer.saved(snapshot_id)? else {
+        return Ok(None);
+    };
+    let parsed = parse_container(&sealed.container)
+        .map_err(|_| PublishError::Snapshot(SnapshotError::Seal(SnapshotSealError::Unencodable)))?;
+    let plaintext = SnapshotOpener::new(sealer.key, sealer.chain)
+        .open(&parsed)
+        .map_err(|e| PublishError::Snapshot(SnapshotError::NotOpenable(e)))?;
+    closure_ids_of(&plaintext)
+        .map(Some)
+        .map_err(|e| PublishError::Snapshot(SnapshotError::Seal(e)))
+}
+
 fn resume_inner<Store, Witness, Service>(
     service: &Service,
     sealer: &SnapshotSealer<'_, Store, Witness>,

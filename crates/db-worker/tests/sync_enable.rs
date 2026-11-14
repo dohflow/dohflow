@@ -6,6 +6,8 @@
 
 #![allow(dead_code)]
 
+#[path = "support/artifacts.rs"]
+mod artifacts;
 mod common;
 #[path = "../../vault-crypto/tests/common/snapshot_service.rs"]
 mod snapshot_service;
@@ -43,6 +45,8 @@ struct Device {
     secrets: MockSecretStore,
     witness: MockWitness,
     service: FakeSnapshotService,
+    /// The artifact service: a vault with no attachment or batch never calls it.
+    artifacts: artifacts::FakeService,
 }
 
 impl Device {
@@ -54,6 +58,7 @@ impl Device {
             secrets: MockSecretStore::new(),
             witness: MockWitness::new(),
             service: FakeSnapshotService::new(Credential::Account),
+            artifacts: artifacts::FakeService::default(),
         }
     }
 
@@ -67,6 +72,7 @@ impl Device {
             &self.secrets,
             &self.witness,
             &self.service,
+            &self.artifacts,
             &SyncStatus::Healthy,
             &DEVICE,
         )
@@ -769,6 +775,7 @@ fn a_halted_replica_does_not_start_enabling() {
         &device.secrets,
         &device.witness,
         &device.service,
+        &device.artifacts,
         &halted,
         &DEVICE,
     );
@@ -801,6 +808,7 @@ fn a_restored_vault_stops_before_any_request() {
         &device.secrets,
         &device.witness,
         &device.service,
+        &device.artifacts,
         &SyncStatus::Healthy,
         &DEVICE,
     );
