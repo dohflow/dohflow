@@ -69,11 +69,26 @@ impl core::fmt::Debug for StagedAttachment {
     }
 }
 
+/// What a producer sealed an artifact from (C.9): the SHA-256 of the complete transport plaintext
+/// and the `logical_metadata` bytes it carried. Written at the artifact's first seal and before its
+/// put; every later seal rebuilds the plaintext from `logical_metadata` and the blob and passes the
+/// digest back as the fixity, so a changed plaintext is refused before any encryption.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Descriptor {
+    /// SHA-256 of the complete transport plaintext first sealed.
+    pub transport_plaintext_sha256: [u8; 32],
+    /// The logical metadata bytes (canonical JSON) that plaintext carried.
+    pub logical_metadata: Vec<u8>,
+}
+
 /// A mapping read back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredMapping {
     /// The row.
     pub mapping: Mapping,
+    /// What the producer sealed it from, for an artifact this device produced (`None` for a
+    /// receiver's row, which never re-seals).
+    pub descriptor: Option<Descriptor>,
     /// When a durable receipt matching what the client computed was recorded, if one was.
     pub receipt_at: Option<String>,
     /// The staged crypto fields, while the attach command's `apply` has not consumed them.
@@ -156,6 +171,81 @@ pub fn record(
     Ok(())
 }
 
+/// Record an artifact this device is about to put: its mapping with the ciphertext hash it computed
+/// from the sealed bytes, and the [`Descriptor`] it sealed them from. Called at the artifact's FIRST
+/// seal, **before** the put, in the transaction that records the mapping: a crash between the put
+/// and the receipt must still leave the digest (C.9). A row that already carries a descriptor keeps
+/// it (the first seal's is the one every later seal is checked against); a row that has none (a
+/// receiver's) takes this one.
+///
+/// # Errors
+/// [`MappingError`].
+pub fn record_produced(
+    conn: &Connection,
+    mapping: &Mapping,
+    descriptor: &Descriptor,
+) -> Result<(), MappingError> {
+    let (kind, part_index, part_count) = kind_columns(mapping.kind);
+    let epoch = i64::try_from(mapping.key_epoch).map_err(|_| MappingError::Corrupt)?;
+    conn.execute(
+        "INSERT INTO sync_artifacts
+             (key_epoch, sync_artifact_id, ciphertext_sha256, kind, logical_id, part_index,
+              part_count, transport_plaintext_sha256, logical_metadata)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT (key_epoch, sync_artifact_id) DO UPDATE SET
+             ciphertext_sha256 = CASE WHEN transport_plaintext_sha256 IS NULL
+                                      THEN excluded.ciphertext_sha256 ELSE ciphertext_sha256 END,
+             transport_plaintext_sha256 =
+                 COALESCE(transport_plaintext_sha256, excluded.transport_plaintext_sha256),
+             logical_metadata = COALESCE(logical_metadata, excluded.logical_metadata)",
+        params![
+            epoch,
+            mapping.artifact_id.as_slice(),
+            mapping.ciphertext_sha256.as_slice(),
+            kind,
+            mapping.logical_id.as_slice(),
+            part_index,
+            part_count,
+            descriptor.transport_plaintext_sha256.as_slice(),
+            descriptor.logical_metadata.as_slice(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Every mapping of one logical object (an attachment, or a batch's parts) in `key_epoch`, in
+/// artifact-id order: how a producer finds what it already sealed **by the logical id**, never by an
+/// address recomputed from a storage id that a rekey may have changed.
+///
+/// # Errors
+/// [`MappingError`].
+pub fn lookup_logical(
+    conn: &Connection,
+    key_epoch: u64,
+    attachment: bool,
+    logical_id: &[u8; 16],
+) -> Result<Vec<StoredMapping>, MappingError> {
+    let epoch = i64::try_from(key_epoch).map_err(|_| MappingError::Corrupt)?;
+    let kind: i64 = if attachment { 1 } else { 2 };
+    let ids: Vec<Vec<u8>> = {
+        let mut stmt = conn.prepare(
+            "SELECT sync_artifact_id FROM sync_artifacts
+              WHERE key_epoch = ?1 AND kind = ?2 AND logical_id = ?3
+              ORDER BY sync_artifact_id",
+        )?;
+        let rows = stmt.query_map(params![epoch, kind, logical_id.as_slice()], |r| r.get(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        let id: [u8; 32] = fixed(&id)?;
+        if let Some(stored) = lookup(conn, key_epoch, &id)? {
+            out.push(stored);
+        }
+    }
+    Ok(out)
+}
+
 /// Record that the service acknowledged the artifact with a receipt that matched what the client
 /// computed, at `now`. Returns whether a row existed.
 ///
@@ -190,6 +280,8 @@ type Row = (
     Option<String>,
     Option<i64>,
     Option<String>,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
 );
 
 fn fixed<const N: usize>(bytes: &[u8]) -> Result<[u8; N], MappingError> {
@@ -211,7 +303,7 @@ pub fn lookup(
             "SELECT ciphertext_sha256, kind, logical_id, part_index, part_count, receipt_at,
                     staged_storage_id, staged_wrapped_content_key, staged_content_key_nonce,
                     staged_content_nonce, staged_content_alg, staged_plaintext_size,
-                    staged_mime_type
+                    staged_mime_type, transport_plaintext_sha256, logical_metadata
                FROM sync_artifacts WHERE key_epoch = ?1 AND sync_artifact_id = ?2",
             params![epoch, artifact_id.as_slice()],
             |r| {
@@ -229,6 +321,8 @@ pub fn lookup(
                     r.get(10)?,
                     r.get(11)?,
                     r.get(12)?,
+                    r.get(13)?,
+                    r.get(14)?,
                 ))
             },
         )
@@ -259,7 +353,16 @@ pub fn lookup(
             (None, None, None, None, None, None) => None,
             _ => return Err(MappingError::Corrupt),
         };
+        let descriptor = match (&row.13, &row.14) {
+            (Some(digest), Some(metadata)) => Some(Descriptor {
+                transport_plaintext_sha256: fixed(digest)?,
+                logical_metadata: metadata.clone(),
+            }),
+            (None, None) => None,
+            _ => return Err(MappingError::Corrupt),
+        };
         Ok(StoredMapping {
+            descriptor,
             mapping: Mapping {
                 key_epoch,
                 artifact_id: *artifact_id,

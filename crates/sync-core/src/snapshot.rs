@@ -170,7 +170,7 @@ pub struct Manifest {
     /// disjoint, as the C.10 ledger encodes them.
     pub voids: Vec<VoidEntry>,
     /// The complete closure manifest: each `sync_artifact_id_e` (lowercase hex) with the SHA-256 of
-    /// its AEAD output, strictly ascending by id. Empty until personal-cfo-1cltt.7.
+    /// its AEAD output, strictly ascending by id. Empty for a vault that holds no class-1b artifact.
     pub artifacts: Vec<ArtifactEntry>,
 }
 

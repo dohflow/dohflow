@@ -190,8 +190,8 @@ pub fn closure_commitments_of(plaintext: &[u8]) -> Result<ClosureCommitments, Sn
 }
 
 /// The artifact ids a snapshot plaintext's manifest names, ascending: the closure sidecar that
-/// travels with `publishSnapshot` and `installEpoch`. Empty until `personal-cfo-1cltt.7` puts class-1b
-/// artifacts into a genesis.
+/// travels with `publishSnapshot` and `installEpoch`. Empty for a vault that holds no class-1b
+/// artifact (an attachment, or a batch a provenance link reaches).
 ///
 /// # Errors
 /// [`SnapshotSealError::PlaintextInvalid`], as [`closure_commitments_of`].

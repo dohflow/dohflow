@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use common::{create_account_cmd, meta};
 use db_worker::logical_export::{export_genesis_plaintext, ExportInput};
 use db_worker::sync_artifacts::{
-    create_attachment_from_staged, lookup, record, record_receipt, take_staged, ArtifactKind,
-    CreateAttachmentError, Mapping, StagedAttachment,
+    create_attachment_from_staged, lookup, lookup_logical, record, record_produced, record_receipt,
+    take_staged, ArtifactKind, CreateAttachmentError, Descriptor, Mapping, StagedAttachment,
 };
 use db_worker::{verify_rekeyed_copy, DbWorker};
 use vault_crypto::{
@@ -111,6 +111,48 @@ fn a_mapping_is_recorded_replaced_by_a_newer_hash_and_keeps_its_receipt() {
         record(&conn, &part, None).unwrap();
         assert_eq!(lookup(&conn, 1, &OTHER).unwrap().unwrap().mapping, part);
     }
+}
+
+/// A producer's descriptor (C.9) is recorded with the mapping at the first seal, the first one stays
+/// (every later seal is checked against it), a receiver's row has none, and a producer finds its
+/// rows by the logical id.
+#[test]
+fn a_producers_descriptor_is_recorded_once_and_found_by_the_logical_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let worker =
+        DbWorker::open_with_raw_key(dir.path().join("vault.db"), generate_dek().unwrap()).unwrap();
+    let conn = worker.read_connection().unwrap();
+    let first = Descriptor {
+        transport_plaintext_sha256: [0x11; 32],
+        logical_metadata: br#"{"attachment_id":"x"}"#.to_vec(),
+    };
+    record_produced(&conn, &attachment_mapping(ID, 1), &first).unwrap();
+    let stored = lookup(&conn, 1, &ID).unwrap().unwrap();
+    assert_eq!(stored.descriptor.as_ref(), Some(&first));
+    assert_eq!(stored.mapping.ciphertext_sha256, [1; 32]);
+
+    // A second record keeps the first descriptor and the hash that went with it.
+    let other = Descriptor {
+        transport_plaintext_sha256: [0x22; 32],
+        logical_metadata: b"{}".to_vec(),
+    };
+    record_produced(&conn, &attachment_mapping(ID, 9), &other).unwrap();
+    let kept = lookup(&conn, 1, &ID).unwrap().unwrap();
+    assert_eq!(kept.descriptor.as_ref(), Some(&first));
+    assert_eq!(kept.mapping.ciphertext_sha256, [1; 32]);
+
+    // A receiver's row (another address for the same logical id) has no descriptor, and the lookup by
+    // the logical id returns both, in address order.
+    record(&conn, &attachment_mapping(OTHER, 3), None).unwrap();
+    assert_eq!(lookup(&conn, 1, &OTHER).unwrap().unwrap().descriptor, None);
+    let found = lookup_logical(&conn, 1, true, &[0x07; 16]).unwrap();
+    assert_eq!(found.len(), 2);
+    assert!(lookup_logical(&conn, 1, false, &[0x07; 16])
+        .unwrap()
+        .is_empty());
+    assert!(lookup_logical(&conn, 2, true, &[0x07; 16])
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
