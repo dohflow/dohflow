@@ -2,7 +2,8 @@
 //! (`docs/architecture/sync-service-protocol.md` 4.4 `installEpoch`, 4.9 `stageSnapshot`,
 //! `publishSnapshot` and `getLatestSnapshot`; personal-cfo-1cltt.4, part B).
 //!
-//! [`SnapshotService`] is those operations as the client calls them (the four above and `getSnapshot`). **There is no production
+//! [`SnapshotService`] is those operations as the client calls them (the four above, `getSnapshot`,
+//! and the two closure sidecar operations of 4.14, `stageSnapshotClosure` and `getSnapshotClosure`). **There is no production
 //! implementor in this tree**: the service is `personal-cfo-v98vd` and the client engine that owns
 //! the network is `personal-cfo-elciw`. The only implementor is the in-memory fake in the
 //! vault-crypto tests, which runs the server's decision procedure (so a test exercises the real
@@ -29,6 +30,21 @@ pub struct StagedSnapshot {
     /// The stored container's length.
     pub size: u64,
 }
+
+/// What `stageSnapshotClosure` answers: the snapshot's closure is held with it (protocol 4.14).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StagedClosure {
+    /// The snapshot id.
+    pub snapshot_id: [u8; 16],
+    /// The number of ids in the closure.
+    pub artifact_count: u64,
+}
+
+/// The most ids a closure may carry in a `publishSnapshot` or `installEpoch` request
+/// (`max_artifact_manifest_ids`, protocol 7.1): a closure of more ids than this travels as a staged
+/// sidecar (4.14) and the request carries an empty `artifact_manifest`. One at or below it stays in
+/// the request.
+pub const MAX_INLINE_CLOSURE: usize = crate::artifact::MAX_DELTA;
 
 /// A published snapshot: what `publishSnapshot` and `getLatestSnapshot` answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,8 +77,9 @@ pub struct InstalledEpoch {
 }
 
 /// One `installEpoch` request (protocol 4.4). The epoch record carries its own `reason`; the
-/// genesis (`reason 1`) has `base_seq` `0`, a membership record, a snapshot and, until
-/// `personal-cfo-1cltt.7`, an empty closure.
+/// genesis (`reason 1`) has `base_seq` `0`, a membership record, a snapshot and its closure: the
+/// list in `artifact_manifest` when it holds at most [`MAX_INLINE_CLOSURE`] ids, and otherwise an
+/// empty `artifact_manifest` beside a closure staged with `stageSnapshotClosure` (4.14).
 #[derive(Debug, Clone, Copy)]
 pub struct EpochInstall<'a> {
     /// The log head the client believes is current (`0` for a genesis).
@@ -73,7 +90,8 @@ pub struct EpochInstall<'a> {
     pub epoch_record: &'a [u8],
     /// The staged snapshot published with it.
     pub snapshot_id: Option<[u8; 16]>,
-    /// The snapshot's full closure sidecar, ascending.
+    /// The snapshot's full closure sidecar, ascending, when it holds at most
+    /// [`MAX_INLINE_CLOSURE`] ids; empty when the closure was staged (4.14).
     pub artifact_manifest: &'a [ArtifactId],
 }
 
@@ -120,6 +138,10 @@ pub enum ServiceError {
     /// where every receipt is already required.
     #[error("the artifact binding commitment does not match the stored ciphertexts")]
     ArtifactBindingMismatch,
+    /// The request is not well formed: a request that carries a closure list beside a staged closure
+    /// (`MalformedRequest`, protocol 4.4).
+    #[error("the request is malformed")]
+    MalformedRequest,
     /// A different byte string already exists for this snapshot id (`ObjectConflict`).
     #[error("a different object already exists at this address")]
     ObjectConflict,
@@ -164,6 +186,35 @@ pub trait SnapshotService {
         snapshot_id: &[u8; 16],
         container: &[u8],
     ) -> Result<StagedSnapshot, ServiceError>;
+
+    /// `stageSnapshotClosure` (protocol 4.14): hold `sidecar`, the snapshot's closure as its ids' raw
+    /// bytes in strictly ascending order (at most 32 MiB: 2^20 ids), with the staged snapshot
+    /// `snapshot_id`. The service recomputes the closure commitment and checks it against the
+    /// staged header's. An exact retry answers the same, so a retry after a lost response re-stages
+    /// the same bytes. A closure above 2^20 ids is [`ServiceError::SnapshotTooLarge`]; a snapshot
+    /// that is not staged is [`ServiceError::SnapshotNotFound`].
+    ///
+    /// # Errors
+    /// A [`ServiceError`].
+    fn stage_snapshot_closure(
+        &self,
+        vault_id: &[u8; 16],
+        snapshot_id: &[u8; 16],
+        sidecar: &[u8],
+    ) -> Result<StagedClosure, ServiceError>;
+
+    /// `getSnapshotClosure` (protocol 4.14): the sidecar of a **retained, published** snapshot, in
+    /// the same raw form whatever its size (a closure that was sent as a list too). The service
+    /// does not vouch for it: the caller checks the commitment against the snapshot's header
+    /// itself, with [`crate::artifact::ClosureManifest::from_sidecar`] and `commitment`.
+    ///
+    /// # Errors
+    /// A [`ServiceError`]; a snapshot that is not retained is [`ServiceError::SnapshotNotFound`].
+    fn get_snapshot_closure(
+        &self,
+        vault_id: &[u8; 16],
+        snapshot_id: &[u8; 16],
+    ) -> Result<Vec<u8>, ServiceError>;
 
     /// `publishSnapshot` (protocol 4.9): publish the staged `snapshot_id` if and only if
     /// `base_seq` is the head and the snapshot's own, its epoch is the one in force, its sidecar

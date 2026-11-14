@@ -55,6 +55,19 @@ impl SnapshotService for RecordingService {
         Err(self.record("stage_snapshot"))
     }
 
+    fn stage_snapshot_closure(
+        &self,
+        _: &[u8; 16],
+        _: &[u8; 16],
+        _: &[u8],
+    ) -> Result<sync_core::snapshot_service::StagedClosure, ServiceError> {
+        Err(self.record("stage_snapshot_closure"))
+    }
+
+    fn get_snapshot_closure(&self, _: &[u8; 16], _: &[u8; 16]) -> Result<Vec<u8>, ServiceError> {
+        Err(self.record("get_snapshot_closure"))
+    }
+
     fn publish_snapshot(
         &self,
         _: &[u8; 16],

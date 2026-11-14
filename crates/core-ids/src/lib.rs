@@ -24,7 +24,8 @@ mod derived;
 mod issued_at;
 
 pub use derived::{
-    DerivedIdError, DerivedIdKey, DerivedIds, ID_KEY_LABEL, MAX_ORDINALS, MAX_TAG_LEN,
+    DerivedIdError, DerivedIdKey, DerivedIds, FileFingerprint, ID_KEY_LABEL, MAX_ORDINALS,
+    MAX_PROVIDER_COMPONENT_LEN, MAX_TAG_LEN,
 };
 pub use issued_at::IssuedAt;
 
