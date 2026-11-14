@@ -41,14 +41,14 @@ use std::path::{Path, PathBuf};
 
 use platform_traits::{CounterContext, RollbackWitness};
 use sha2::{Digest, Sha256};
-use sync_core::artifact::{ArtifactId, MAX_SNAPSHOT_CLOSURE};
-use sync_core::envelope::{binding_commitment, ArtifactManifest, BoundArtifact};
+use sync_core::artifact::{ArtifactId, ClosureManifest, MAX_SNAPSHOT_CLOSURE};
+use sync_core::envelope::{binding_commitment, BoundArtifact};
 use sync_core::header::{
     encode_container, parse_container, BindingCommitment, ClearHeader, Fingerprint,
     ManifestCommitment, NonceDomain, ObjectKind, ParsedContainer, OBJECT_SNAPSHOT,
 };
 use sync_core::membership::VerifiedState;
-use sync_core::snapshot::verify as verify_plaintext;
+use sync_core::snapshot::{verify as verify_plaintext, SnapshotError as SnapshotPlaintextError};
 use thiserror::Error;
 
 use crate::sync_counter::{
@@ -146,7 +146,10 @@ fn hex32(hex: &str) -> Option<[u8; 32]> {
 }
 
 fn closure_bound_of(plaintext: &[u8]) -> Result<Vec<BoundArtifact>, SnapshotSealError> {
-    let verified = verify_plaintext(plaintext).map_err(|_| SnapshotSealError::PlaintextInvalid)?;
+    let verified = verify_plaintext(plaintext).map_err(|error| match error {
+        SnapshotPlaintextError::TooLarge => SnapshotSealError::SnapshotTooLarge,
+        _ => SnapshotSealError::PlaintextInvalid,
+    })?;
     verified
         .manifest
         .artifacts
@@ -168,15 +171,17 @@ fn closure_bound_of(plaintext: &[u8]) -> Result<Vec<BoundArtifact>, SnapshotSeal
 ///
 /// # Errors
 /// [`SnapshotSealError::PlaintextInvalid`] if the plaintext does not verify or its closure is not a
-/// strictly ascending list of at most 4096 ids.
+/// strictly ascending list; [`SnapshotSealError::SnapshotTooLarge`] if the closure holds more than
+/// [`MAX_SNAPSHOT_CLOSURE`] (2^20) ids.
 pub fn closure_commitments_of(plaintext: &[u8]) -> Result<ClosureCommitments, SnapshotSealError> {
     let bound = closure_bound_of(plaintext)?;
-    // `verify` already requires strictly ascending ids; the manifest type orders and refuses a
-    // duplicate or an oversized closure again, so the commitments are over lists that are.
+    // `verify` already requires strictly ascending ids; the closure type orders and refuses a
+    // duplicate or an oversized closure again, so the commitments are over lists that are. A
+    // snapshot's closure is bounded at 2^20, never at an envelope delta's 4096.
     let ids: Vec<[u8; 32]> = bound.iter().map(|entry| entry.id).collect();
     let hashes: Vec<[u8; 32]> = bound.iter().map(|entry| entry.ciphertext_sha256).collect();
     Ok(ClosureCommitments {
-        manifest: ArtifactManifest::new(ids)
+        manifest: ClosureManifest::new(ids)
             .map_err(|_| SnapshotSealError::PlaintextInvalid)?
             .commitment(),
         binding: binding_commitment(&hashes, MAX_SNAPSHOT_CLOSURE)
@@ -295,6 +300,10 @@ pub enum SnapshotOpenFailure {
     /// The opened plaintext is not a well-formed snapshot (C.8).
     #[error("the opened plaintext is not a valid snapshot")]
     PlaintextInvalid,
+    /// The opened snapshot's closure holds more than 2^20 ids (`SnapshotTooLarge`, C.11), or its
+    /// plaintext is larger than its bound. Deterministically invalid at every opener.
+    #[error("the opened snapshot is larger than its bounds")]
+    SnapshotTooLarge,
     /// Header field 17 is not the commitment of the closure the plaintext's manifest names.
     #[error("the header's closure commitment is not the manifest's")]
     ClosureCommitmentMismatch,
@@ -363,8 +372,10 @@ impl<'a> SnapshotOpener<'a> {
         .map_err(|()| SnapshotOpenFailure::NotOpenable)?;
         // After authenticated decryption, the receiver checks the commitment of header field 17
         // against the plaintext's own manifest (C.4 receiver check 4, for a snapshot).
-        let commitments = closure_commitments_of(&plaintext)
-            .map_err(|_| SnapshotOpenFailure::PlaintextInvalid)?;
+        let commitments = closure_commitments_of(&plaintext).map_err(|error| match error {
+            SnapshotSealError::SnapshotTooLarge => SnapshotOpenFailure::SnapshotTooLarge,
+            _ => SnapshotOpenFailure::PlaintextInvalid,
+        })?;
         match header.object {
             ObjectKind::Snapshot {
                 artifact_manifest_commitment,

@@ -39,15 +39,18 @@ pub const FORMAT: &str = "dohflow-sync-snapshot";
 pub const VERSION: &str = "1";
 /// The most voided ranges a manifest records (the ledger's own bound, C.10).
 pub const MAX_VOIDS: usize = 4096;
-/// The most artifacts a closure manifest lists.
-pub const MAX_ARTIFACTS: usize = 1 << 20;
+/// The most artifacts a closure manifest lists: the one bound of a snapshot's full closure
+/// ([`crate::artifact::MAX_SNAPSHOT_CLOSURE`], C.3), which header field 17's commitment, field 18's
+/// binding commitment and the closure sidecar use too. It is that constant, not a second copy.
+pub const MAX_ARTIFACTS: usize = crate::artifact::MAX_SNAPSHOT_CLOSURE;
 
 /// Why a snapshot could not be built or was refused.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum SnapshotError {
-    /// The plaintext would be or is larger than 2^30 bytes (`SnapshotTooLarge`, C.11).
-    #[error("the snapshot plaintext is larger than 2^30 bytes")]
+    /// The plaintext would be or is larger than 2^30 bytes, or its closure holds more than
+    /// [`MAX_ARTIFACTS`] ids (`SnapshotTooLarge`, C.11).
+    #[error("the snapshot is larger than its bounds: 2^30 bytes of plaintext, 2^20 closure ids")]
     TooLarge,
     /// More than [`MAX_FILES`] files.
     #[error("the snapshot has more than 1024 files")]
@@ -400,11 +403,15 @@ pub struct Header<'a> {
 /// disagree with them) and the result is run through [`verify`] before it is returned.
 ///
 /// # Errors
-/// [`SnapshotError`]: `TooLarge` above 2^30 bytes, `TooManyFiles` above 1024, or any rule
+/// [`SnapshotError`]: `TooLarge` above 2^30 bytes or above 2^20 closure ids, `TooManyFiles` above 1024, or any rule
 /// [`verify`] enforces.
 pub fn build(header: &Header<'_>, mut tables: Vec<TableFile>) -> Result<Vec<u8>, SnapshotError> {
     if tables.len() + 1 > MAX_FILES {
         return Err(SnapshotError::TooManyFiles);
+    }
+    // A closure above the bound is refused here, at export, before any other work.
+    if header.artifacts.len() > MAX_ARTIFACTS {
+        return Err(SnapshotError::TooLarge);
     }
     tables.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
     let data_bytes = tables
@@ -449,14 +456,21 @@ pub fn build(header: &Header<'_>, mut tables: Vec<TableFile>) -> Result<Vec<u8>,
             })
             .collect(),
     };
-    let manifest_bytes =
-        to_canonical_vec(&manifest).map_err(SnapshotError::ManifestNotCanonical)?;
+    let plaintext = frame(&manifest, &tables)?;
+    verify(&plaintext)?;
+    Ok(plaintext)
+}
+
+/// The CBE1 framing of `manifest` and the data files, with no rule of C.8 checked beyond the
+/// framing's own caps. [`build`] verifies the result; a test frames a manifest [`build`] refuses.
+fn frame(manifest: &Manifest, tables: &[TableFile]) -> Result<Vec<u8>, SnapshotError> {
+    let manifest_bytes = to_canonical_vec(manifest).map_err(SnapshotError::ManifestNotCanonical)?;
 
     let mut writer = Writer::with_label(SNAPSHOT_LABEL);
     writer.u32(u32::try_from(tables.len() + 1).map_err(|_| SnapshotError::TooManyFiles)?);
     writer.text(MAX_PATH, MANIFEST_PATH)?;
     writer.bytes(MAX_PLAINTEXT, &manifest_bytes)?;
-    for table in &tables {
+    for table in tables {
         writer.text(MAX_PATH, &data_path(&table.name))?;
         writer.bytes(MAX_PLAINTEXT, &table.content)?;
     }
@@ -464,8 +478,55 @@ pub fn build(header: &Header<'_>, mut tables: Vec<TableFile>) -> Result<Vec<u8>,
     if plaintext.len() > MAX_PLAINTEXT {
         return Err(SnapshotError::TooLarge);
     }
-    verify(&plaintext)?;
     Ok(plaintext)
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+
+    /// The bound is one constant: the snapshot's, the commitment's and the sidecar's.
+    #[test]
+    fn the_closure_bound_is_one_constant() {
+        assert_eq!(MAX_ARTIFACTS, crate::artifact::MAX_SNAPSHOT_CLOSURE);
+        assert_eq!(MAX_ARTIFACTS, 1 << 20);
+    }
+
+    fn entries(count: usize) -> Vec<ArtifactEntry> {
+        (0..count)
+            .map(|i| {
+                let mut id = [0_u8; 32];
+                id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+                ArtifactEntry {
+                    id: hex(&id),
+                    ciphertext_sha256: hex(&[0xaa; 32]),
+                }
+            })
+            .collect()
+    }
+
+    fn manifest_with(artifacts: Vec<ArtifactEntry>) -> Manifest {
+        Manifest {
+            format: FORMAT.to_owned(),
+            format_version: VERSION.to_owned(),
+            snapshot_schema_version: VERSION.to_owned(),
+            inventory_version: "1".to_owned(),
+            schema_version: "1".to_owned(),
+            vault_created_at: "2026-01-01T00:00:00Z".to_owned(),
+            tables: Vec::new(),
+            voids: Vec::new(),
+            artifacts,
+        }
+    }
+
+    /// A snapshot that names more ids than the bound is refused by `verify` as `TooLarge` (what the
+    /// opener maps to `SnapshotTooLarge`). A closure at the bound is covered where it is sealed and
+    /// opened (vault-crypto's `a_closure_at_the_snapshot_bound_seals_and_opens`).
+    #[test]
+    fn a_closure_above_the_bound_is_too_large() {
+        let over = frame(&manifest_with(entries(MAX_ARTIFACTS + 1)), &[]).unwrap();
+        assert!(matches!(verify(&over), Err(SnapshotError::TooLarge)));
+    }
 }
 
 // ----------------------------------------------------------------------------------------------
@@ -617,7 +678,7 @@ fn check_manifest(manifest: &Manifest) -> Result<(), SnapshotError> {
         previous_last = Some(last);
     }
     if manifest.artifacts.len() > MAX_ARTIFACTS {
-        return invalid("too many artifacts");
+        return Err(SnapshotError::TooLarge);
     }
     if manifest
         .artifacts

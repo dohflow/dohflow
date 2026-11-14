@@ -46,8 +46,9 @@ pub mod sync_snapshot;
 pub mod sync_snapshot_flow;
 
 pub use attachment::{
-    decrypt_blob, encrypt_blob, generate_content_key, storage_id, unwrap_content_key,
-    wrap_content_key, ContentKey, EncryptedBlob, StorageId, WrappedContentKey,
+    batch_part_storage_id_raw, decrypt_blob, encrypt_blob, generate_content_key, raw_of_hex,
+    storage_id, storage_id_raw, unwrap_content_key, wrap_content_key, ContentKey, EncryptedBlob,
+    StorageId, WrappedContentKey,
 };
 pub use envelope::{
     generate_dek, rewrap_envelope, unwrap_dek, wrap_dek, Dek, VaultEnvelope, WrappedDek,

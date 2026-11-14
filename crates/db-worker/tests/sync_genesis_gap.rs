@@ -888,3 +888,203 @@ fn an_import_taken_in_the_gap_arms_as_the_ordinary_pending_import_it_would_have_
         0
     );
 }
+
+// ---- an edit before a resume, and a rekey after the snapshot -------------------------------------
+
+/// The flow a founding device lives through when it is interrupted: enable reports local changes, a
+/// command lands in the gap, the reconciliation is cut short, an edit lands, and the resume arms
+/// it. The base is the genesis, the outbox holds every command after the mark in the order it was
+/// logged, and the device is armed only once the resume has succeeded (personal-cfo-1cltt.5).
+#[test]
+fn an_edit_before_a_resume_arms_on_the_genesis_with_every_post_mark_command_in_order() {
+    use snapshot_service::Fault;
+    use sync_core::snapshot_service::ServiceError;
+
+    let (device, gap) = device_with_a_gap();
+    let account = match gap.last() {
+        Some(WriteCommand::ArchiveAccount(id)) => *id,
+        other => panic!("the gap ends in an archive: {other:?}"),
+    };
+    let mark: i64 = device
+        .worker
+        .read_connection()
+        .unwrap()
+        .query_row("SELECT MAX(op_seq) FROM operation_log", [], |r| r.get(0))
+        .unwrap();
+
+    // A command lands in the gap after enable reported the local changes.
+    device
+        .worker
+        .dispatch(meta(), create_account_cmd())
+        .unwrap();
+
+    // The reconciliation is cut short: the service does not answer. Nothing was written.
+    device.service.script(Fault::Pass);
+    device
+        .service
+        .script(Fault::Refuse(ServiceError::Unavailable));
+    assert!(device.reconcile().is_err());
+    assert_untouched(&device);
+    assert_eq!(
+        db_worker::sync_genesis_gap::armed_position(&device.worker.read_connection().unwrap())
+            .unwrap(),
+        None,
+        "not armed after an interrupted run"
+    );
+
+    // An edit lands before the resume (it changes data the gap created).
+    device
+        .worker
+        .dispatch(meta(), WriteCommand::ReinstateAccount(account))
+        .unwrap();
+
+    // The resume arms the device.
+    let armed = device.reconcile().unwrap();
+    assert_eq!(armed.base_seq, 0);
+    assert_eq!(
+        armed.commands,
+        gap.len() + 2,
+        "every command after the mark"
+    );
+
+    // The outbox is every command logged after the genesis mark, in log order.
+    let conn = device.worker.read_connection().unwrap();
+    let logged: Vec<Vec<u8>> = {
+        let mut stmt = conn
+            .prepare("SELECT command_id FROM operation_log WHERE op_seq > ?1 ORDER BY op_seq")
+            .unwrap();
+        stmt.query_map([mark - i64::try_from(gap.len()).unwrap()], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let queued: Vec<Vec<u8>> = outbox_rows(&device).into_iter().map(|r| r.0).collect();
+    assert_eq!(logged.len(), gap.len() + 2);
+    assert_eq!(queued, logged);
+    assert!(outbox_rows(&device).iter().all(|r| r.1 == "Pending"));
+
+    // The base is the genesis, not the live vault, and the device is armed on it.
+    let (verified, _) = fetched_genesis(&device);
+    let base = db_worker::base_image::base_image_path(device.worker.db_path());
+    let inspected = device
+        .worker
+        .scratch_from_image(&base, 0, &device.dir.path().join("inspect.db"))
+        .unwrap();
+    assert_eq!(
+        class_one(&inspected.worker().read_connection().unwrap()),
+        verified.manifest.tables
+    );
+    drop(inspected);
+    assert_eq!(
+        db_worker::sync_genesis_gap::armed_position(&conn).unwrap(),
+        Some((None, 1))
+    );
+    assert!(!device.leftovers());
+}
+
+/// A key rotation on the origin after it exported its genesis changes nothing a replica or the
+/// engine depends on: the class-1 rows, the vault's identity, and the recorded genesis identity
+/// are what they were, and a replica born from the snapshot is the origin (personal-cfo-1cltt.5,
+/// AC6). The rotation is the database side of `finance-kernel`'s: a copy re-encrypted under a new
+/// key, verified, and swapped in.
+#[test]
+fn a_rekey_on_the_origin_after_the_snapshot_changes_nothing_a_replica_depends_on() {
+    use std::sync::Arc;
+
+    let device = Device::new();
+    device
+        .worker
+        .dispatch(meta(), create_account_cmd())
+        .unwrap();
+    device.worker.dispatch(meta(), income_cmd(None)).unwrap();
+    assert_eq!(device.enable(), EnableOutcome::Enabled);
+    let (verified, engine) = fetched_genesis(&device);
+
+    let identity = |worker: &DbWorker| {
+        let genesis = worker
+            .write_sync_state(|tx| sync_genesis::load(tx))
+            .unwrap()
+            .unwrap();
+        (
+            genesis.genesis_snapshot_id.unwrap(),
+            genesis.genesis_container_sha256.unwrap(),
+        )
+    };
+    let created_at = |worker: &DbWorker| -> String {
+        worker
+            .read_connection()
+            .unwrap()
+            .query_row("SELECT created_at FROM vault_metadata", [], |r| r.get(0))
+            .unwrap()
+    };
+    let class_one_before = class_one(&device.worker.read_connection().unwrap());
+    assert_eq!(
+        class_one_before, verified.manifest.tables,
+        "no gap: the origin is its genesis"
+    );
+    let identity_before = identity(&device.worker);
+    let vault_id = device.vault_id();
+    let created_before = created_at(&device.worker);
+
+    // Rotate: a re-encrypted copy under a new key, verified, swapped in, reopened under the new key.
+    let Device { dir, worker, .. } = device;
+    let path = worker.db_path().to_path_buf();
+    let with_suffix = |suffix: &str| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let new_dek = vault_crypto::generate_dek().unwrap();
+    let copy = with_suffix(".rekey-new");
+    let renames = worker.prepare_rekeyed_copy(&new_dek, &copy).unwrap();
+    assert!(renames.is_empty(), "this vault holds no attachment");
+    db_worker::verify_rekeyed_copy(
+        &copy,
+        &new_dek,
+        &dir.path().join("blobs"),
+        worker.user_version().unwrap(),
+    )
+    .unwrap();
+    drop(worker);
+    for suffix in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(with_suffix(suffix));
+    }
+    std::fs::rename(&copy, &path).unwrap();
+    let rotated = DbWorker::open_existing_with_raw_key(&path, new_dek).unwrap();
+
+    // The origin after the rotation is the origin before it.
+    assert_eq!(
+        class_one(&rotated.read_connection().unwrap()),
+        class_one_before,
+        "the class-1 export is unchanged"
+    );
+    assert_eq!(
+        identity(&rotated),
+        identity_before,
+        "the recorded genesis identity is unchanged"
+    );
+    assert_eq!(*rotated.vault_id().unwrap().as_bytes(), vault_id);
+    assert_eq!(created_at(&rotated), created_before);
+
+    // A replica born from the snapshot the origin published before the rotation is the origin.
+    let replica = db_worker::sync_bootstrap::bootstrap_replica(
+        &dir.path().join("replica.vault"),
+        &Arc::new(vault_crypto::generate_dek().unwrap()),
+        &db_worker::sync_bootstrap::ReplicaSource {
+            vault_id,
+            root: 0,
+            snapshot: &verified,
+            engine_version: &engine,
+            own_engine_version: &EngineVersion::new(db_worker::ENGINE_VERSION).unwrap(),
+            held_voids: &[],
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        class_one(&replica.worker.read_connection().unwrap()),
+        class_one(&rotated.read_connection().unwrap()),
+        "the replica is hash-equal to the rotated origin over class 1"
+    );
+    assert_eq!(*replica.worker.vault_id().unwrap().as_bytes(), vault_id);
+    assert_eq!(created_at(&replica.worker), created_before);
+}

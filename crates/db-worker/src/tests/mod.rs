@@ -8,10 +8,12 @@ mod instance_parity;
 mod loan_bill_overlap;
 mod loan_link;
 mod rebase;
+mod replica_class_2;
 mod settings_upgrade;
 mod snapshot_install;
 mod sync_bootstrap;
 mod sync_local_state;
+mod sync_produce;
 
 use super::*;
 use core_ledger::{AccountFlags, CashflowRole};
@@ -7747,7 +7749,7 @@ fn txn_row_reads_have_no_correlated_subqueries() {
     let recent = format!(
         "SELECT {TXN_ROW_COLUMNS} {TXN_ROW_FROM}
          WHERE lt.voided_at IS NULL
-         ORDER BY lt.occurred_at DESC, ol.op_seq DESC
+         ORDER BY lt.occurred_at DESC, lt.operation_id DESC, lt.id DESC, a.id DESC
          LIMIT 200"
     );
     let plan = plan_of(&recent, &[]);
@@ -7769,7 +7771,7 @@ fn txn_row_reads_have_no_correlated_subqueries() {
                 OR lt.id IN (SELECT sl.transaction_id FROM split_lines sl
                               WHERE sl.category_id IN (?, ?)))
            AND lt.occurred_at >= ? AND lt.occurred_at < ?
-         ORDER BY lt.occurred_at DESC, ol.op_seq DESC
+         ORDER BY lt.occurred_at DESC, lt.operation_id DESC, lt.id DESC, a.id DESC
          LIMIT ? OFFSET ?"
     );
     let uuid = Uuid::nil();

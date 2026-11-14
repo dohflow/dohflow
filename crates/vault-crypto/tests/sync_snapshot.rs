@@ -1032,3 +1032,108 @@ fn nothing_secret_is_in_a_debug_or_an_error() {
     let _ = common::VAULT;
     let _ = ObjectType::Snapshot;
 }
+
+// ---- the closure bound: 2^20 for a snapshot, never an envelope delta's 4096 ----------------------
+
+/// `count` strictly ascending ids.
+fn ascending_ids(count: usize) -> Vec<[u8; 32]> {
+    (0..count)
+        .map(|i| {
+            let mut id = [0_u8; 32];
+            id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            id
+        })
+        .collect()
+}
+
+/// Seal a snapshot whose closure is `ids`, check header field 17 is the closure commitment (2^20
+/// bound), and open it again.
+fn seal_and_open_a_closure(ids: &[[u8; 32]]) {
+    use sync_core::artifact::ClosureManifest;
+    let c = chain();
+    let chain_state = state(&c);
+    let key = epoch_key(1);
+    let plaintext = common::snapshot_plaintext(ids, "a large closure");
+    let expected = ClosureManifest::new(ids.to_vec()).unwrap().commitment();
+    assert_eq!(
+        vault_crypto::sync_snapshot::closure_commitment_of(&plaintext),
+        Ok(expected)
+    );
+    let (store, witness) = (MemoryRegisterStore::new(), MockWitness::new());
+    let register = CounterRegister::new(&store, &witness);
+    let reservation = register.reserve(&context(&key, &c.a, 2)).unwrap();
+    let sealed = seal_snapshot(
+        &key,
+        &identity(&c.a),
+        &fields(0x33, 41),
+        reservation,
+        &plaintext,
+    )
+    .expect("a closure within the bound seals");
+    match parse_container(&sealed).unwrap().header.object {
+        ObjectKind::Snapshot {
+            artifact_manifest_commitment,
+            ..
+        } => assert_eq!(artifact_manifest_commitment, expected),
+        ObjectKind::Envelope { .. } => panic!("a snapshot header"),
+    }
+    assert_eq!(open(&key, &chain_state, &sealed).unwrap(), plaintext);
+}
+
+/// An envelope's delta holds 4096 ids; a snapshot's closure holds 2^20. At and above the delta's
+/// bound the closure commits, seals and opens, and at 4096 the commitment is the delta's own
+/// function of the list (same label and bytes).
+#[test]
+fn a_closure_above_a_deltas_bound_commits_seals_and_opens() {
+    let ids = ascending_ids(4096);
+    assert_eq!(
+        sync_core::artifact::ClosureManifest::new(ids.clone())
+            .unwrap()
+            .commitment(),
+        ArtifactManifest::new(ids.clone()).unwrap().commitment(),
+        "at the delta's bound the two commitments are one function"
+    );
+    seal_and_open_a_closure(&ids);
+    seal_and_open_a_closure(&ascending_ids(4097));
+}
+
+/// A closure at the snapshot's bound seals and opens.
+#[test]
+fn a_closure_at_the_snapshot_bound_seals_and_opens() {
+    seal_and_open_a_closure(&ascending_ids(sync_core::snapshot::MAX_ARTIFACTS));
+}
+
+/// The sync-core and the commitment bounds are the same number, so a closure the snapshot accepts
+/// is one the commitment can be taken over, and the one above is refused at export.
+#[test]
+fn a_closure_above_the_bound_is_refused_at_export_with_the_typed_error() {
+    use sync_core::snapshot::{
+        build, ColumnEntry, Header, SnapshotError, TableFile, MAX_ARTIFACTS,
+    };
+    assert_eq!(MAX_ARTIFACTS, sync_core::artifact::MAX_SNAPSHOT_CLOSURE);
+    let artifacts: Vec<_> = ascending_ids(MAX_ARTIFACTS + 1)
+        .into_iter()
+        .map(common::bound)
+        .collect();
+    let file = TableFile {
+        name: "notes".to_owned(),
+        columns: vec![ColumnEntry {
+            name: "text".to_owned(),
+            kind: "text".to_owned(),
+        }],
+        row_count: 1,
+        state_digest: Some([7; 32]),
+        content: b"{\"text\":\"x\"}\n".to_vec(),
+    };
+    let result = build(
+        &Header {
+            schema_version: 65,
+            vault_created_at: "2026-01-01T00:00:00Z",
+            inventory_version: "1",
+            voids: &[],
+            artifacts: &artifacts,
+        },
+        vec![file],
+    );
+    assert_eq!(result, Err(SnapshotError::TooLarge));
+}
