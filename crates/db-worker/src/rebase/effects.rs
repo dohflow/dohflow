@@ -165,6 +165,11 @@ pub(crate) const CLASS3_APPLY_SITES: &[(&str, &str, Class3Effect)] = &[
         Class3Effect::SurvivesOverlay,
     ),
     (
+        "import_identity.rs",
+        "audit_events",
+        Class3Effect::SurvivesOverlay,
+    ),
+    (
         "settings_cmds.rs",
         "settings",
         Class3Effect::SurvivesOverlay,
