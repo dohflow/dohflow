@@ -50,13 +50,71 @@ impl NewIdentity {
     }
 }
 
+/// What a committed identity's row looked like, compared field by field on a later commit of it.
 #[derive(Debug, PartialEq, Eq)]
-struct Snapshot {
-    account_id: Uuid,
-    amount_minor: i64,
-    currency: String,
-    posted_date: String,
-    provider_description: Option<String>,
+pub(crate) struct Snapshot {
+    pub(crate) account_id: Uuid,
+    pub(crate) amount_minor: i64,
+    pub(crate) currency: String,
+    pub(crate) posted_date: String,
+    pub(crate) provider_description: Option<String>,
+}
+
+impl Snapshot {
+    /// The snapshot of an incoming row: the provider's posted date and description are the
+    /// record's own (`provider`), and a file row's date is the UTC day of the instant it commits as.
+    pub(crate) fn of(
+        provider: Option<(String, Option<String>)>,
+        account_id: Uuid,
+        amount: &Money,
+        occurred_at: &DateTime<Utc>,
+    ) -> Self {
+        let (posted_date, provider_description) = match provider {
+            Some((posted_date, description)) => (posted_date, description),
+            None => (occurred_at.date_naive().to_string(), None),
+        };
+        Self {
+            account_id,
+            amount_minor: amount.minor_units(),
+            currency: amount.currency().code().to_owned(),
+            posted_date,
+            provider_description,
+        }
+    }
+}
+
+/// What `import_identities` holds for an identity: its transaction, its snapshot and whether that
+/// transaction is voided.
+pub(crate) struct Held {
+    pub(crate) transaction_id: Uuid,
+    pub(crate) snapshot: Snapshot,
+    pub(crate) voided: bool,
+}
+
+/// The identity's row, by identity (never by ledger id).
+pub(crate) fn held(tx: &Connection, identity_id: Uuid) -> rusqlite::Result<Option<Held>> {
+    tx.query_row(
+        "SELECT i.transaction_id, i.account_id, i.amount_minor, i.currency, i.posted_date,
+                i.provider_description, lt.voided_at IS NOT NULL
+           FROM import_identities i
+           LEFT JOIN ledger_transactions lt ON lt.id = i.transaction_id
+          WHERE i.identity_id = ?1",
+        [identity_id],
+        |r| {
+            Ok(Held {
+                transaction_id: r.get(0)?,
+                snapshot: Snapshot {
+                    account_id: r.get(1)?,
+                    amount_minor: r.get(2)?,
+                    currency: r.get(3)?,
+                    posted_date: r.get(4)?,
+                    provider_description: r.get(5)?,
+                },
+                voided: r.get::<_, Option<bool>>(6)?.unwrap_or(false),
+            })
+        },
+    )
+    .optional()
 }
 
 fn invalid(message: &str) -> DbError {
@@ -185,45 +243,15 @@ pub(crate) fn resolve(
         }
     }
 
-    // A provider row's posted date and description are the record's own; a file row's date is the UTC
-    // day of the instant it commits as (the staged `posted_at` through `parse_staged_posted_at`).
-    let (posted_date, provider_description) = match provider_snapshot {
-        Some((posted_date, description)) => (posted_date, description),
-        None => (occurred_at.date_naive().to_string(), None),
-    };
-    let snapshot = Snapshot {
-        account_id: account_id.as_uuid(),
-        amount_minor: amount.minor_units(),
-        currency: amount.currency().code().to_owned(),
-        posted_date,
-        provider_description,
-    };
+    let snapshot = Snapshot::of(provider_snapshot, account_id.as_uuid(), amount, occurred_at);
 
     // 3. What the table holds for this identity (by identity, never by ledger id).
-    let held: Option<(Uuid, Snapshot, bool)> = tx
-        .query_row(
-            "SELECT i.transaction_id, i.account_id, i.amount_minor, i.currency, i.posted_date,
-                    i.provider_description, lt.voided_at IS NOT NULL
-               FROM import_identities i
-               LEFT JOIN ledger_transactions lt ON lt.id = i.transaction_id
-              WHERE i.identity_id = ?1",
-            [claim.identity_id],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    Snapshot {
-                        account_id: r.get(1)?,
-                        amount_minor: r.get(2)?,
-                        currency: r.get(3)?,
-                        posted_date: r.get(4)?,
-                        provider_description: r.get(5)?,
-                    },
-                    r.get::<_, Option<bool>>(6)?.unwrap_or(false),
-                ))
-            },
-        )
-        .optional()?;
-    let Some((held_transaction, held_snapshot, voided)) = held else {
+    let Some(Held {
+        transaction_id: held_transaction,
+        snapshot: held_snapshot,
+        voided,
+    }) = held(tx, claim.identity_id)?
+    else {
         return Ok(Resolution::Commit(Box::new(NewIdentity {
             id: claim.identity_id,
             components: claim.components.clone(),
@@ -257,7 +285,7 @@ pub(crate) fn resolve(
 /// The names of the compared fields that differ: the provider's amount, currency, posted date and
 /// description, and for a file row the account, amount, currency and posted date. User-editable fields
 /// are never compared.
-fn changed_fields(
+pub(crate) fn changed_fields(
     components: &ImportIdentityComponents,
     held: &Snapshot,
     claimed: &Snapshot,
