@@ -794,7 +794,9 @@ device reports `null` (it honored a void and resumes, or it re-bootstrapped), or
 when the device is revoked.
 
 **The halt gate.** A device credential whose device has a recorded halt is refused
-by `stageSnapshot`, `stageSnapshotClosure`, `publishSnapshot` and `installEpoch` with `ReplicaHalted`
+by the seven operations that stage a snapshot or change the epoch: `stageSnapshot`,
+`stageSnapshotClosure`, `beginSnapshotUpload`, `putSnapshotPart`,
+`completeSnapshotUpload`, `publishSnapshot` and `installEpoch`, with `ReplicaHalted`
 (HTTP 409), `details: { "stopped_at": "1003" }`. The refusal changes nothing
 (section 2.5), applies to every `reason` of `installEpoch`, and is a statement
 about that device's own report, never an instruction to change any local feature.
@@ -805,10 +807,11 @@ writes, the quota); it is not a step of section 5 or 6, and a vault with no
 recorded halt passes it, so those procedures run exactly as written. An account credential
 (before the genesis) has no device and passes. `pushEnvelopes` has no gate, since
 the replica holds back its own pushes (Addendum D rule 5), and `appendVoid` and
-`reportHalt` must work for a halted device, because they are how it leaves. The
-gate also applies to `beginSnapshotUpload`, `putSnapshotPart` and
-`completeSnapshotUpload` (section 4.13), which stage a snapshot as `stageSnapshot`
-does. The gate stops only the reporting device: other members are not affected.
+`reportHalt` must work for a halted device, because they are how it leaves. So
+does `abortSnapshotUpload`, which is not gated, so a halted device can clean up. The
+three operations of section 4.13 stage a snapshot as `stageSnapshot` does, and
+`stageSnapshotClosure` (section 4.14) stages its closure. The gate stops only the
+reporting device: other members are not affected.
 
 **Operator order.** If the device that poisoned the log should be revoked, the void
 comes first and the cutover after it; no cutover can happen while its author is
@@ -1492,6 +1495,7 @@ production deploy).
 | 2026-11-11 | `personal-cfo-0g528.2` | pre-release amendment | Two numbers of section 7.1 changed: `max_envelope_container_bytes` from 16909058 to 17040163 and `max_snapshot_container_bytes` from 1073742104 to 1073742137. Why: an envelope's delta-manifest item grew from 32 to 64 bytes (an id and the ciphertext hash bound to it, 4096 × 32 = 131072 more) and every header gained field 18, `artifact_binding_commitment` (33 more bytes, `vault-format.md` spec-version 40). The change landed with the header field, and is recorded here under 11.1. |
 | 2026-11-11 | `personal-cfo-v98vd` (AC31) | addition | The error `ArtifactBindingMismatch` (409, section 8.1) and its place in the error lists of `pushEnvelopes`, `publishSnapshot` and `installEpoch`. |
 | 2026-11-11 | `personal-cfo-v98vd` (AC31) | pre-release amendment | A refusal added inside three steps that existed: where every receipt is already required (`pushEnvelopes` step 7 after the receipt check, `installEpoch` step 8 after `ArtifactMissing`, the closure step of `publishSnapshot`), the binding commitment of the receipts' `ciphertext_sha256` values in the ids' order must equal the object's header field 18 (`vault-format.md` C.3, C.11): otherwise `ArtifactBindingMismatch`. Each of those steps gains a refusal, which changes the decision order of sections 5 and 6 and adds a refusal to `publishSnapshot`. |
+| 2026-11-13 | `personal-cfo-v98vd` | pre-release amendment | Section 4.12 names all seven operations the halt gate refuses in one sentence: `stageSnapshot`, `stageSnapshotClosure`, `beginSnapshotUpload`, `putSnapshotPart`, `completeSnapshotUpload`, `publishSnapshot` and `installEpoch`. It named four there and the three of 4.13 in a later sentence, and the changelog named them by degrees: the row of 2026-11-02 names three, that of 2026-11-03 adds the three of 4.13, and that of 2026-11-06 adds `stageSnapshotClosure`. The operations table and the error lists already had all seven (the contract test counts them), and `abortSnapshotUpload` stays ungated. No request, response, status or code changed. |
 
 **Why `voids` is a pre-release amendment and not an addition.** A response member
 that a client may ignore is an addition. `voids` cannot be ignored: a void takes a
