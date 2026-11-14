@@ -159,7 +159,7 @@ here or one that arrived from another device. When the last name is gone the fil
 the bytes are unreadable. One rule decides every removal (an unlink, the orphan sweep, a
 materialization's own cleanup): remove the file only when no row, no staging, no base image and no
 swap or rebase in progress names it, checked after the commit under the writer lock.
-`attachments.storage_id` is no longer unique (vault-format spec 48).
+`attachments.storage_id` is no longer unique (vault-format spec 49).
 
 ## Test coverage
 

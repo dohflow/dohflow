@@ -2505,7 +2505,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     //   from the moment the bytes are materialized until the attach command's `apply` creates the
     //   class-4 `attachments` row from them. The same transaction then sets them to NULL, so the
     //   `attachments` row is the only long-lived copy of the key material of that artifact (several
-    //   rows may hold or stage one blob, each with a copy of its key material: spec 48). While staged
+    //   rows may hold or stage one blob, each with a copy of its key material: spec 49). While staged
     //   they are re-wrapped and re-addressed by a key rotation, like an `attachments` row (ADR 0083).
     //   The CHECKs tie them to an attachment, all present or all absent.
     Migration {
@@ -2713,7 +2713,34 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
-    // Version 74 (personal-cfo-1cltt.7, slice D1; provisional: it moves if another migration lands first).
+    // Version 74 (personal-cfo-1cltt.7, slice C; planning ruling 2026-11-13 on 04a's #348):
+    // * `sync_artifacts` records, for an artifact THIS device produced, the SHA-256 of the complete
+    //   transport plaintext it first sealed (`transport_plaintext_sha256`) and the `logical_metadata`
+    //   bytes that plaintext carried (`logical_metadata`), at the artifact's first seal and BEFORE its
+    //   put (C.9). Every later seal of that id rebuilds the plaintext from the stored metadata and
+    //   the blob and passes the digest back as the fixity, so a changed plaintext is refused before
+    //   any encryption: the zero nonce is safe only while the plaintext under an address never
+    //   changes. Storing the metadata, not only the digest, is what lets a re-put survive a later
+    //   MIME or filename edit. A receiver's row leaves both NULL and never re-seals; a producer's
+    //   writes both (the metadata's CHECK ties it to a digest).
+    Migration {
+        version: 74,
+        name: "sync_artifacts_descriptor",
+        up: "ALTER TABLE sync_artifacts ADD COLUMN transport_plaintext_sha256 BLOB
+                 CHECK (transport_plaintext_sha256 IS NULL
+                        OR length(transport_plaintext_sha256) = 32);
+             ALTER TABLE sync_artifacts ADD COLUMN logical_metadata BLOB
+                 CHECK (logical_metadata IS NULL
+                        OR (length(logical_metadata) BETWEEN 1 AND 65536
+                            AND transport_plaintext_sha256 IS NOT NULL));",
+        down: Some(
+            "ALTER TABLE sync_artifacts DROP COLUMN logical_metadata;
+             ALTER TABLE sync_artifacts DROP COLUMN transport_plaintext_sha256;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
+    // Version 75 (personal-cfo-1cltt.7, slice D1; provisional: it moves if another migration lands first).
     // `sync_live_closure` is where a replica holds **the live closure** (C.9): for the epoch in
     // force, each `sync_artifact_id` that a snapshot at the vault's accepted log position would
     // carry, with the `ciphertext_sha256` that snapshot binds to it and the logical attachment or
@@ -2725,7 +2752,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // drop an object the accepted log still holds live). The key is `(key_epoch, sync_artifact_id)`,
     // so an id carries one hash; the index serves the lookups by logical object.
     Migration {
-        version: 74,
+        version: 75,
         name: "sync_live_closure",
         up: "CREATE TABLE sync_live_closure (
                  key_epoch         INTEGER NOT NULL CHECK (key_epoch >= 1),
@@ -2744,7 +2771,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
-    // Version 75 (personal-cfo-0g528.2, AC9; provisional: it moves if another migration lands first).
+    // Version 76 (personal-cfo-0g528.2, AC9; provisional: it moves if another migration lands first).
     // Two attachments may share one blob (ADR 0023 addendum, vault-format C.9): the same bytes
     // attached on two devices are two attachment ids and one blob, because the blob's name (the
     // StorageId) is a keyed hash of the bytes. `attachments.storage_id` stops being UNIQUE, which
@@ -2753,11 +2780,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // reason. The lookup by storage id keeps an index. Nothing references `attachments` (so no
     // foreign-key pause), and the columns do not change. Down refuses, atomically and typed (like 57
     // and 59), while any blob name is shared across the rows and stagings together, because version
-    // 74's code assumes the two are disjoint; it never drops a row.
+    // 75's code assumes the two are disjoint; it never drops a row.
     Migration {
-        version: 75,
+        version: 76,
         name: "attachments_share_a_blob",
-        up: "CREATE TABLE attachments_v75 (
+        up: "CREATE TABLE attachments_v76 (
                  id                  BLOB    PRIMARY KEY,
                  storage_id          TEXT    NOT NULL,
                  wrapped_content_key BLOB    NOT NULL,
@@ -2770,7 +2797,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                  ref_count           INTEGER NOT NULL DEFAULT 0,
                  created_at          TEXT    NOT NULL
              );
-             INSERT INTO attachments_v75 (id, storage_id, wrapped_content_key, content_key_nonce,
+             INSERT INTO attachments_v76 (id, storage_id, wrapped_content_key, content_key_nonce,
                      content_nonce, content_alg, plaintext_size, mime_type, original_filename,
                      ref_count, created_at)
                  SELECT id, storage_id, wrapped_content_key, content_key_nonce, content_nonce,
@@ -2778,7 +2805,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
                         created_at
                    FROM attachments ORDER BY rowid;
              DROP TABLE attachments;
-             ALTER TABLE attachments_v75 RENAME TO attachments;
+             ALTER TABLE attachments_v76 RENAME TO attachments;
              CREATE INDEX idx_attachments_storage_id ON attachments (storage_id);
              DROP INDEX idx_sync_artifacts_staged_storage;
              CREATE INDEX idx_sync_artifacts_staged_storage
@@ -4366,8 +4393,10 @@ mod tests {
         );
         assert!(origin.is_ok(), "an unchanged cursor is not a move back");
 
-        // 70 to 75 sit above 69: stepping to 68 reverts all seven.
-        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 7);
+        // 70 to 76 (`sync_artifacts`, `sync_notices`, the outbox rebuild, the genesis identity, the
+        // artifact descriptor, the live closure, shared blobs) sit above 69: stepping to 68 reverts
+        // all eight.
+        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 8);
         assert!(
             objects(&conn).is_empty(),
             "down drops both tables and every trigger"
@@ -4406,8 +4435,10 @@ mod tests {
                 "sync_artifacts"
             ]
         );
-        // 71 to 75 sit above 70: stepping to 69 reverts all six.
-        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 6);
+        // 71 to 76 (`sync_notices`, the outbox rebuild, the genesis identity, the artifact
+        // descriptor, the live closure, shared blobs) sit above 70: stepping to 69 reverts all
+        // seven.
+        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 7);
         assert!(objects(&conn).is_empty());
         apply(&mut conn, MIGRATIONS).unwrap();
         let rows: i64 = conn
@@ -4492,7 +4523,7 @@ mod tests {
         );
         assert!(
             insert(24, 32, 1, ("NULL", "NULL"), STAGED).is_ok(),
-            "two rows may stage one blob (version 75)"
+            "two rows may stage one blob (version 76)"
         );
         assert!(
             insert(25, 32, 1, ("NULL", "NULL"), &STAGED.replace("'sb'", "'sd'")).is_ok(),
@@ -4510,7 +4541,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        assert_eq!(cleared, 2, "both rows that staged the blob (version 75)");
+        assert_eq!(cleared, 2, "both rows that staged the blob (version 76)");
     }
 
     /// 71 adds the device-local notice table; down drops it with its index, and up creates it
@@ -4533,8 +4564,9 @@ mod tests {
         assert!(insert("something_else", 16, 3).is_err());
         assert!(insert("import_discarded", 15, 3).is_err());
         assert!(insert("import_discarded", 16, -1).is_err());
-        // 72, 73, 74 and 75 sit above 71: stepping to 70 reverts all five.
-        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 5);
+        // 72 to 76 (the outbox rebuild, the genesis identity, the artifact descriptor, the live
+        // closure, shared blobs) sit above 71: stepping to 70 reverts all six.
+        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 6);
         let left: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%sync_notices%'",
@@ -4612,9 +4644,9 @@ mod tests {
         outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "zeroblob(2)").unwrap();
         outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
 
-        // 73 (the genesis identity), 74 (the live closure) and 75 (shared blobs) sit above 72: step
-        // past them first.
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 3);
+        // 73 to 76 (the genesis identity, the artifact descriptor, the live closure, shared blobs)
+        // sit above 72: step past them first.
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 4);
         assert_eq!(migrate_down(&mut conn, 71).unwrap(), 1);
 
         let rows: i64 = conn
@@ -4663,7 +4695,7 @@ mod tests {
         outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "NULL").unwrap();
         outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
 
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 3);
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 4);
         assert!(migrate_down(&mut conn, 71).is_err());
 
         let applied: i64 = conn
@@ -4709,6 +4741,79 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(rows, [(1, None), (2, Some(vec![0, 0, 0]))]);
+    }
+
+    /// 74 adds a producer's descriptor to `sync_artifacts`: the digest of the transport plaintext and
+    /// its logical metadata, both nullable (a receiver's row has neither), the metadata tied to a
+    /// digest, the lengths checked; an existing row keeps NULL, down drops both and keeps the row.
+    #[test]
+    fn v74_adds_the_artifact_descriptor_to_the_mapping_and_down_drops_it() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, &MIGRATIONS[..73]).unwrap();
+        conn.execute(
+            "INSERT INTO sync_artifacts (key_epoch, sync_artifact_id, ciphertext_sha256, kind, logical_id)
+             VALUES (1, zeroblob(32), zeroblob(32), 1, zeroblob(16))",
+            [],
+        )
+        .unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let held = |conn: &Connection| -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+            conn.query_row(
+                "SELECT transport_plaintext_sha256, logical_metadata FROM sync_artifacts",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(held(&conn), (None, None), "an earlier row keeps NULL");
+
+        let set = |sql: &str| conn.execute(sql, []);
+        assert!(
+            set("UPDATE sync_artifacts SET transport_plaintext_sha256 = zeroblob(31)").is_err()
+        );
+        assert!(
+            set("UPDATE sync_artifacts SET logical_metadata = x'7b7d'").is_err(),
+            "metadata without a digest"
+        );
+        assert!(
+            set(
+                "UPDATE sync_artifacts SET transport_plaintext_sha256 = zeroblob(32),
+                                          logical_metadata = zeroblob(0)"
+            )
+            .is_err(),
+            "empty metadata"
+        );
+        assert!(
+            set(
+                "UPDATE sync_artifacts SET transport_plaintext_sha256 = zeroblob(32),
+                                          logical_metadata = zeroblob(65537)"
+            )
+            .is_err(),
+            "metadata over its bound"
+        );
+        assert!(set(
+            "UPDATE sync_artifacts SET transport_plaintext_sha256 = zeroblob(32),
+                                       logical_metadata = zeroblob(65536)"
+        )
+        .is_ok());
+
+        // 75 and 76 (the live closure, shared blobs) sit above 74: stepping to 73 reverts all three.
+        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 3);
+        let columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sync_artifacts')
+                 WHERE name IN ('transport_plaintext_sha256', 'logical_metadata')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 0, "down drops both columns");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_artifacts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "and keeps the row");
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(held(&conn), (None, None));
     }
 
     /// 73 adds the genesis snapshot's identity to `sync_genesis`: two nullable columns, both or
@@ -4762,7 +4867,7 @@ mod tests {
         );
         assert_eq!(identity(&conn).0.map(|id| id.len()), Some(16));
 
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 3);
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 4);
         let columns: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('sync_genesis')
@@ -4780,12 +4885,12 @@ mod tests {
         assert_eq!(identity(&conn), (None, None));
     }
 
-    /// Version 75 lets two attachments share one blob (the same storage id) and two staged artifacts
+    /// Version 76 lets two attachments share one blob (the same storage id) and two staged artifacts
     /// name one blob, keeps every row of the rebuilt table in its order, and keeps a lookup index.
     #[test]
-    fn v75_lets_rows_share_a_blob_and_carries_every_row_over() {
+    fn v76_lets_rows_share_a_blob_and_carries_every_row_over() {
         let mut conn = Connection::open_in_memory().unwrap();
-        // Up to 74: the unique constraint is still there.
+        // Up to 75: the unique constraint is still there.
         apply(&mut conn, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
         let attach = |conn: &Connection, id: u8, sid: &str| {
             conn.execute(
@@ -4800,7 +4905,7 @@ mod tests {
         assert!(attach(&conn, 1, "sb").is_ok());
         assert!(
             attach(&conn, 2, "sb").is_err(),
-            "version 74 keeps it unique"
+            "version 75 keeps it unique"
         );
         assert!(attach(&conn, 2, "sc").is_ok());
 
@@ -4866,7 +4971,7 @@ mod tests {
         attach(&conn, 1, "sb");
         attach(&conn, 2, "sb");
         assert!(
-            migrate_down(&mut conn, 74).is_err(),
+            migrate_down(&mut conn, 75).is_err(),
             "a shared blob refuses"
         );
         assert_eq!(count(&conn), 2, "a refused down drops no row");
@@ -4878,7 +4983,7 @@ mod tests {
         assert_eq!(version, CURRENT_VERSION, "and the step is not recorded");
         conn.execute("DELETE FROM attachments WHERE id = ?1", [vec![2_u8; 16]])
             .unwrap();
-        // A row and a staged artifact naming one blob refuse too (version 74 assumes the two are
+        // A row and a staged artifact naming one blob refuse too (version 75 assumes the two are
         // disjoint), and the refusal leaves nothing behind.
         conn.execute(
             "INSERT INTO sync_artifacts
@@ -4891,7 +4996,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            migrate_down(&mut conn, 74).is_err(),
+            migrate_down(&mut conn, 75).is_err(),
             "a row and a staging share a blob"
         );
         assert_eq!(count(&conn), 1);
@@ -4904,7 +5009,7 @@ mod tests {
             .unwrap();
         assert_eq!(leftover, 0, "the refusal leaves no temporary table");
         conn.execute("DELETE FROM sync_artifacts", []).unwrap();
-        assert_eq!(migrate_down(&mut conn, 74).unwrap(), 1);
+        assert_eq!(migrate_down(&mut conn, 75).unwrap(), 1);
         assert_eq!(count(&conn), 1);
         let duplicate = conn.execute(
             "INSERT INTO attachments (id, storage_id, wrapped_content_key, content_key_nonce,
@@ -4917,11 +5022,11 @@ mod tests {
         assert_eq!(count(&conn), 1, "up again carries the row over");
     }
 
-    /// Version 74 creates the live closure's table empty, with its keys and its checks (an id and a
+    /// Version 75 creates the live closure's table empty, with its keys and its checks (an id and a
     /// hash of 32 bytes, a logical id of 16, a kind of two values, an epoch of 1 or more); an id has one
     /// row per epoch; down drops the table and its index, and up creates it empty again.
     #[test]
-    fn v74_creates_the_live_closure_with_its_checks_and_down_drops_it() {
+    fn v75_creates_the_live_closure_with_its_checks_and_down_drops_it() {
         let mut conn = Connection::open_in_memory().unwrap();
         apply(&mut conn, MIGRATIONS).unwrap();
         let count = |conn: &Connection| -> i64 {
@@ -5014,7 +5119,7 @@ mod tests {
             .unwrap();
         assert_eq!(index, 1);
 
-        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 2);
+        assert_eq!(migrate_down(&mut conn, 74).unwrap(), 2);
         let tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'sync_live_closure%'",

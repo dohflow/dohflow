@@ -99,6 +99,12 @@ const EXCLUDED: &[(&str, &str, &str)] = &[
         "stamped when the edge is recorded",
     ),
     (
+        "forecast_actuals",
+        "created_at",
+        "class 2, rebuilt locally and never shipped: stamped with the day the actualization ran, so \
+         two devices that run either side of midnight UTC differ",
+    ),
+    (
         "forecast_input_snapshots",
         "ledger_cutoff_at",
         "the instant of the capture (the wall clock when the run was persisted)",
