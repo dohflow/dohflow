@@ -64,6 +64,7 @@ fn an_imported_transaction_references_the_record_it_was_imported_from() {
         transaction_date: None,
         category_id: None,
         forced: false,
+        identity: None,
     };
     assert_eq!(
         closure_references(&command),

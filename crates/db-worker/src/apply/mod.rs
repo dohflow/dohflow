@@ -12,6 +12,7 @@ pub(crate) mod balance_cmds;
 pub(crate) mod categorization_cmds;
 pub(crate) mod connector_cmds;
 pub(crate) mod household;
+pub(crate) mod import_identity;
 pub(crate) mod inbox;
 pub(crate) mod ingestion_cmds;
 pub(crate) mod merchant_cmds;

@@ -47,6 +47,10 @@ const FIELD_TARGET: &[(&str, &str)] = &[
         "CreateSourceBatch.connector_connection_id",
         "connector_connections",
     ),
+    (
+        "CommitImportedTransaction.identity.identity_id",
+        "import_identities",
+    ),
     ("SnoozeInboxItem.item_id", "money_inbox_read_model"),
     ("DismissInboxItem.item_id", "money_inbox_read_model"),
     ("ApplyScenario.scenario_id", "scenarios"),

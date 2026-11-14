@@ -44,6 +44,12 @@ bead = "personal-cfo-0g528.1"
 note = "CommitImportedTransaction: the amount is non-zero, the memo and counterparty are within their bound and the date is within the supported years (all payload); the amount is in the account's currency, and the account, the category (when named) and the source record exist (class-1 account and category rows, class-1b source record). The heuristics that decided to commit ran on the issuing device and are not re-run. The retired CommitStaged and SkipStaged keep their InvalidCommand errors: they read class-3 staging and are never a verdict."
 
 [[site]]
+module = "apply/import_identity.rs"
+statements = 1
+bead = "personal-cfo-0g528.3"
+note = "The identity a CommitImportedTransaction claims for its row: the id is the components' derived id (ADR 0013-A sections 9 and 12), the components are the row's own (the source record and its batch, class 1b), a provider row's ledger id is its derived id and a file row's is the id of its batch and ordinal. Every check reads the payload and class-1 and class-1b state only; what import_identities holds decides the outcome (a no-op, a recorded revision or conflict) and never raises."
+
+[[site]]
 module = "apply/mod.rs"
 statements = 1
 bead = "personal-cfo-g3m.26"

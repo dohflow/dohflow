@@ -13,7 +13,7 @@ use crate::base_image::BaseImageStatus;
 use crate::rebase::{ForkEvidence, PulledEnvelope, RebaseError, Scratch};
 
 const FINGERPRINT: [u8; 32] = [7; 32];
-const ENGINE: &str = "dohflow-engine-4";
+const ENGINE: &str = "dohflow-engine-5";
 
 /// What stands in for the vault-crypto keyed tag: any fixed function of the key.
 fn tag_for(key: &IdempotencyKey) -> IdempotencyKeyTag {

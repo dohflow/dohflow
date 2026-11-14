@@ -308,7 +308,7 @@ pub fn before(
                     id: core_ledger::SourceBatchId::from_uuid(u(920)),
                     source_type: "csv".to_owned(),
                     source_name: Some("oracle".to_owned()),
-                    file_fingerprint: None,
+                    file_fingerprint: Some(super::samples::ORACLE_FINGERPRINT.to_owned()),
                     parser_version: None,
                     connector_connection_id: None,
                 },
@@ -584,14 +584,22 @@ pub fn command_for_inner(name: &str, sample: WriteCommand, rt: &Runtime) -> Writ
                 memo,
                 transaction_date,
                 forced,
+                source_record_id: identity_record,
+                identity,
                 ..
             },
         ) => WriteCommand::CommitImportedTransaction {
             transaction_id,
             account_id: account(1),
-            source_record_id: core_ledger::SourceRecordId::from_uuid(
-                rt.source_record.expect("setup staged a batch"),
-            ),
+            // A sample that claims an identity names its own source record (the identity binds to
+            // it); the others use the record the setup staged.
+            source_record_id: if identity.is_some() {
+                identity_record
+            } else {
+                core_ledger::SourceRecordId::from_uuid(
+                    rt.source_record.expect("setup staged a batch"),
+                )
+            },
             occurred_at,
             amount,
             counterparty,
@@ -600,6 +608,7 @@ pub fn command_for_inner(name: &str, sample: WriteCommand, rt: &Runtime) -> Writ
             // The sample's category does not exist in the oracle's vault.
             category_id: None,
             forced,
+            identity,
         },
         (_, sample) => sample,
     }
