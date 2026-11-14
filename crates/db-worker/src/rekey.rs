@@ -84,6 +84,14 @@ impl DbWorker {
         dest: &Path,
     ) -> Result<Vec<BlobRename>, DbError> {
         let old_dek = self.dek()?;
+        // A genesis that is persisted and not yet published is Sync being enabled: its closure's
+        // artifacts are being put under addresses derived from the storage ids this rotation
+        // rewrites. Refuse before anything is created (C.9: no code path moves a published
+        // artifact's address; the mapping keeps the ids, and a rotation after the enable cannot
+        // move them).
+        if self.genesis_in_flight()? {
+            return Err(DbError::RekeyRefusedGenesisInFlight);
+        }
         // Create the destination as an empty file first, atomically refusing an
         // existing one. The writer of an unlocked vault is opened without
         // SQLITE_OPEN_CREATE, and an ATTACH inherits its connection's flags, so
