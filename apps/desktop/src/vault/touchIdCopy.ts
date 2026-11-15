@@ -25,6 +25,8 @@ const COPY: Record<string, string> = {
     "Touch ID needs the signed release of DohFlow, so it isn't available in this build. Use your master password.",
   store_unavailable:
     "DohFlow can't reach your Mac's secure storage right now. Enter your master password.",
+  store_refused:
+    "DohFlow couldn't turn on Touch ID. It stays off for this vault. Use your master password.",
   not_enabled: "Touch ID is off for this vault.",
   prompt_not_completed:
     "Touch ID didn't unlock the vault. Try again, or enter your master password.",

@@ -49,6 +49,12 @@ for name in $names; do
 done
 grep -q 'MissingEntitlement' "$SCRIPT" && pass "requires MissingEntitlement unentitled" || fail "no unentitled check"
 
+case_start "a kept bundle is never overwritten or deleted, and a bundle this Mac cannot run needs --sign-only"
+grep -q 'already exists: this script never overwrites or deletes it' "$SCRIPT" && pass "refuses an existing kept bundle" || fail "no overwrite guard"
+grep -q 'cannot be run here. Use --sign-only' "$SCRIPT" && pass "refuses to run a foreign-architecture bundle" || fail "no architecture guard"
+grep -q "trap 'rm -rf \"\$work\"' EXIT" "$SCRIPT" && ! grep -Eq 'rm -rf[^|]*\$keep' <<<"$code_only" \
+  && pass "only the temporary directory is ever removed" || fail "the script removes something other than its temporary directory"
+
 case_start "the conformance line in the PASS block is derived from the availability the Mac reported"
 # shellcheck disable=SC1090
 line_for() { KEYCHAIN_SMOKE_SOURCE_ONLY=1 bash -c 'source "$1"; conformance_line "$2" "$3"' _ "$SCRIPT" "$1" "$2"; }
@@ -70,6 +76,12 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   [[ $status -ne 0 && "$out" == *"unknown argument"* ]] && pass "an unknown argument is refused" || fail "unknown argument: $status $out"
   out="$("$SCRIPT" --help 2>&1)"; status=$?
   [[ $status -eq 0 && "$out" == *"signed keychain smoke harness"* ]] && pass "--help" || fail "--help: $status"
+  [[ "$out" == *"--sign-only"* && "$out" == *"--keep DIR"* && "$out" == *"--target"* ]] \
+    && pass "--help documents --target, --sign-only and --keep" || fail "--help lacks the cross-Mac options"
+  out="$("$SCRIPT" --target 2>&1)"; status=$?
+  [[ $status -ne 0 && "$out" == *"--target needs a target triple"* ]] && pass "--target needs a value" || fail "--target: $status $out"
+  out="$("$SCRIPT" --keep 2>&1)"; status=$?
+  [[ $status -ne 0 && "$out" == *"--keep needs a directory"* ]] && pass "--keep needs a value" || fail "--keep: $status $out"
   out="$(APPLE_SIGNING_IDENTITY='Developer ID Application: Nobody (ZZZZZZZZZZ)' "$SCRIPT" --check 2>&1)"; status=$?
   [[ $status -ne 0 && "$out" == *"not a valid codesigning identity"* ]] && pass "an identity that is not installed is refused" || fail "bad identity: $status $out"
 else
