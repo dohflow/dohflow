@@ -171,8 +171,12 @@ struct ToSeal<'a> {
     stored: Option<&'a StoredMapping>,
 }
 
-/// The attachments and batches a genesis closure is made of, read on `conn`: inside the caller's
-/// transaction when it holds one, so the answer is the state that transaction sees.
+/// The attachments and batches a snapshot at the state `conn` reads would carry: every attachment
+/// row, and every batch a provenance link reaches through one of its records (never the mere
+/// presence of batch rows), read inside the caller's transaction when it holds one, so the answer
+/// is the state that transaction sees. **The one reachability rule**: a genesis closure is made of
+/// it ([`DbWorker::closure_sources`]) and the live closure's prune removes what it no longer holds
+/// ([`crate::sync_live_closure::apply_delta`]); neither has a copy.
 ///
 /// # Errors
 /// A [`ProduceError`] if the vault cannot be read.
