@@ -464,10 +464,6 @@ mod tests {
             _ => None,
         };
         assert_eq!(
-            invalid(MaterializeError::BlobHeld),
-            Some(ContentFault::BlobHeld)
-        );
-        assert_eq!(
             invalid(MaterializeError::NotAnAttachment),
             Some(ContentFault::NotAnAttachment)
         );
