@@ -763,6 +763,318 @@ fn a_materialize_error_caused_by_content_is_a_deterministic_invalid_snapshot() {
     assert_no_vault_and_no_spool(dir.path());
 }
 
+/// `verified` framed again with `edit` applied to its table files and `artifacts` as its closure
+/// manifest: a snapshot whose rows are not the ones its digests were computed from, or whose closure
+/// is another.
+fn reframed(
+    verified: &Verified,
+    artifacts: &[BoundArtifact],
+    edit: impl FnOnce(&mut Vec<sync_core::snapshot::TableFile>),
+) -> Verified {
+    let m = &verified.manifest;
+    let mut files: Vec<sync_core::snapshot::TableFile> = m
+        .tables
+        .iter()
+        .zip(&verified.files)
+        .map(|(entry, (_, content))| sync_core::snapshot::TableFile {
+            name: entry.name.clone(),
+            columns: entry.columns.clone(),
+            row_count: entry.row_count.parse().unwrap(),
+            state_digest: entry.state_digest.as_deref().map(hex_to_32),
+            content: content.clone(),
+        })
+        .collect();
+    edit(&mut files);
+    let plaintext = sync_core::snapshot::build(
+        &sync_core::snapshot::Header {
+            schema_version: m.schema_version.parse().unwrap(),
+            vault_created_at: &m.vault_created_at,
+            inventory_version: &m.inventory_version,
+            voids: &[],
+            artifacts,
+        },
+        files,
+    )
+    .unwrap();
+    verify(&plaintext).unwrap()
+}
+
+fn bound_of(origin: &Origin) -> Vec<BoundArtifact> {
+    origin
+        .produced
+        .iter()
+        .map(|p| BoundArtifact {
+            id: *p.id.as_bytes(),
+            ciphertext_sha256: p.ciphertext_sha256,
+        })
+        .collect()
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `verified` with one more artifact in its closure manifest (kept ascending by id).
+fn with_artifact(verified: &Verified, id: &ArtifactId, hash: &[u8; 32]) -> Verified {
+    let mut verified = verified.clone();
+    verified
+        .manifest
+        .artifacts
+        .push(sync_core::snapshot::ArtifactEntry {
+            id: hex_of(id.as_bytes()),
+            ciphertext_sha256: hex_of(hash),
+        });
+    verified.manifest.artifacts.sort_by(|a, b| a.id.cmp(&b.id));
+    verified
+}
+
+/// DETERMINISTIC, and only the late proof sees it (04a's M1): a closure snapshot is not proved inside
+/// its install (its attachment rows are not there yet), so `prove_installed` after the closure is
+/// materialized is the only check that the installed state re-exports to the snapshot's digests. A
+/// row changed after its state digest was computed is refused, no vault is left, and it never
+/// marks as a local fault.
+#[test]
+fn a_closure_snapshot_whose_installed_state_is_not_its_digests_is_refused_by_the_late_proof() {
+    let origin = Origin::new(1);
+    let tampered = reframed(&origin.verified, &bound_of(&origin), |files| {
+        let attachments = files.iter_mut().find(|f| f.name == "attachments").unwrap();
+        let text = String::from_utf8(attachments.content.clone()).unwrap();
+        assert!(text.contains("a.pdf"), "the row carries its file name");
+        attachments.content = text.replacen("a.pdf", "b.pdf", 1).into_bytes();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let error = origin
+        .bootstrap(&tampered, dir.path(), Some(&origin.service))
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            BootstrapError::Install(
+                db_worker::snapshot_install::InstallError::DigestMismatch { .. }
+                    | db_worker::snapshot_install::InstallError::HeaderMismatch
+            )
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.kind(), FailureKind::Deterministic);
+    assert_no_vault_and_no_spool(dir.path());
+}
+
+/// DETERMINISTIC (04a's M2): an attachment artifact of the closure that has no row in the snapshot.
+#[test]
+fn an_attachment_artifact_with_no_snapshot_row_is_deterministic_invalid() {
+    let origin = Origin::new(1);
+    let orphan = artifacts::publish_attachment(
+        &origin.service,
+        &origin.key,
+        0x9a,
+        [0x55; 16],
+        b"an attachment no row of the snapshot names",
+        "application/pdf",
+    );
+    let verified = with_artifact(&origin.verified, &orphan.id, &orphan.hash);
+    let dir = tempfile::tempdir().unwrap();
+    let error = origin
+        .bootstrap(&verified, dir.path(), Some(&origin.service))
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            BootstrapError::Invalid(InvalidSnapshot::ArtifactWithoutAttachment)
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.kind(), FailureKind::Deterministic);
+    assert_no_vault_and_no_spool(dir.path());
+}
+
+/// DETERMINISTIC (04a's M3): one logical object bound twice. Nothing in the pass refuses the second
+/// attachment artifact for the same attachment id (each opens, each materializes), so the closure-wide
+/// stage-9(b) check is what decides: `Invalid(Closure(_))`.
+#[test]
+fn one_attachment_bound_by_two_artifacts_is_refused_by_the_closure_check() {
+    let origin = Origin::new(1);
+    let twin = artifacts::publish_attachment(
+        &origin.service,
+        &origin.key,
+        0x9b,
+        origin.attachment,
+        b"another artifact for the same attachment id, with other bytes",
+        "application/pdf",
+    );
+    let verified = with_artifact(&origin.verified, &twin.id, &twin.hash);
+    let dir = tempfile::tempdir().unwrap();
+    let error = origin
+        .bootstrap(&verified, dir.path(), Some(&origin.service))
+        .unwrap_err();
+    assert!(
+        matches!(error, BootstrapError::Invalid(InvalidSnapshot::Closure(_))),
+        "{error:?}"
+    );
+    assert_eq!(error.kind(), FailureKind::Deterministic);
+    assert_no_vault_and_no_spool(dir.path());
+}
+
+/// DETERMINISTIC (04a's L1): a second batch that takes a record id the origin's first batch holds,
+/// where a replicated provenance link names that record. A content defect is the snapshot's whatever
+/// order the closure is fetched in, never a local fault. (`RowsDiffer` is not reachable here: it needs
+/// a live holder, and a snapshot's closure is judged against an empty live closure. Its mapping has a
+/// unit test in `sync_bootstrap_artifacts`.)
+#[test]
+fn a_batch_taking_a_record_a_replicated_link_names_is_deterministic_invalid() {
+    use sync_core::source_batch::{BatchRow, RecordRow, RunRow, SourceBatch};
+    let origin = Origin::new(1);
+    let batch_id = [0xe1; 16];
+    let batch = SourceBatch {
+        batch: BatchRow {
+            id: batch_id,
+            source_type: "csv".to_owned(),
+            source_name: Some("other.csv".to_owned()),
+            file_fingerprint: Some("fp-other".to_owned()),
+            parser_version: Some("1".to_owned()),
+            summary_json: Some("{}".to_owned()),
+            imported_at: Some("2026-11-02T00:00:00Z".to_owned()),
+            created_at: "2026-11-02T00:00:00Z".to_owned(),
+            connector_connection_id: None,
+        },
+        runs: vec![RunRow {
+            id: [0xe2; 16],
+            source_batch_id: batch_id,
+            parser_name: "csv".to_owned(),
+            parser_version: "1".to_owned(),
+            bytes_in: 5,
+            records_out: 1,
+            status: "ok".to_owned(),
+            limit_hit: None,
+            started_at: "2026-11-02T00:00:00Z".to_owned(),
+            finished_at: None,
+        }],
+        // The id the origin's first batch gives its first record, which a provenance link names.
+        records: vec![RecordRow {
+            id: [0x11; 16],
+            source_batch_id: batch_id,
+            external_id: Some("ext-other".to_owned()),
+            source_hash: "hash-other".to_owned(),
+            normalized_json: "{\"n\":2}".to_owned(),
+            parse_confidence_bps: Some(9000),
+            created_at: "2026-11-02T00:00:00Z".to_owned(),
+        }],
+    };
+    let parts = artifacts::publish_batch(&origin.service, &origin.key, 0xa0, &batch);
+    let mut verified = origin.verified.clone();
+    for part in &parts {
+        verified = with_artifact(&verified, &part.id, &part.hash);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let error = origin
+        .bootstrap(&verified, dir.path(), Some(&origin.service))
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            BootstrapError::Invalid(InvalidSnapshot::Content(
+                db_worker::sync_bootstrap_artifacts::ContentFault::LiveReference
+            ))
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.kind(), FailureKind::Deterministic);
+    assert_no_vault_and_no_spool(dir.path());
+}
+
+/// DETERMINISTIC (04a's L2): attachment rows with an empty closure. The snapshot says attachments
+/// exist and binds none, so it is invalid at every replica; it is not a snapshot that merely needs a
+/// service.
+#[test]
+fn attachment_rows_with_an_empty_closure_are_deterministic_invalid() {
+    let origin = Origin::new(0);
+    let emptied = reframed(&origin.verified, &[], |_| {});
+    assert!(emptied.manifest.artifacts.is_empty());
+    let dir = tempfile::tempdir().unwrap();
+    let error = origin
+        .bootstrap(&emptied, dir.path(), Some(&origin.service))
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            BootstrapError::Invalid(InvalidSnapshot::AttachmentWithoutArtifact)
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.kind(), FailureKind::Deterministic);
+    assert_no_vault_and_no_spool(dir.path());
+}
+
+/// A transport that damages whatever waits in the spool the moment the next artifact is fetched: a
+/// disk that changes a spooled part between its fetch and its batch's completion.
+struct Damaging<'a> {
+    inner: &'a FakeService,
+    spool: PathBuf,
+    damaged: Cell<usize>,
+}
+
+impl ArtifactTransport for Damaging<'_> {
+    fn put(
+        &self,
+        vault_id: &[u8; 16],
+        key_epoch: u64,
+        artifact_id: &ArtifactId,
+        container: &[u8],
+    ) -> Result<ArtifactReceipt, TransportError> {
+        self.inner.put(vault_id, key_epoch, artifact_id, container)
+    }
+
+    fn get(
+        &self,
+        vault_id: &[u8; 16],
+        key_epoch: u64,
+        artifact_id: &ArtifactId,
+    ) -> Result<Vec<u8>, TransportError> {
+        if let Ok(entries) = std::fs::read_dir(&self.spool) {
+            for entry in entries.flatten() {
+                std::fs::write(entry.path(), b"the disk changed this").unwrap();
+                self.damaged.set(self.damaged.get() + 1);
+            }
+        }
+        self.inner.get(vault_id, key_epoch, artifact_id)
+    }
+
+    fn status(
+        &self,
+        vault_id: &[u8; 16],
+        key_epoch: u64,
+        ids: &[ArtifactId],
+    ) -> Result<Vec<ArtifactStatus>, TransportError> {
+        self.inner.status(vault_id, key_epoch, ids)
+    }
+}
+
+/// LOCAL (04a's L3): a spooled part opened when it was fetched, so a failure to open it again when
+/// its batch completes is this device's disk. It never marks the root invalid.
+#[test]
+fn a_spooled_part_that_no_longer_opens_is_a_local_fault_never_an_invalid_root() {
+    let origin = Origin::new(1);
+    let dir = tempfile::tempdir().unwrap();
+    let transport = Damaging {
+        inner: &origin.service,
+        spool: with_suffix(&dir.path().join("replica.vault"), SPOOL_SUFFIX),
+        damaged: Cell::new(0),
+    };
+    let error = origin
+        .bootstrap(&origin.verified, dir.path(), Some(&transport))
+        .unwrap_err();
+    assert!(transport.damaged.get() > 0, "a spooled part was damaged");
+    assert!(
+        matches!(
+            error,
+            BootstrapError::Local(db_worker::sync_bootstrap_artifacts::LocalFault::SpoolCorrupt(_))
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.kind(), FailureKind::Local);
+    assert_no_vault_and_no_spool(dir.path());
+}
+
 /// A spool an earlier build left (a crash) is discarded at the next start, with the build it belonged
 /// to, and the next build succeeds and leaves none.
 #[test]
