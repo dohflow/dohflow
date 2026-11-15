@@ -3687,6 +3687,197 @@ mod overlay {
         );
     }
 
+    // The live closure (`sync_live_closure`, C.9) is swapped from the scratch, never overlaid
+    // (personal-cfo-1cltt.7, planning ruling 2026-11-13). The engine that calls `apply_delta` for
+    // each pulled envelope on the scratch is `personal-cfo-elciw`'s, and no write command creates or
+    // removes an attachment, so these tests play the engine: the class-1 effect of the envelope is
+    // written with `hold`, and its delta with `apply_delta`, in that order and before the replay.
+
+    /// One row of the live closure: epoch, artifact id, hash, logical kind, logical id.
+    type ClosureRow = (i64, Vec<u8>, Vec<u8>, String, Vec<u8>);
+
+    /// The rows of a vault's live closure, in key order, as a plain value.
+    fn closure_rows(worker: &DbWorker) -> Vec<ClosureRow> {
+        let guard = worker.lock();
+        let mut stmt = guard
+            .conn
+            .prepare(
+                "SELECT key_epoch, sync_artifact_id, ciphertext_sha256, logical_kind, logical_id
+                   FROM sync_live_closure ORDER BY key_epoch, sync_artifact_id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+    }
+
+    fn attachment_id(n: u8) -> [u8; 16] {
+        [n; 16]
+    }
+
+    /// The live-closure entry for attachment `n`: one artifact id, one hash.
+    fn entry(n: u8) -> crate::sync_live_closure::LiveEntry {
+        crate::sync_live_closure::LiveEntry {
+            id: sync_core::artifact::ArtifactId::from_derived([n; 32]),
+            ciphertext_sha256: [n ^ 0xff; 32],
+            logical: sync_core::artifact_closure::LogicalRef::Attachment(attachment_id(n)),
+        }
+    }
+
+    /// The class-1 effect of an accepted attach: the vault holds attachment `n`.
+    fn hold(worker: &DbWorker, n: u8) {
+        let guard = worker.lock();
+        crate::attachments::insert_attachment_fields(
+            &guard.conn,
+            core_ledger::AttachmentId::from_uuid(Uuid::from_bytes(attachment_id(n))),
+            &crate::attachments::AttachmentFields {
+                storage_id: &format!("storage-{n}"),
+                wrapped_content_key: &[n; 48],
+                content_key_nonce: &[n; 12],
+                content_nonce: &[n; 12],
+                content_alg: "xchacha20poly1305",
+                plaintext_size: 10,
+                mime_type: Some("application/pdf"),
+                original_filename: None,
+                created_at: "2026-11-04T00:00:00+00:00",
+            },
+        )
+        .unwrap();
+    }
+
+    /// A live vault whose base carries attachment 1 and its closure row, as an accepted state does.
+    fn world_with_a_closure() -> World {
+        world_with(|live| {
+            hold(live, 1);
+            live.seed_live_closure(1, &[entry(1)]).unwrap();
+        })
+    }
+
+    /// Roll back, apply the remote command as envelope 6, and hand the scratch over before the local
+    /// replay: what the engine does between the pulled envelopes and the replay.
+    fn pulled_scratch(w: &World, local: WriteCommand) -> (Scratch<'_>, Preservation) {
+        executor::issue(&w.live, meta(), local);
+        let device_b = other_device(&w.live, &w.dir);
+        let sealed = seal(
+            device_b.worker(),
+            &meta(),
+            &rename(w.account, "From device B"),
+        );
+        let image = w.live.capture_preservation().unwrap();
+        let mut scratch = w.live.rollback_to(5, &w.scratch).unwrap();
+        scratch.apply_pulled(&[sealed.pulled(6)]).unwrap();
+        (scratch, image)
+    }
+
+    /// (a) A rebase that pulls an artifact add, with an unpushed local command beside it: the
+    /// scratch's table is the closure rebuilt from scratch at the accepted head (the base's object
+    /// and the pulled add), not the live vault's, and the local replay adds nothing to it.
+    #[test]
+    fn a_rebase_leaves_the_live_closure_the_rebuild_at_the_accepted_head() {
+        let w = world_with_a_closure();
+        let (mut scratch, image) = pulled_scratch(&w, other_account());
+        // The pulled envelope added attachment 2: its class-1 effect, then its delta, on the scratch.
+        hold(scratch.worker(), 2);
+        scratch
+            .worker()
+            .write_sync_state(|tx| crate::sync_live_closure::apply_delta(tx, 1, &[entry(2)]))
+            .unwrap();
+        let executed = scratch.rebase_local(image.local()).unwrap();
+        assert_eq!(executed.replayed.len(), 1, "the local command was replayed");
+        scratch.overlay_class3(&image).unwrap();
+
+        // The reference: a vault holding the same objects, its closure rebuilt at that head.
+        let (_dir, reference) = worker();
+        hold(&reference, 1);
+        hold(&reference, 2);
+        reference
+            .rebuild_live_closure_for_epoch(1, &[entry(1), entry(2)])
+            .unwrap();
+        assert_eq!(
+            closure_rows(scratch.worker()),
+            closure_rows(&reference),
+            "the pulled add is in and the local effect is out"
+        );
+        assert_eq!(
+            closure_rows(&w.live).len(),
+            1,
+            "the live vault's own table was never touched"
+        );
+
+        // The order the engine needs: with the replay's outbox row in place, the writer refuses.
+        let refused = scratch
+            .worker()
+            .write_sync_state(|tx| crate::sync_live_closure::apply_delta(tx, 1, &[]));
+        assert!(
+            matches!(
+                refused,
+                Err(crate::sync_live_closure::LiveClosureError::LocalChangesPending)
+            ),
+            "{refused:?}"
+        );
+    }
+
+    /// (b) A replayed local command never writes the table. A row whose object the vault no longer
+    /// reaches stands for an object the accepted log still holds live (the unpushed local delete's
+    /// shape): a prune run during the replay would drop it, and it is still there afterwards.
+    #[test]
+    fn a_replayed_local_command_never_prunes_the_live_closure() {
+        let w = world_with(|live| {
+            hold(live, 1);
+            live.seed_live_closure(1, &[entry(1)]).unwrap();
+            // An object the log holds live that no class-1 row of this vault reaches.
+            exec(
+                live,
+                "INSERT INTO sync_live_closure
+                    (key_epoch, sync_artifact_id, ciphertext_sha256, logical_kind, logical_id)
+                 VALUES (1, ?1, ?2, 'attachment', ?3)",
+                params![vec![9_u8; 32], vec![0x66_u8; 32], vec![9_u8; 16]],
+            );
+        });
+        let (mut scratch, image) = pulled_scratch(&w, other_account());
+        let before = closure_rows(scratch.worker());
+        assert_eq!(before.len(), 2, "the base carries both rows");
+        scratch.rebase_local(image.local()).unwrap();
+        scratch.overlay_class3(&image).unwrap();
+        assert_eq!(
+            closure_rows(scratch.worker()),
+            before,
+            "the replay and the overlay wrote nothing, so nothing was pruned"
+        );
+    }
+
+    /// (c) `overlay_class3` leaves the table as the scratch has it, even when the live vault's table
+    /// has moved since the base. An "overlay it" mutant would empty the base-inherited rows and carry
+    /// the live vault's instead.
+    #[test]
+    fn the_overlay_leaves_the_scratchs_live_closure_byte_identical() {
+        let w = world_with_a_closure();
+        // After the base the live vault's own table diverges: its row goes, another appears.
+        exec(&w.live, "DELETE FROM sync_live_closure", []);
+        exec(
+            &w.live,
+            "INSERT INTO sync_live_closure
+                (key_epoch, sync_artifact_id, ciphertext_sha256, logical_kind, logical_id)
+             VALUES (1, ?1, ?2, 'attachment', ?3)",
+            params![vec![7_u8; 32], vec![0x77_u8; 32], vec![7_u8; 16]],
+        );
+        let live_rows = closure_rows(&w.live);
+        let (mut scratch, image) = pulled_scratch(&w, other_account());
+        scratch.rebase_local(image.local()).unwrap();
+        let before = closure_rows(scratch.worker());
+        assert_eq!(before.len(), 1, "the scratch holds the base's row");
+        assert_ne!(before, live_rows, "and the live vault's table moved on");
+        scratch.overlay_class3(&image).unwrap();
+        assert_eq!(
+            closure_rows(scratch.worker()),
+            before,
+            "the overlay left the scratch's table as it was"
+        );
+    }
+
     /// Roll back, apply the remote command as envelope 6, rebase the local one, carry the overlay.
     fn overlaid<'a>(
         w: &'a World,

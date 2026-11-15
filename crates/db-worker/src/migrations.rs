@@ -2739,6 +2739,38 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuilds_read_models: false,
         foreign_keys_off: false,
     },
+    // Version 75 (personal-cfo-1cltt.7, slice D1; provisional: it moves if another migration lands first).
+    // `sync_live_closure` is where a replica holds **the live closure** (C.9): for the epoch in
+    // force, each `sync_artifact_id` that a snapshot at the vault's accepted log position would
+    // carry, with the `ciphertext_sha256` that snapshot binds to it and the logical attachment or
+    // batch it belongs to. The materializer and the stage-9 verdicts judge an envelope's delta against
+    // it (never against the `sync_artifacts` cache). It is derived, class 3 (outside every write set,
+    // row digest, snapshot and portable export), and **written only where the vault's class-1 state
+    // equals the accepted state**: by an accepted envelope's apply, the push path (which brings it to
+    // the accepted head in the transaction that empties the outbox), the seed at bootstrap and the
+    // rebuild at a key epoch, never by a local command (a prune run beside an unpushed delete would
+    // drop an object the accepted log still holds live). The key is `(key_epoch, sync_artifact_id)`,
+    // so an id carries one hash; the index serves the lookups by logical object.
+    Migration {
+        version: 75,
+        name: "sync_live_closure",
+        up: "CREATE TABLE sync_live_closure (
+                 key_epoch         INTEGER NOT NULL CHECK (key_epoch >= 1),
+                 sync_artifact_id  BLOB    NOT NULL CHECK (length(sync_artifact_id) = 32),
+                 ciphertext_sha256 BLOB    NOT NULL CHECK (length(ciphertext_sha256) = 32),
+                 logical_kind      TEXT    NOT NULL CHECK (logical_kind IN ('attachment', 'batch')),
+                 logical_id        BLOB    NOT NULL CHECK (length(logical_id) = 16),
+                 PRIMARY KEY (key_epoch, sync_artifact_id)
+             ) WITHOUT ROWID;
+             CREATE INDEX sync_live_closure_logical
+                 ON sync_live_closure (key_epoch, logical_kind, logical_id);",
+        down: Some(
+            "DROP INDEX sync_live_closure_logical;
+             DROP TABLE sync_live_closure;",
+        ),
+        rebuilds_read_models: false,
+        foreign_keys_off: false,
+    },
 ];
 
 /// Rust steps that run in the same transaction as a migration's SQL, after it, for work SQLite
@@ -4281,9 +4313,9 @@ mod tests {
         );
         assert!(origin.is_ok(), "an unchanged cursor is not a move back");
 
-        // 70, 71, 72, 73 and 74 (`sync_artifacts`, `sync_notices`, the outbox rebuild, the genesis
-        // identity, the artifact descriptor) sit above 69: stepping to 68 reverts all six.
-        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 6);
+        // 70 to 75 (`sync_artifacts`, `sync_notices`, the outbox rebuild, the genesis identity, the
+        // artifact descriptor, the live closure) sit above 69: stepping to 68 reverts all seven.
+        assert_eq!(migrate_down(&mut conn, 68).unwrap(), 7);
         assert!(
             objects(&conn).is_empty(),
             "down drops both tables and every trigger"
@@ -4322,9 +4354,9 @@ mod tests {
                 "sync_artifacts"
             ]
         );
-        // 71 to 74 (`sync_notices`, the outbox rebuild, the genesis identity, the artifact
-        // descriptor) sit above 70: stepping to 69 reverts all five.
-        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 5);
+        // 71 to 75 (`sync_notices`, the outbox rebuild, the genesis identity, the artifact
+        // descriptor, the live closure) sit above 70: stepping to 69 reverts all six.
+        assert_eq!(migrate_down(&mut conn, 69).unwrap(), 6);
         assert!(objects(&conn).is_empty());
         apply(&mut conn, MIGRATIONS).unwrap();
         let rows: i64 = conn
@@ -4450,9 +4482,9 @@ mod tests {
         assert!(insert("something_else", 16, 3).is_err());
         assert!(insert("import_discarded", 15, 3).is_err());
         assert!(insert("import_discarded", 16, -1).is_err());
-        // 72 to 74 (the outbox rebuild, the genesis identity, the artifact descriptor) sit above
-        // 71: stepping to 70 reverts all four.
-        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 4);
+        // 72 to 75 (the outbox rebuild, the genesis identity, the artifact descriptor, the live
+        // closure) sit above 71: stepping to 70 reverts all five.
+        assert_eq!(migrate_down(&mut conn, 70).unwrap(), 5);
         let left: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%sync_notices%'",
@@ -4530,9 +4562,9 @@ mod tests {
         outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "zeroblob(2)").unwrap();
         outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
 
-        // 73 and 74 (the genesis identity, the artifact descriptor) sit above 72: step past them
-        // first.
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 2);
+        // 73 to 75 (the genesis identity, the artifact descriptor, the live closure) sit above 72:
+        // step past them first.
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 3);
         assert_eq!(migrate_down(&mut conn, 71).unwrap(), 1);
 
         let rows: i64 = conn
@@ -4581,7 +4613,7 @@ mod tests {
         outbox_insert(&conn, 1, "Bound", "zeroblob(1)", "6", "NULL").unwrap();
         outbox_insert(&conn, 2, "Pending", "NULL", "NULL", "NULL").unwrap();
 
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 2);
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 3);
         assert!(migrate_down(&mut conn, 71).is_err());
 
         let applied: i64 = conn
@@ -4683,7 +4715,8 @@ mod tests {
         )
         .is_ok());
 
-        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 1);
+        // 75 (the live closure) sits above 74: stepping to 73 reverts both.
+        assert_eq!(migrate_down(&mut conn, 73).unwrap(), 2);
         let columns: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('sync_artifacts')
@@ -4752,7 +4785,7 @@ mod tests {
         );
         assert_eq!(identity(&conn).0.map(|id| id.len()), Some(16));
 
-        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 2);
+        assert_eq!(migrate_down(&mut conn, 72).unwrap(), 3);
         let columns: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('sync_genesis')
@@ -4768,6 +4801,116 @@ mod tests {
         assert_eq!(rows, 1, "and keeps the row");
         apply(&mut conn, MIGRATIONS).unwrap();
         assert_eq!(identity(&conn), (None, None));
+    }
+
+    /// Version 75 creates the live closure's table empty, with its keys and its checks (an id and a
+    /// hash of 32 bytes, a logical id of 16, a kind of two values, an epoch of 1 or more); an id has one
+    /// row per epoch; down drops the table and its index, and up creates it empty again.
+    #[test]
+    fn v75_creates_the_live_closure_with_its_checks_and_down_drops_it() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn, MIGRATIONS).unwrap();
+        let count = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM sync_live_closure", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(count(&conn), 0);
+        let insert =
+            |conn: &Connection, epoch: i64, id: &str, hash: &str, kind: &str, logical: &str| {
+                conn.execute(
+                    &format!(
+                        "INSERT INTO sync_live_closure
+                         (key_epoch, sync_artifact_id, ciphertext_sha256, logical_kind, logical_id)
+                     VALUES ({epoch}, {id}, {hash}, '{kind}', {logical})"
+                    ),
+                    [],
+                )
+            };
+        let good = |conn: &Connection, epoch: i64| {
+            insert(
+                conn,
+                epoch,
+                "zeroblob(32)",
+                "zeroblob(32)",
+                "attachment",
+                "zeroblob(16)",
+            )
+        };
+        assert!(good(&conn, 1).is_ok());
+        assert!(good(&conn, 1).is_err(), "an id has one row per epoch");
+        assert!(
+            good(&conn, 2).is_ok(),
+            "the same id in another epoch is another row"
+        );
+        assert!(good(&conn, 0).is_err(), "an epoch is 1 or more");
+        assert!(insert(
+            &conn,
+            3,
+            "zeroblob(31)",
+            "zeroblob(32)",
+            "batch",
+            "zeroblob(16)"
+        )
+        .is_err());
+        assert!(insert(
+            &conn,
+            3,
+            "zeroblob(32)",
+            "zeroblob(31)",
+            "batch",
+            "zeroblob(16)"
+        )
+        .is_err());
+        assert!(insert(
+            &conn,
+            3,
+            "zeroblob(32)",
+            "zeroblob(32)",
+            "batch",
+            "zeroblob(15)"
+        )
+        .is_err());
+        assert!(
+            insert(
+                &conn,
+                3,
+                "zeroblob(32)",
+                "zeroblob(32)",
+                "part",
+                "zeroblob(16)"
+            )
+            .is_err(),
+            "a kind is attachment or batch"
+        );
+        assert!(insert(
+            &conn,
+            3,
+            "zeroblob(32)",
+            "zeroblob(32)",
+            "batch",
+            "zeroblob(16)"
+        )
+        .is_ok());
+        let index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'sync_live_closure_logical'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
+
+        assert_eq!(migrate_down(&mut conn, 74).unwrap(), 1);
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'sync_live_closure%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0, "down drops the table and its index");
+        apply(&mut conn, MIGRATIONS).unwrap();
+        assert_eq!(count(&conn), 0, "up creates it empty again");
     }
 
     fn hex_upper(bytes: &[u8]) -> String {
