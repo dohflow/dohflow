@@ -385,9 +385,9 @@ dangerous than a missing one, because a gate can run over it with test files
 gone and still pass. So:
 
 - **`/private/tmp` is good for the day.** A scratch worktree there is valid only
-  for the day it was created. Anything that must outlive the day (a lane's
-  working copy, a review worktree held for a re-review) goes in the **named
-  scratch root `$HOME/dohflow-scratch/`**, laid out `<lane>/<purpose>/<worktree>`
+  for the day it was created. Anything that must outlive the day (a per-bead or
+  probe worktree a lane keeps across days, a review worktree held for a re-review)
+  goes in the **named scratch root `$HOME/dohflow-scratch/`**, laid out `<lane>/<purpose>/<worktree>`
   (for example `~/dohflow-scratch/02c/m3d-runbook/platform`). Create it with
   `git worktree add`, and name it with `--scratch-root` if it lives elsewhere.
   macOS does not clear it. Nothing in it is a standing role worktree: it is
@@ -573,7 +573,10 @@ for exactly these two things and nothing else in `AGENTS.md` section 1: Tier 1
 (a session cleaning its own scratch after the verdict on a merged or closed PR, as
 the role rules above say) and Tier 2 (`--clean --scratch` under the conditions
 above). It is not an authorization to remove an unregistered copy, delete a branch,
-or touch anything outside the scratch root. The earlier 2026-10-19 authorization
+or touch anything outside the scratch root. On 2026-11-15 the owner approved
+`personal-cfo-0rein.16` ("Yes, file it", in planning's session), whose third
+acceptance criterion extends Tier 2 to the named root `$HOME/dohflow-scratch`
+under the same conditions: that root and nothing else. The earlier 2026-10-19 authorization
 (a session's own clean, pushed per-bead worktree and local branch after its PR
 merges) is unchanged. When free space is under 15% the overseer still asks the
 owner before any `--clean`, `--clean --scratch` included; the report says so.
