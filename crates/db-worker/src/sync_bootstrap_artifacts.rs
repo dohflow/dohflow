@@ -477,11 +477,18 @@ mod tests {
             invalid(MaterializeError::LiveReference),
             Some(ContentFault::LiveReference)
         );
-        assert!(matches!(
-            materialize_error(MaterializeError::Local(DbError::WorkerUnavailable(
-                crate::WorkerState::Healthy
-            ))),
-            ClosureError::Local(LocalFault::Materialize(_))
-        ));
+        // A blob this device holds that cannot be used (it conflicts with the bytes, or is gone) is
+        // this device's disk, never the snapshot's: it is local only because nothing maps it to an
+        // invalid snapshot.
+        for error in [
+            MaterializeError::BlobConflict,
+            MaterializeError::BlobMissing,
+            MaterializeError::Local(DbError::WorkerUnavailable(crate::WorkerState::Healthy)),
+        ] {
+            assert!(matches!(
+                materialize_error(error),
+                ClosureError::Local(LocalFault::Materialize(_))
+            ));
+        }
     }
 }

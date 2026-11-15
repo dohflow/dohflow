@@ -378,6 +378,38 @@ fn producing_a_received_row_that_shares_a_blob_with_a_local_one_is_refused() {
     ));
 }
 
+/// F4, the other-epoch case (04a's G2): an attachment this device published under epoch 1 has an
+/// address of its own there. Producing it at epoch 2, where it has no mapping, is refused too: its
+/// address is the mapping's, never a fresh one derived at the new epoch (a re-address at a key epoch
+/// is the rekey's, which rewrites the mapping).
+#[test]
+fn producing_an_attachment_that_is_mapped_in_an_earlier_epoch_is_refused_at_the_next() {
+    use db_worker::sync_produce::ProduceError;
+    let service = FakeService::default();
+    let (epoch1, epoch2) = (key_of(1, 0), key_of(2, 0));
+    let vault = Vault::new();
+    let id = vault.worker.import_attachment(PDF, None, None).unwrap();
+    let first = vault
+        .worker
+        .produce_attachment_artifact(&service, &epoch1, id.as_uuid().as_bytes())
+        .unwrap();
+    // An exact retry at the epoch it was published under is fine.
+    let again = vault
+        .worker
+        .produce_attachment_artifact(&service, &epoch1, id.as_uuid().as_bytes())
+        .unwrap();
+    assert_eq!(again.id, first.id);
+    assert!(
+        matches!(
+            vault
+                .worker
+                .produce_attachment_artifact(&service, &epoch2, id.as_uuid().as_bytes()),
+            Err(ProduceError::AttachmentMapped)
+        ),
+        "no mapping at epoch 2, a mapping at epoch 1"
+    );
+}
+
 /// F3: unlink removes a blob only by the one predicate the sweep uses: a blob the base image (the
 /// rebase rollback target) names survives the delete of its last row, and is the sweep's to keep.
 #[test]

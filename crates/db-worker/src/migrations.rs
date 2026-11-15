@@ -4953,7 +4953,7 @@ mod tests {
     /// Down with no shared blob restores the unique constraint and keeps the rows; while two rows
     /// share a blob it refuses, rolls back, and drops nothing.
     #[test]
-    fn v75_down_restores_uniqueness_and_refuses_while_a_blob_is_shared() {
+    fn v76_down_restores_uniqueness_and_refuses_while_a_blob_is_shared() {
         let mut conn = Connection::open_in_memory().unwrap();
         apply(&mut conn, MIGRATIONS).unwrap();
         let attach = |conn: &Connection, id: u8, sid: &str| {
