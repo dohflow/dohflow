@@ -98,6 +98,7 @@ mod spend_by_category;
 mod staged_import;
 pub mod sync_artifacts;
 pub mod sync_bootstrap;
+pub mod sync_bootstrap_artifacts;
 pub mod sync_enable;
 pub mod sync_genesis;
 pub mod sync_genesis_gap;
@@ -221,6 +222,9 @@ pub enum WorkerState {
     Healthy,
     /// A backup restore is in progress; writes are refused.
     RestoringBackup,
+    /// A rebase swap has begun (personal-cfo-bxsbz.7): every operation is refused until the swap
+    /// finishes, rolls back, or the vault is closed and recovered.
+    Swapping,
     /// A writer panic left the worker in an unknown state; writes are refused
     /// until recovery.
     CorruptNeedsRecovery,

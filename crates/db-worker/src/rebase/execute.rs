@@ -142,8 +142,16 @@ impl Scratch<'_> {
         let outbox: Vec<OutboxCommand> = local.iter().map(|c| c.command.clone()).collect();
         let mut invalid: BTreeSet<Uuid> = BTreeSet::new();
         let result = self.run_trials(local, &outbox, &post_pull, &mut invalid);
-        fs::remove_file(&post_pull).ok();
-        let (trial_path, trial, executed) = result?;
+        let (trial_path, trial, executed) = match result {
+            Ok(done) => done,
+            Err(error) => {
+                fs::remove_file(&post_pull).ok();
+                return Err(error);
+            }
+        };
+        // The copy is the vault at the new head, before the local commands: it becomes the new base
+        // image (`Scratch::into_swap` strips and hashes it).
+        self.new_base = Some(post_pull);
 
         // The trial becomes the scratch vault; the pre-trial copy is no longer needed.
         let old_path = std::mem::replace(&mut self.path, trial_path);

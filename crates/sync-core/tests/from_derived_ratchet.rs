@@ -34,6 +34,9 @@ const ALLOWED: &[&str] = &[
     // address when it was stored) as the `ArtifactId`s a `LiveClosure` is keyed by
     // (personal-cfo-1cltt.7).
     "crates/db-worker/src/sync_live_closure.rs",
+    // The bootstrap wraps the ids of the snapshot's closure manifest it has just verified (hex of 32
+    // bytes) as service addresses to fetch, as the receive path does (personal-cfo-1cltt.7).
+    "crates/db-worker/src/sync_bootstrap_artifacts.rs",
     // A producer wraps the id it stored in its own `sync_artifacts` row (it derived it at the
     // artifact's first seal, C.3) to seal and put the artifact again by its logical id, never by an
     // address recomputed from a storage id (personal-cfo-1cltt.7).

@@ -6,15 +6,24 @@
 //! path, at `<vault>.bootstrapping`, and only renames it into place when all of it is on disk:
 //!
 //! 1. a new vault is migrated to the snapshot's schema version, and the snapshot is installed
-//!    ([`crate::snapshot_install`]): the origin's identity, then every row, proved against the
-//!    snapshot's own digests before it commits;
+//!    ([`crate::snapshot_install`]): the origin's identity, then every row. A snapshot that carries
+//!    a class-1b closure is installed with foreign keys off and without its `attachments` rows
+//!    (their local crypto fields come from the artifacts);
 //! 2. the vault is carried to this build's schema over the installed rows, and the void ledger
 //!    (`sync_voids`, the snapshot's recorded voids as `seeded` entries) and the applied cursor
 //!    (`sync_position`) are written in one transaction;
-//! 3. the class-2 read models are derived from the installed class-1 rows (the display read
+//! 3. **the closure** (`personal-cfo-1cltt.7`): every artifact is fetched, verified and
+//!    materialized ([`crate::sync_bootstrap_artifacts`]), the attachment rows are created, the live
+//!    closure is seeded, foreign keys come back on and `foreign_key_check` must find nothing, and the
+//!    installed state is proved equal to the snapshot, table for table (a snapshot with no closure
+//!    was proved inside the install, as before);
+//! 4. the class-2 read models are derived from the installed class-1 rows (the display read
 //!    model, commitments, recurring instances, Money Inbox), and the first base image is captured
 //!    (`sync_base` `Ready` at the root, credentials stripped);
-//! 4. the file is synced and renamed to the vault path, and the directory is synced.
+//! 5. the file is synced and renamed to the vault path, and the directory is synced.
+//!
+//! **The commit point is the rename.** Any failure before it discards the build, the spool of
+//! verified ciphertext included, and the next start begins again.
 //!
 //! **A vault that exists always has its base** (B1): before the rename nothing is at the vault
 //! path, so no command can be taken, and left out of the outbox because the base was not yet
@@ -31,14 +40,22 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
+use sync_core::artifact_transport::ArtifactTransport;
 use sync_core::snapshot::{SnapshotError, Verified};
 use sync_core::status::{snapshot_is_valid_root, EngineVersion, SnapshotFacts};
 use sync_core::void::{HonoredVoid, LedgerError, VoidLedger};
 use thiserror::Error;
+use vault_crypto::sync_envelope::EpochKey;
 use vault_crypto::Dek;
 
 use crate::base_image::{base_image_path, sha256_file, BaseCapture, BaseImageError};
-use crate::snapshot_install::{install_snapshot, InstallError, InstalledSnapshot};
+use crate::snapshot_install::{
+    install_snapshot, install_snapshot_with_closure, prove_installed, InstallError,
+    InstalledSnapshot,
+};
+use crate::sync_bootstrap_artifacts::{
+    finish, materialize_closure, ClosureError, InvalidSnapshot, LocalFault, Spool, TransientFault,
+};
 use crate::{
     migrations, open_existing_keyed_raw, open_keyed_raw, DbError, DbWorker, KeyMaterial, VaultLease,
 };
@@ -56,6 +73,22 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(suffix);
     PathBuf::from(name)
+}
+
+/// Where a snapshot's class-1b closure comes from: the artifact service, and the epoch key its
+/// artifacts are sealed under. A snapshot with an empty closure and no attachment row needs neither.
+#[derive(Clone, Copy)]
+pub struct ClosureSource<'a> {
+    /// The artifact transport.
+    pub transport: &'a dyn ArtifactTransport,
+    /// The key of the snapshot's epoch.
+    pub key: &'a EpochKey,
+}
+
+impl std::fmt::Debug for ClosureSource<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClosureSource").finish_non_exhaustive()
+    }
 }
 
 /// What the caller verified about the snapshot it wants to build a replica from. Its provenance
@@ -77,6 +110,9 @@ pub struct ReplicaSource<'a> {
     /// caller already holds (the tail it must pull anyway). A snapshot rooted inside any of them
     /// was built on poisoned state and is refused before anything is written.
     pub held_voids: &'a [(u64, u64)],
+    /// Where the closure comes from, if the snapshot has one (or an attachment row). `None` for a
+    /// snapshot that needs no artifact: a snapshot that needs them is refused, writing nothing.
+    pub closure: Option<ClosureSource<'a>>,
 }
 
 /// A replica that is now the vault.
@@ -130,6 +166,17 @@ pub enum BootstrapError {
     /// The install refused or failed; the temporary vault is discarded on the next start.
     #[error(transparent)]
     Install(#[from] InstallError),
+    /// DETERMINISTIC: the snapshot's closure or rows are bad, at every replica. Its root is never
+    /// picked again; the next root is the engine's to choose.
+    #[error(transparent)]
+    Invalid(#[from] InvalidSnapshot),
+    /// TRANSIENT: the artifact service did not deliver. Retry the same root.
+    #[error(transparent)]
+    Transient(#[from] TransientFault),
+    /// LOCAL: this device could not materialize the closure (`ArtifactMaterializationFailed`). It
+    /// never marks the root invalid.
+    #[error(transparent)]
+    Local(#[from] LocalFault),
     /// The first base image could not be captured.
     #[error(transparent)]
     BaseImage(#[from] BaseImageError),
@@ -143,6 +190,50 @@ pub enum BootstrapError {
     #[cfg(test)]
     #[error("cut short after {0:?}")]
     Cut(Step),
+}
+
+impl From<ClosureError> for BootstrapError {
+    fn from(error: ClosureError) -> Self {
+        match error {
+            ClosureError::Invalid(error) => Self::Invalid(error),
+            ClosureError::Transient(error) => Self::Transient(error),
+            ClosureError::Local(error) => Self::Local(error),
+        }
+    }
+}
+
+/// What a failed bootstrap says about what to do next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// The snapshot is bad at every replica: never pick its root again.
+    Deterministic,
+    /// The service's fault: retry the same root.
+    Transient,
+    /// This device's fault (a disk, a key, a write): never marks the root invalid.
+    Local,
+}
+
+impl BootstrapError {
+    /// Which of the three it is. Recording a deterministic verdict, and choosing the next root, are
+    /// the engine's (`personal-cfo-elciw`, ADR 0074 Addendum D rule 4 and E).
+    #[must_use]
+    pub fn kind(&self) -> FailureKind {
+        match self {
+            Self::Invalid(_) | Self::Snapshot(_) | Self::NotAValidRoot | Self::Ledger(_) => {
+                FailureKind::Deterministic
+            }
+            Self::Install(
+                InstallError::Snapshot(_)
+                | InstallError::ColumnsMismatch { .. }
+                | InstallError::UnknownTable { .. }
+                | InstallError::MissingTable { .. }
+                | InstallError::DigestMismatch { .. }
+                | InstallError::HeaderMismatch,
+            ) => FailureKind::Deterministic,
+            Self::Transient(_) => FailureKind::Transient,
+            _ => FailureKind::Local,
+        }
+    }
 }
 
 impl From<rusqlite::Error> for BootstrapError {
@@ -175,6 +266,8 @@ pub enum Step {
 
 #[cfg(test)]
 thread_local! {
+    /// What `PRAGMA foreign_keys` held on the build connection when the base image was captured.
+    static FOREIGN_KEYS_AT_CAPTURE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     static CUT_AFTER: std::cell::Cell<Option<Step>> = const { std::cell::Cell::new(None) };
 }
 
@@ -226,6 +319,14 @@ fn base_is_the_stale_replicas(temp: &Path, path: &Path, dek: &Dek) -> bool {
 /// abandoned bootstrap's own** ([`base_is_the_stale_replicas`]); any other base image is never
 /// touched. The capture's in-flight copy is left to the next capture, which removes it first.
 fn discard_stale(temp: &Path, path: &Path, dek: &Dek) -> io::Result<()> {
+    // The spool of the abandoned build (that exact name, a directory this module made).
+    match fs::remove_dir_all(with_suffix(path, SPOOL_SUFFIX)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        // Something that is not a directory sits at the spool's name: leave it; making the spool
+        // there will fail as a local fault.
+        Err(_) => {}
+    }
     let own_base = temp.exists() && base_is_the_stale_replicas(temp, path, dek);
     for suffix in ["", "-wal", "-shm", "-journal"] {
         match fs::remove_file(with_suffix(temp, suffix)) {
@@ -325,6 +426,18 @@ pub fn bootstrap_replica(
     if !snapshot_is_valid_root(&facts) {
         return Err(BootstrapError::NotAValidRoot);
     }
+    // A snapshot that needs its closure is refused, writing nothing, when the caller has no artifact
+    // service to give: no replica is ever built from half a snapshot.
+    let needs_artifacts = !source.snapshot.manifest.artifacts.is_empty()
+        || source
+            .snapshot
+            .manifest
+            .tables
+            .iter()
+            .any(|t| t.name == "attachments" && t.row_count != "0");
+    if needs_artifacts && source.closure.is_none() {
+        return Err(BootstrapError::Install(InstallError::NeedsArtifacts));
+    }
     let ledger = VoidLedger::from_snapshot(&recorded, source.root)?;
     let snapshot_schema: u64 = source
         .snapshot
@@ -347,26 +460,41 @@ pub fn bootstrap_replica(
     let temp = bootstrapping_path(path);
     discard_stale(&temp, path, dek)?;
 
-    // 1. Create and install.
+    // 1. Create and install. A snapshot that carries a closure is installed with foreign keys off
+    // (a provenance link names a source record only a batch artifact makes) and without its
+    // attachment rows; both are made good in step 3.
     let mut conn = open_keyed_raw(&temp, dek)?;
     migrations::run_migrations_to(&mut conn, snapshot_schema)?;
     #[cfg(test)]
     reached(Step::Created)?;
-    let installed = install_snapshot(&mut conn, source.vault_id, source.snapshot)?;
+    // Only a snapshot with a closure is installed with foreign keys off. Any other keeps them on, so
+    // the install's deferred check (C.8's commit-time check) still binds.
+    conn.pragma_update(None, "foreign_keys", !needs_artifacts)?;
+    // A snapshot with no closure and no attachment row is installed and proved whole, at its own
+    // schema, as before.
+    let (installed, snapshot_attachments) = if needs_artifacts {
+        install_snapshot_with_closure(&mut conn, source.vault_id, source.snapshot)?
+    } else {
+        (
+            install_snapshot(&mut conn, source.vault_id, source.snapshot)?,
+            Vec::new(),
+        )
+    };
     #[cfg(test)]
     reached(Step::Installed)?;
 
     // 2. This build's schema over the installed rows; the ledger and the cursor, together.
     migrations::run_migrations(&mut conn)?;
     write_ledger(&mut conn, &ledger, source.root)?;
+    conn.pragma_update(None, "foreign_keys", !needs_artifacts)?;
     #[cfg(test)]
     reached(Step::Ledger)?;
 
-    // 3. Open it as a worker (nothing is seeded), derive the class-2 read models, and capture the
-    // base. Class 2 is never shipped; the replica derives it from the class-1 rows it installed,
-    // without the operation log it does not hold (personal-cfo-1cltt.8). It is derived here, in
-    // the temporary vault, so a crash before the rename leaves no vault, and the first base image
-    // already sees it.
+    // 3. Open it as a worker (nothing is seeded), then the closure, then derive the class-2 read
+    // models and capture the base. Class 2 is never shipped; the replica derives it from the class-1
+    // rows it installed, without the operation log it does not hold (personal-cfo-1cltt.8). It is
+    // derived here, in the temporary vault, so a crash before the rename leaves no vault, and the
+    // first base image already sees it.
     let worker = DbWorker::bootstrap_replica_vault(
         temp.clone(),
         conn,
@@ -375,6 +503,26 @@ pub fn bootstrap_replica(
     )?;
     #[cfg(test)]
     reached(Step::Opened)?;
+    let spool = Spool::new(with_suffix(path, SPOOL_SUFFIX));
+    let closure_result = complete_the_build(
+        &worker,
+        source,
+        needs_artifacts,
+        &snapshot_attachments,
+        &spool,
+    );
+    // The spool is verified ciphertext waiting for siblings: gone whatever the outcome.
+    spool.remove();
+    closure_result?;
+    #[cfg(test)]
+    FOREIGN_KEYS_AT_CAPTURE.with(|seen| {
+        let on: i64 = worker
+            .lock()
+            .conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap_or(-1);
+        seen.set(Some(on == 1));
+    });
     worker.rebuild_class_2()?;
     #[cfg(test)]
     reached(Step::Derived)?;
@@ -422,6 +570,57 @@ pub fn bootstrap_replica(
         base,
     })
 }
+
+/// Make the installed rows good: materialize the snapshot's closure and create its attachment rows
+/// (when it has any), seed the live closure, bring foreign keys back and check the whole database,
+/// and prove the installed state equal to the snapshot, table for table.
+fn complete_the_build(
+    worker: &DbWorker,
+    source: &ReplicaSource<'_>,
+    needs_artifacts: bool,
+    attachments: &[crate::snapshot_install::SnapshotAttachment],
+    spool: &Spool,
+) -> Result<(), BootstrapError> {
+    // Gated on what the snapshot needs, not on whether the caller passed a service: the engine may
+    // pass one whenever Sync is on, and a snapshot with no artifact was proved whole in its install.
+    if let (true, Some(closure)) = (needs_artifacts, source.closure) {
+        let materialized = materialize_closure(
+            worker,
+            closure.transport,
+            closure.key,
+            &source.snapshot.manifest.artifacts,
+            spool,
+        )?;
+        finish(worker, closure.key.key_epoch(), attachments, &materialized)?;
+    }
+    let guard = worker.lock();
+    // Foreign keys are on for everything from here, on both paths: the proof, the class-2 rebuild,
+    // the base capture and every later open. A row that names a row that is not there, once the
+    // closure is materialized, is a defect of the snapshot at every replica.
+    guard.conn.pragma_update(None, "foreign_keys", true)?;
+    let dangling = {
+        let mut stmt = guard.conn.prepare("PRAGMA foreign_key_check")?;
+        let mut rows = stmt.query([])?;
+        rows.next()?.is_some()
+    };
+    if dangling {
+        return Err(InvalidSnapshot::DanglingReference.into());
+    }
+    if needs_artifacts {
+        // A snapshot with no closure was proved whole inside its install.
+        prove_installed(&guard.conn, source.snapshot)?;
+    }
+    Ok(())
+}
+
+/// Whether foreign keys were on when the last bootstrap on this thread captured its base image.
+#[cfg(test)]
+pub(crate) fn foreign_keys_at_capture() -> Option<bool> {
+    FOREIGN_KEYS_AT_CAPTURE.with(std::cell::Cell::get)
+}
+
+/// The suffix of the directory verified ciphertext waits in while a closure is materialized.
+pub const SPOOL_SUFFIX: &str = ".bootstrapping.spool";
 
 /// A replica's applied cursor (`sync_position`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
