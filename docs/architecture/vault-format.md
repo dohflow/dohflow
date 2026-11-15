@@ -2505,11 +2505,7 @@ service-visible field. The service sees only vault routing metadata, the opaque
 artifact kind and logical metadata stay inside the encrypted object.
 
 **Receiver materialization.** A receiver verifies the outer AEAD, then the
-descriptor's length and plaintext digest, **before** it materializes anything. It
-then derives its own `StorageId_B` under its DEK, generates a fresh content key,
-re-encrypts the bytes, wraps the key under its DEK, writes the blob and row
-atomically, and records only a device-local mapping from `sync_artifact_id_e` to
-the local identity. A failure is `ArtifactMaterializationFailed`, leaves the live
+descriptor's length and plaintext digest, **before** it materializes anything. It then derives its own `StorageId_B` under its DEK. If no `attachments` row or other artifact's staging names that blob, it generates a fresh content key, re-encrypts the bytes, wraps the key under its DEK and writes the blob; if one does, it decrypts the held blob under the holder's key, checks that it equals these bytes and copies the holder's wrapped key and nonces, so identical bytes are one blob (below). It then atomically records only a device-local mapping from `sync_artifact_id_e` to the local identity, with the receiver-local crypto fields staged beside it. A failure is `ArtifactMaterializationFailed`, leaves the live
 vault unchanged, and discards temporary plaintext and ciphertext. **Materialization fails only for a
 reason local to the device** (the disk, the DEK, a write): every deterministic defect of an artifact or
 a batch is found at stage 9(b) of C.4 *before* materialization, as `ArtifactClosureMismatch`, so no

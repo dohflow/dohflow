@@ -205,9 +205,10 @@ impl DbWorker {
     /// Materialize the verified attachment artifact `opened`: encrypt its bytes under this device's
     /// DEK with a fresh content key (the pure step is `vault_crypto`'s `materialize_attachment`),
     /// write the blob under this device's storage id, and record the mapping with the crypto fields
-    /// staged. When another row already holds a blob with this storage id (identical bytes are one
-    /// blob, AC9, spec 49), no blob is written: the mapping stages a copy of the holder's crypto
-    /// fields, after the held blob is checked to decrypt to these bytes, and several rows share it. The attachment id comes from the artifact's own metadata, never from the caller.
+    /// staged. When an `attachments` row or another artifact's staging already names a blob with this
+    /// storage id (identical bytes are one blob, AC9, spec 49), no blob is written: the mapping stages
+    /// a copy of the holder's crypto fields, after the held blob is decrypted under the holder's key
+    /// and checked to equal these bytes, and several rows share it. The attachment id comes from the artifact's own metadata, never from the caller.
     /// `ciphertext_sha256` is the hash the fetch verified for the artifact. Idempotent: an artifact
     /// already materialized (its blob present and its mapping staged, or the apply consumed the
     /// staging and the `attachments` row exists) is left as it is. A file with the name of the
