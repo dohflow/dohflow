@@ -391,7 +391,12 @@ gone and still pass. So:
   (for example `~/dohflow-scratch/02c/m3d-runbook/platform`). Create it with
   `git worktree add`, and name it with `--scratch-root` if it lives elsewhere.
   macOS does not clear it. Nothing in it is a standing role worktree: it is
-  scratch, under the same two tiers below.
+  scratch, under the same two tiers below. **Why this path:** the cleaner only
+  empties `/private/tmp`, so a directory under the home folder survives it; it is
+  outside every repository, so a scratch worktree is never nested in another
+  checkout (which would confuse git's own worktree lookup and the report's
+  checkout detection); and it is outside `Documents/.../06 Programs`, where the
+  standing role checkouts live, so nothing there is mistaken for one.
 - **A gate counts only in a tree known to be whole.** A gate, build, mutant or
   test run counts only in a checkout created that day or verified whole that day.
   Before running gates in a scratch worktree older than today, run
