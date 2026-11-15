@@ -11,7 +11,11 @@
 #      that has been idle for at least --idle-days days (default 3), has no
 #      uncommitted changes, has no commits that exist on no remote, and has no
 #      running cargo/rustc process; and
-#   2. `git worktree prune` for registrations whose directory is already gone.
+#   2. `git worktree prune` for registrations whose directory is already gone,
+#      and ONLY when every prunable registration's directory is gone. If any
+#      prunable registration still has a directory (a gutted tree: its `.git` link
+#      is gone, git calls it prunable), the whole prune is skipped, the plan says
+#      so and lists them, and pruning them is the owner's call.
 #
 # `--clean --scratch` (Tier 2, owner-authorized 2026-11-04: "File with both
 # tiers") adds, for the per-session scratch folders of the DohFlow lane checkouts
@@ -548,6 +552,26 @@ inspect_worktree() {
   else
     W_ELIGIBLE=1
   fi
+}
+
+# gutted_registrations: the registered worktrees git calls prunable whose directory
+# still exists (a gutted tree), one path per line. `git worktree prune` would drop
+# their registration too, so --clean prunes nothing while any exist.
+gutted_registrations() {
+  local line path="" prunable=0 listing
+  listing="$(git -C "$REPO" worktree list --porcelain 2>/dev/null)"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "worktree "*)
+        [ "$prunable" = 1 ] && [ -d "$path" ] && printf '%s\n' "$path"
+        path="${line#worktree }"; prunable=0 ;;
+      "prunable"*) prunable=1 ;;
+    esac
+  done <<LISTING
+$listing
+LISTING
+  [ "$prunable" = 1 ] && [ -d "$path" ] && printf '%s\n' "$path"
+  return 0
 }
 
 # Calls $1 once per registered worktree, after inspecting it. Skips bare
@@ -1479,10 +1503,18 @@ clean() {
   echo
   for_each_worktree plan_row
   echo
-  local prune_list
+  local prune_list gutted n_gutted
   prune_list="$(git -C "$REPO" worktree prune --dry-run -v 2>&1)"
-  if [ -n "$prune_list" ]; then
-    echo "Registrations to prune (directory gone, or its .git link gone; the files are never touched):"
+  gutted="$(gutted_registrations)"
+  if [ -n "$gutted" ]; then
+    # git worktree prune would also drop these registrations, and a gutted tree's
+    # registration is the evidence of what happened: prune nothing at all.
+    n_gutted="$(printf '%s\n' "$gutted" | grep -c .)"
+    echo "prune skipped: $n_gutted gutted registration(s) still have a directory; pruning them is the owner's call:"
+    printf '%s\n' "$gutted" | sed 's/^/  /'
+    prune_list=""
+  elif [ -n "$prune_list" ]; then
+    echo "Registrations to prune (the directory is already gone; nothing else is touched):"
     printf '%s\n' "$prune_list" | sed 's/^/  /'
   else
     echo "No registrations to prune."
@@ -1530,7 +1562,12 @@ clean() {
   echo "cargo clean ran on $CLEANED target dir(s); about $(human "$CLEANED_KIB") was in them."
 
   if [ -n "$prune_list" ]; then
-    git -C "$REPO" worktree prune -v
+    # Re-check after the prompt: a tree may have been gutted while it waited.
+    if [ -n "$(gutted_registrations)" ]; then
+      echo "  prune skipped: a gutted registration appeared since the plan; pruning is the owner's call"
+    else
+      git -C "$REPO" worktree prune -v
+    fi
   fi
   read_disk
   [ -n "$disk_avail_kib" ] && echo "Disk now: $(human "$disk_avail_kib") free (${disk_pct_free}% free). Time Machine local snapshots may hold freed space for a while (docs/agent/WORKFLOW_ROLES.md)."

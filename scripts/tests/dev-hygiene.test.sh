@@ -886,19 +886,57 @@ case_start "--report flags gutted and prunable registered worktrees, in text and
 # the registration prunable with no directory (the tests never delete anything)
 mv "$VT/goneT" "$TMP/vt-moved-away"
 RUN_V() { ( cd "$TMP" && "$SCRIPT" --repo "$SMAIN" --scratch-dir "$TMP/no-scratch" --scratch-root "$TMP/no-root" --no-pr "$@" ); }
+# ctx N PATTERN TEXT: the matching line and the N lines after it. Output is captured first and
+# grepped with a here-string: a pipe into grep -q can fail under pipefail (SIGPIPE).
+ctx() { grep -A"$1" -- "$2" <<<"$3"; }
 out="$(RUN_V 2>&1)"
-grep -A2 "$VT/nogit" <<<"$out" | grep -q "PRUNABLE and GUTTED" && pass "the registration whose .git link is gone is flagged prunable and gutted" || fail "nogit not flagged: $out"
-grep -A12 "$VT/deleted\$" <<<"$out" | grep -q "GUTTED:       1 tracked file(s) are deleted" && pass "a registered worktree with a deleted tracked file is flagged gutted" || fail "deleted not flagged: $out"
-if grep -A12 "$VT/whole\$" <<<"$out" | head -n 12 | grep -q GUTTED; then fail "a whole worktree is flagged gutted"; else pass "a whole worktree is not flagged"; fi
-grep -A2 "$VT/goneT\$" <<<"$out" | grep -q "directory is gone (prunable)" && pass "a registration whose directory is gone keeps its own wording" || fail "gone registration wording: $out"
+c="$(ctx 2 "$VT/nogit" "$out")"
+grep -q "PRUNABLE and GUTTED" <<<"$c" && pass "the registration whose .git link is gone is flagged prunable and gutted" || fail "nogit not flagged: $out"
+c="$(ctx 12 "$VT/deleted\$" "$out")"
+grep -q "GUTTED:       1 tracked file(s) are deleted" <<<"$c" && pass "a registered worktree with a deleted tracked file is flagged gutted" || fail "deleted not flagged: $out"
+c="$(ctx 12 "$VT/whole\$" "$out" | head -n 12)"
+if grep -q GUTTED <<<"$c"; then fail "a whole worktree is flagged gutted"; else pass "a whole worktree is not flagged"; fi
+c="$(ctx 2 "$VT/goneT\$" "$out")"
+grep -q "directory is gone (prunable)" <<<"$c" && pass "a registration whose directory is gone keeps its own wording" || fail "gone registration wording: $out"
 json="$(RUN_V --json 2>&1)"
 jq -e --arg p "$VT/nogit" '.worktrees[] | select(.path == $p) | .prunable == true and .gutted == true and .tracked_files_deleted == null' <<<"$json" >/dev/null && pass "JSON: no .git is prunable and gutted" || fail "JSON nogit: $(jq -c --arg p "$VT/nogit" '.worktrees[] | select(.path == $p)' <<<"$json")"
 jq -e --arg p "$VT/deleted" '.worktrees[] | select(.path == $p) | .prunable == false and .gutted == true and .tracked_files_deleted == 1' <<<"$json" >/dev/null && pass "JSON: a deleted tracked file is gutted, not prunable, with its count" || fail "JSON deleted: $(jq -c --arg p "$VT/deleted" '.worktrees[] | select(.path == $p)' <<<"$json")"
 jq -e --arg p "$VT/whole" '.worktrees[] | select(.path == $p) | .prunable == false and .gutted == false and .tracked_files_deleted == 0' <<<"$json" >/dev/null && pass "JSON: a whole worktree is neither" || fail "JSON whole: $(jq -c --arg p "$VT/whole" '.worktrees[] | select(.path == $p)' <<<"$json")"
 jq -e --arg p "$VT/goneT" '.worktrees[] | select(.path == $p) | .prunable == true and .directory_missing == true and .gutted == false' <<<"$json" >/dev/null && pass "JSON: a gone directory is prunable and not gutted" || fail "JSON gone: $(jq -c --arg p "$VT/goneT" '.worktrees[] | select(.path == $p)' <<<"$json")"
+case_start "--clean prunes only when every prunable registration's directory is gone, and never otherwise"
+registered() { git -C "$SMAIN" worktree list --porcelain | grep -c -F -- "worktree $1"; }
+# (1) a gutted tree (directory remains, .git link gone) AND a gone directory: prune nothing at all
+[ "$(registered "$VT/nogit")" = 1 ] && [ "$(registered "$VT/goneT")" = 1 ] && pass "setup: both registrations exist" || fail "setup: nogit and goneT are not both registered"
 out="$(RUN_V --clean --yes 2>&1)"
-[ -d "$VT/nogit" ] && [ -f "$VT/nogit/Cargo.toml" ] && pass "--clean prunes registrations only: the gutted tree's files stay" || fail "--clean touched the gutted tree: $out"
-git -C "$SMAIN" worktree prune -v >/dev/null 2>&1   # leave the fixture repository tidy for the next case
+grep -q "prune skipped: 1 gutted registration(s) still have a directory; pruning them is the owner's call" <<<"$out" && pass "gutted plus gone: the plan says the prune is skipped, and why" || fail "no skip line: $out"
+grep -q "$VT/nogit" <<<"$out" && pass "and lists the gutted registration" || fail "gutted registration not listed: $out"
+[ "$(registered "$VT/nogit")" = 1 ] && [ "$(registered "$VT/goneT")" = 1 ] && pass "gutted plus gone: both stay registered (nothing was pruned)" || fail "a registration was pruned although a gutted one exists: $out"
+[ -d "$VT/nogit" ] && [ -f "$VT/nogit/Cargo.toml" ] && pass "and the gutted tree's files stay" || fail "--clean touched the gutted tree"
+# (2) gone only: the registration is pruned, as before
+git -C "$SMAIN" worktree repair "$VT/nogit" >/dev/null 2>&1   # restore the link: nogit is whole again
+[ -z "$(git -C "$SMAIN" worktree list --porcelain | grep -A3 -F -- "worktree $VT/nogit" | grep '^prunable')" ] && pass "setup: nogit is no longer prunable" || fail "setup: nogit is still prunable"
+out="$(RUN_V --clean --yes 2>&1)"
+grep -q "prune skipped" <<<"$out" && fail "skipped the prune with nothing gutted: $out" || pass "gone only: no skip line"
+[ "$(registered "$VT/goneT")" = 0 ] && pass "gone only: the registration was pruned" || fail "goneT is still registered: $out"
+[ "$(registered "$VT/nogit")" = 1 ] && pass "and the whole worktree stays registered" || fail "nogit lost its registration"
+# (3) gutted only: nothing is pruned
+vt_wt gutonly; unlink "$VT/gutonly/.git"
+out="$(RUN_V --clean --yes 2>&1)"
+grep -q "prune skipped: 1 gutted registration(s)" <<<"$out" && pass "gutted only: the prune is skipped with the list" || fail "gutted only: no skip line: $out"
+[ "$(registered "$VT/gutonly")" = 1 ] && [ -f "$VT/gutonly/Cargo.toml" ] && pass "gutted only: the registration and the files stay" || fail "gutted only: it was pruned"
+git -C "$SMAIN" worktree repair "$VT/gutonly" >/dev/null 2>&1
+# (4) the check is repeated after the prompt: a tree gutted while the prompt waited stops the prune
+vt_wt late
+mv "$VT/late" "$TMP/vt-late-moved"                   # a gone directory: the plan will say "prune"
+HOOK3="$TMP/hook3.sh"
+vt_wt wake
+printf '#!/bin/sh\nunlink "%s/wake/.git"\n' "$VT" > "$HOOK3"; chmod +x "$HOOK3"
+out="$(DEV_HYGIENE_TESTING=1 DEV_HYGIENE_AFTER_CONFIRM_HOOK="$HOOK3" RUN_V --clean --yes 2>&1)"
+grep -q "Registrations to prune" <<<"$out" && pass "the plan offered to prune the gone registration" || fail "plan did not offer the prune: $out"
+grep -q "prune skipped: a gutted registration appeared since the plan" <<<"$out" && pass "after the prompt it saw the newly gutted tree and skipped the prune" || fail "no post-prompt skip: $out"
+[ "$(registered "$VT/late")" = 1 ] && pass "so the gone registration was not pruned either" || fail "pruned despite a gutted tree: $out"
+git -C "$SMAIN" worktree repair "$VT/wake" >/dev/null 2>&1
+git -C "$SMAIN" worktree prune -v >/dev/null 2>&1   # leave the fixture repository tidy for the next cases
 
 # ---- the named scratch root --------------------------------------------------
 DUR="$TMP/durable"; mkdir -p "$DUR/02c/task-a" "$DUR/02c/task-b" "$DUR/04c/review-9"
@@ -924,12 +962,22 @@ case_start "the report counts the named scratch root and flags gutted checkouts 
 out="$(run_d 2>&1)"
 grep -q "Named scratch root outside /tmp ($DUR)" <<<"$out" && pass "the report has a section for the named root" || fail "no named-root section: $out"
 grep -q "02c / task-a" <<<"$out" && grep -q "04c / review-9" <<<"$out" && pass "its session folders are listed, lane and purpose" || fail "session folders missing: $out"
-grep -q "wt-merged" <<<"$out" && grep -A1 "$DUR/02c/task-a/wt-merged" <<<"$out" | grep -q "PR #7 merged" && pass "each checkout carries its PR state" || fail "PR state missing in the named root"
-grep -A4 "$DUR/02c/task-a/wt-gut" <<<"$out" | grep -q "GUTTED — 1 tracked file(s) are deleted" && pass "a deleted tracked file is flagged GUTTED there" || fail "wt-gut not flagged in the named root: $out"
-grep -A4 "$DUR/02c/task-a/wt-nogit" <<<"$out" | grep -q "GUTTED — git cannot read this tree" && pass "a dangling .git link is flagged GUTTED there" || fail "wt-nogit not flagged in the named root: $out"
-grep -A4 "$S_GUT/wt-del" <<<"$out" | grep -q "GUTTED — 1 tracked file(s) are deleted" && pass "and in the /tmp root" || fail "wt-del not flagged in the /tmp root: $out"
+c="$(ctx 1 "$DUR/02c/task-a/wt-merged" "$out")"
+grep -q "PR #7 merged" <<<"$c" && pass "each checkout carries its PR state" || fail "PR state missing in the named root"
+c="$(ctx 4 "$DUR/02c/task-a/wt-gut" "$out")"
+grep -q "GUTTED — 1 tracked file(s) are deleted" <<<"$c" && pass "a deleted tracked file is flagged GUTTED there" || fail "wt-gut not flagged in the named root: $out"
+c="$(ctx 4 "$DUR/02c/task-a/wt-nogit" "$out")"
+grep -q "GUTTED — git cannot read this tree" <<<"$c" && pass "a dangling .git link is flagged GUTTED there" || fail "wt-nogit not flagged in the named root: $out"
+c="$(ctx 4 "$S_GUT/wt-del" "$out")"
+grep -q "GUTTED — 1 tracked file(s) are deleted" <<<"$c" && pass "and in the /tmp root" || fail "wt-del not flagged in the /tmp root: $out"
+tmp_sec="$(awk '/^Named scratch root outside/ { exit } { print }' <<<"$out")"
+dur_sec="$(awk '/^Safe to clean/ { exit } f { print } /^Named scratch root outside/ { f = 1 }' <<<"$out")"
+if grep -q "02c / task-a" <<<"$tmp_sec"; then fail "a named-root session is listed in the /tmp section"; else pass "the /tmp section lists no named-root session"; fi
+if grep -q -e "$S_GUT" <<<"$dur_sec"; then fail "a /tmp session is listed in the named-root section"; else pass "the named-root section lists no /tmp session"; fi
+grep -q "02c / task-a" <<<"$dur_sec" && grep -q "gut-7777" <<<"$tmp_sec" && pass "each root's sessions are in its own section" || fail "sessions are not under their own root's section"
 grep -q "macOS empties /private/tmp every night" <<<"$out" && pass "the /tmp root's section says it is emptied nightly" || fail "no nightly warning"
-if grep -A4 "$DUR/02c/task-b/wt-other" <<<"$out" | grep -q GUTTED; then fail "a whole checkout is flagged GUTTED"; else pass "a whole checkout is not flagged"; fi
+c="$(ctx 4 "$DUR/02c/task-b/wt-other" "$out")"
+if grep -q GUTTED <<<"$c"; then fail "a whole checkout is flagged GUTTED"; else pass "a whole checkout is not flagged"; fi
 json="$(run_d --json 2>&1)"
 jq -e '.scratch.named_root.present == true and .scratch.named_root.kib > 0' <<<"$json" >/dev/null && pass "JSON: named_root is present with a size" || fail "JSON named_root: $(jq -c .scratch.named_root <<<"$json")"
 jq -e --arg d "$DUR" '[.scratch.sessions[] | select(.root == $d)] | length == 3' <<<"$json" >/dev/null && pass "JSON: three sessions carry the named root" || fail "JSON sessions by root: $(jq -c '[.scratch.sessions[] | {path, root}]' <<<"$json")"
@@ -948,14 +996,16 @@ out="$(run_d --clean --scratch --yes 2>&1)"; rc=$?
 [ ! -d "$DUR/02c/task-a/wt-merged" ] && pass "a clean, idle worktree with a merged PR was removed (plain git worktree remove)" || fail "wt-merged still there: $out"
 grep -q "$DUR/02c/task-a/wt-merged" <<<"$(git -C "$SMAIN" worktree list --porcelain)" && fail "wt-merged is still registered" || pass "and is no longer registered"
 git -C "$SMAIN" rev-parse --verify -q "refs/heads/sc-task-a-wt-merged" >/dev/null && pass "its branch stays" || fail "its branch was removed"
-dur_calls | grep -q -- "$DUR/02c/task-a/wt-merged/target" && pass "cargo clean ran there with an explicit --target-dir" || fail "no cargo clean in the named root: $(dur_calls)"
-[ -d "$DUR/02c/task-a/wt-open" ] && ! dur_calls | grep -q "wt-open" && pass "an open PR is left alone" || fail "an open PR's worktree was touched"
-[ -d "$DUR/02c/task-a/wt-gut" ] && [ ! -f "$DUR/02c/task-a/wt-gut/Cargo.toml" ] && ! dur_calls | grep -q "wt-gut" && pass "a gutted tree is never cleaned or removed, and nothing is restored" || fail "wt-gut was touched: $(dur_calls)"
-[ -d "$DUR/02c/task-a/wt-nogit" ] && ! dur_calls | grep -q "wt-nogit" && pass "a tree git cannot read is never cleaned or removed" || fail "wt-nogit was touched"
+dc="$(dur_calls)"
+grep -q -- "$DUR/02c/task-a/wt-merged/target" <<<"$dc" && pass "cargo clean ran there with an explicit --target-dir" || fail "no cargo clean in the named root: $dc"
+[ -d "$DUR/02c/task-a/wt-open" ] && ! grep -q "wt-open" <<<"$dc" && pass "an open PR is left alone" || fail "an open PR's worktree was touched"
+[ -d "$DUR/02c/task-a/wt-gut" ] && [ ! -f "$DUR/02c/task-a/wt-gut/Cargo.toml" ] && ! grep -q "wt-gut" <<<"$dc" && pass "a gutted tree is never cleaned or removed, and nothing is restored" || fail "wt-gut was touched: $dc"
+[ -d "$DUR/02c/task-a/wt-nogit" ] && ! grep -q "wt-nogit" <<<"$dc" && pass "a tree git cannot read is never cleaned or removed" || fail "wt-nogit was touched"
 grep -q "wt-gut.*gutted: 1 tracked file(s) deleted" <<<"$out" && pass "the plan says why: gutted" || fail "no gutted reason in the plan: $out"
-[ -d "$DUR/04c/review-9/wt-recent" ] && ! dur_calls | grep -q "wt-recent" && pass "a recently active session in the named root is left alone" || fail "the active session was touched"
+[ -d "$DUR/04c/review-9/wt-recent" ] && ! grep -q "wt-recent" <<<"$dc" && pass "a recently active session in the named root is left alone" || fail "the active session was touched"
 [ -d "$S_GUT/wt-del" ] && pass "and the gutted checkout under /tmp stays too" || fail "wt-del removed"
-find "$DUR" -maxdepth 4 -name '.git' | grep -q . && pass "nothing outside the planned worktrees was removed from the named root" || fail "named root emptied"
+gits="$(find "$DUR" -maxdepth 4 -name '.git')"
+[ -n "$gits" ] && pass "nothing outside the planned worktrees was removed from the named root" || fail "named root emptied"
 
 case_start "the script cannot delete user files"
 code="$(grep -v '^[[:space:]]*#' "$SCRIPT")"

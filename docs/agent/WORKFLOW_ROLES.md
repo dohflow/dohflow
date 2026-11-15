@@ -457,8 +457,12 @@ gone and still pass. So:
   for confirmation (`--yes` skips the question). It does exactly two things:
   `cargo clean` in worktrees idle for at least N days (default 3) that have no
   uncommitted changes, no unpushed commits and no running cargo process; and
-  `git worktree prune` for registrations whose directory is already gone. It
-  never removes a worktree directory, a branch or a scratch directory, never runs
+  `git worktree prune` for registrations whose directory is already gone, and
+  only when **every** prunable registration's directory is gone: if any prunable
+  registration still has a directory (a gutted tree), the prune is skipped
+  entirely, the plan prints "prune skipped: N gutted registration(s) still have a
+  directory; pruning them is the owner's call" with the list, and the check is
+  repeated after the prompt. It never removes a worktree directory, a branch or a scratch directory, never runs
   `rm`, never touches a dirty or unpushed worktree, and never touches the
   worktree it is run from. `scripts/tests/dev-hygiene.test.sh` covers those
   refusals.
