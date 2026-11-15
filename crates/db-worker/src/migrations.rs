@@ -2747,7 +2747,8 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     // batch it belongs to. The materializer and the stage-9 verdicts judge an envelope's delta against
     // it (never against the `sync_artifacts` cache). It is derived, class 3 (outside every write set,
     // row digest, snapshot and portable export), and **written only where the vault's class-1 state
-    // equals the accepted state**: by an accepted envelope's apply, the seed at bootstrap and the
+    // equals the accepted state**: by an accepted envelope's apply, the push path (which brings it to
+    // the accepted head in the transaction that empties the outbox), the seed at bootstrap and the
     // rebuild at a key epoch, never by a local command (a prune run beside an unpushed delete would
     // drop an object the accepted log still holds live). The key is `(key_epoch, sync_artifact_id)`,
     // so an id carries one hash; the index serves the lookups by logical object.
