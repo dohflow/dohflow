@@ -17,6 +17,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { SAFE_AREA_PADDING } from "@/lib/safeArea";
 import { AccountEditorDrawer } from "@/accounts/AccountEditorDrawer";
 import { ConnectionsCard } from "@/settings/ConnectionsCard";
 
@@ -111,7 +112,7 @@ export function FirstForecastWizard({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className={`min-h-dvh bg-background ${SAFE_AREA_PADDING}`}>
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-6 py-10">
         <header className="flex items-center justify-between">
           <div className="flex items-center gap-2">

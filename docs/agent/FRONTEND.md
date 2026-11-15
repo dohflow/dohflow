@@ -462,6 +462,80 @@ How to use it:
 | Summaries reflect real data and never claim healthy or verified while loading or failed | `Disclosure` has a `summary` slot; the Settings sections supply one only where the page already holds the data (Backups, Comfort band, Auto-categorize, Connections, Vaults, About; the Vaults line also needs its list read to be current, so `useVault().vaultsError` omits it, `personal-cfo-4d8.39.2`), built in `settings/settingsSummaries.ts` and omitted otherwise. A summary is omitted while its read has no data yet and after a refresh failed, even when an earlier read left data in the cache (`isSuccess`, or the hook's error string, gates each one) |
 | Respect reduced motion; announce a state change once; errors persist | `Disclosure`: the chevron respects reduced motion and the body does not animate; the state change is the native `aria-expanded` (no extra live region); the `persistent` slot keeps errors. Per screen elsewhere |
 
+### 7.6 Compact layout (a narrow touch screen) (personal-cfo-i93n3.25)
+
+The same React UI runs in a narrow, touch-driven WebView. This section is the convention for that; it is
+generic (compact layout, touch input) and says nothing about any one device or shell. **Desktop
+rendering must not change**: every rule below is either gated on a touch pointer or evaluates to zero
+on a desktop window, and a test proves each.
+
+- **One compact signal.** Compact is a narrow screen AND a touch pointer (`(max-width: 639px) and
+  (pointer: coarse)`), never width alone: the desktop window has no minimum width, so a narrowed desktop
+  window is narrow without being compact. The query is declared once in `src/lib/compact.ts`
+  (`COMPACT_QUERY`); `globals.css` declares the Tailwind `compact:` variant with the same query and a
+  test keeps the two equal. Style differences use `compact:`; structure that differs (which component
+  renders) uses `useCompactLayout()`. Do not write another width query for this.
+- **Safe areas.** `index.html` sets `viewport-fit=cover`, so the device chrome (notch, home indicator)
+  is reported as `env(safe-area-inset-*)`. `globals.css` exposes the four insets as `--safe-area-top`,
+  `-right`, `-bottom` and `-left`, each falling back to `0px`. A full-screen container clears them with
+  `SAFE_AREA_PADDING` (`src/lib/safeArea.ts`), or adds the same variables to its own padding with
+  `calc()`. The bottom edge takes `max(safe-area-bottom, keyboard-inset)`, never their sum.
+- **Keyboard.** The on-screen keyboard covers the layout viewport without resizing it, so
+  `useKeyboardInset()` (mounted once in `App`) publishes its height as `--keyboard-inset` from the visual
+  viewport and keeps the focused field in view. It does nothing without a touch pointer. A bottom-pinned
+  primary action stays visible because the shell's bottom padding already includes the inset; do not
+  add a second mechanism.
+- **Viewport units.** Use `dvh` (`h-dvh`, `min-h-dvh`), not `vh`: on a desktop window they are equal, and
+  on a phone `dvh` follows the visible viewport. The shell is exactly one viewport tall and `main` is
+  its only scroller, as before.
+- **Type follows the system text size.** On iOS WebKit only (`@supports (-webkit-touch-callout: none)`,
+  not the compact query, so it survives a rotation past the breakpoint), the root font size is the
+  system body size and every `rem` scales with it. macOS WebKit does not match that query, so the desktop
+  root stays 16px. Therefore **type is in `rem`**: never `text-[Npx]` (a test fails on it; `0.625rem` is
+  `10px` at the desktop root). Chart axis labels are SVG units and are not covered; the date and event
+  reading carries the meaning.
+- **Fields never trigger the browser's focus zoom.** iOS WebKit zooms the page in when a field with text
+  under 16px takes focus and leaves it zoomed (the page then pans sideways and the keyboard inset is
+  wrong). The iOS-only block in `globals.css` floors `input`, `select` and `textarea` at
+  `max(1rem, 16px)`; keep it (and never disable zoom to avoid it).
+- **Spacing grows slower than type.** The iOS-only block also sets `--spacing` so padding and gaps
+  grow about one eighth as fast as the text (4px at the default system size, about 8.5px at the
+  largest), because Tailwind's rem spacing would otherwise triple with the type and leave a sliver of a
+  column. Do not size anything that must stay a fixed physical size from spacing utilities.
+  The gutters nest (the screen, the card, a callout) and each grows a little with the type, so together
+  they can still leave a sliver of a column at the largest size. On the narrow card they shrink: `main`
+  is the `@container`, the screen's padding sits on an element inside it and drops to
+  `compact:@max-[15rem]:p-1`, and the card's header and content and any callout trim their horizontal
+  padding with `compact:@max-[15rem]:px-2`. A container query styles only the container's descendants,
+  never the container itself, so responsive padding never goes on the `@container` element. A
+  normal-size card and the desktop keep their gutters, and type and copy are never reduced to make room.
+- **Reflow, not clipping.** At the largest text size a row wraps and a control grows; meaning is never
+  clipped, truncated to an ellipsis, or hidden. Prefer `min-h-*` and wrapping to a fixed `h-*` on
+  anything that holds text (a form field that holds text takes `h-auto min-h-10` at its call site; the shared
+  `Input` stays `h-10`, because `cn()` keeps a `min-h-10` next to a caller's own `h-8` and the minimum then
+  wins, so changing the primitive would grow every compact input on a desktop window). A text child of a flex row takes `min-w-0`, and copy that can hold a word wider than the
+  column (`unrecoverable`) takes `[overflow-wrap:anywhere]`, or the page grows sideways and the edge
+  clips it. Where the column beside an icon gets too narrow to read at that size, the row stacks on a
+  container query (`compact:@max-[15rem]:flex-col` inside an `@container`), and prose takes
+  `compact:@max-[15rem]:hyphens-auto` (only on the narrow card, so a normal-size card keeps whole words)
+  so words break at syllables instead of mid-syllable.
+  A word breaks at a hyphen only with at least eight letters on each side
+  (`compact:@max-[15rem]:[-webkit-hyphenate-limit-before:8]` and
+  `compact:@max-[15rem]:[-webkit-hyphenate-limit-after:8]`; the iOS WebView honors this prefixed pair and
+  ignored the standard `hyphenate-limit-chars`), so words the copy depends on, such as "password", are not
+  hyphenated. `[overflow-wrap:anywhere]` stays the last resort, and it breaks only a word wider than the
+  whole line.
+  The shared `Button` is `h-10 whitespace-nowrap`, so a button whose label can outgrow the column at that
+  size takes `h-auto min-h-10 whitespace-normal [overflow-wrap:anywhere]` at its call site (`cn()` drops the
+  primitive's `h-10` and `whitespace-nowrap`), with `compact:@max-[15rem]:px-1` inside an `@container` so a
+  short label like "Create" keeps its room instead of hyphenating (a button with an icon also takes `compact:@max-[15rem]:flex-col`,
+  so the icon sits above the label and does not take its width). A native `<select>` cannot wrap, so its
+  closed value is cut off sideways at that size ("US I"): on a narrow card show the selected label as
+  plain text under it (`hidden compact:@max-[15rem]:block`, `aria-hidden`, because the select already
+  announces its own value) and keep the native control for choosing; the primitive itself changes with the touch-target slice.
+- **Touch targets (44 pt hit regions) and sheets** are specified with their slice; until then the
+  existing sizes apply.
+
 ## 8. Testing
 
 - Each view gets a **Vitest + Testing Library** behavioral test that mocks

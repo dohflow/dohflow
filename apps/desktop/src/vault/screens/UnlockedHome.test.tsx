@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 
+import { SAFE_AREA_PADDING } from "@/lib/safeArea";
 import { renderWithClient } from "@/test/renderWithClient";
 import { UnlockedHome } from "./UnlockedHome";
 
@@ -42,8 +43,12 @@ describe("UnlockedHome scroll container", () => {
     expect(main!.classList.contains("overflow-y-auto")).toBe(true);
     // The shell itself must not scroll the document: exactly viewport height, overflow hidden.
     const shell = main!.parentElement!;
-    expect(shell.classList.contains("h-screen")).toBe(true);
+    // `h-dvh` is `h-screen` on a desktop window; on a phone it tracks the dynamic viewport
+    // (personal-cfo-i93n3.25).
+    expect(shell.classList.contains("h-dvh")).toBe(true);
     expect(shell.classList.contains("overflow-hidden")).toBe(true);
+    // And it clears the device chrome and the keyboard (personal-cfo-i93n3.25).
+    for (const name of SAFE_AREA_PADDING.split(" ")) expect(shell.classList.contains(name)).toBe(true);
   });
 });
 

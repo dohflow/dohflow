@@ -347,7 +347,7 @@ function AccountColumnPicker({
         <Columns3 aria-hidden className="size-3.5" />
         Accounts
         {selected.length > 0 && (
-          <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-semibold text-primary">
+          <span className="rounded-full bg-primary/15 px-1.5 text-[0.625rem] font-semibold text-primary">
             {selected.length}
           </span>
         )}

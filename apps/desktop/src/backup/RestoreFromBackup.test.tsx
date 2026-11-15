@@ -125,6 +125,34 @@ describe("Restore as a separate named vault", () => {
 });
 
 describe("RestoreFromBackup", () => {
+  // `Button` is `h-10 whitespace-nowrap`, so at the largest system text size the label ran past the card
+  // and the screen edge on the create-vault screen. This call site lets it wrap and grow, and `cn()`
+  // drops the primitive's `h-10` and `whitespace-nowrap` for the classes below
+  // (personal-cfo-i93n3.25).
+  it("lets the picker button wrap and grow at the largest text size", () => {
+    renderRestore();
+
+    const button = screen.getByRole("button", { name: /restore from backup/i });
+    expect(button).toHaveClass(
+      "h-auto",
+      "min-h-10",
+      "max-w-full",
+      "whitespace-normal",
+      "[overflow-wrap:anywhere]",
+      "compact:@max-[15rem]:px-1",
+      // The icon moves above the label, or it takes the width the word "Restore" needs ("Resto-re").
+      "compact:@max-[15rem]:flex-col",
+    );
+    // A label this short is not hyphenated ("Cre-ate"); the button gives up padding instead.
+    expect(button).not.toHaveClass("compact:hyphens-auto");
+    expect(button).not.toHaveClass("h-10");
+    expect(button).not.toHaveClass("whitespace-nowrap");
+    // The button's own card is the container its narrow-card classes query: this component is also
+    // rendered outside the create-vault form (Unlock, Recovery, the vault picker).
+    expect(button.closest(".\\@container")).not.toBeNull();
+    expect(button.parentElement).toHaveClass("@container");
+  });
+
   it("picks a backup file, takes its password, and restores", async () => {
     mocks.open.mockResolvedValue("/home/me/personal-cfo-backup.pcfobk");
     mocks.restoreBackup.mockResolvedValue(ok({ state: "Unlocked", account_count: 1 }));
