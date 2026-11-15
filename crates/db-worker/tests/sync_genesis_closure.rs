@@ -517,11 +517,9 @@ fn a_lost_install_response_resumes_by_resending_the_install_and_puts_nothing_aga
     assert!(puts_before >= 2);
 
     let outcome = device.enable(&transport);
-    assert!(
-        matches!(
-            outcome,
-            Ok(EnableOutcome::Enabled | EnableOutcome::GenesisResumeLost)
-        ),
+    assert_eq!(
+        outcome.as_ref().ok(),
+        Some(&EnableOutcome::Enabled),
         "{outcome:?}"
     );
     assert_eq!(
@@ -631,11 +629,9 @@ fn a_shred_after_a_lost_install_response_still_finishes_the_enable() {
 
     device.shred(attachment, 0x78);
     let outcome = device.enable(&transport);
-    assert!(
-        matches!(
-            outcome,
-            Ok(EnableOutcome::Enabled | EnableOutcome::GenesisResumeLost)
-        ),
+    assert_eq!(
+        outcome.as_ref().ok(),
+        Some(&EnableOutcome::Enabled),
         "{outcome:?}"
     );
     assert_eq!(transport.puts.get(), puts, "nothing was put again");
@@ -656,15 +652,113 @@ fn a_batch_discard_after_a_lost_install_response_still_finishes_the_enable() {
 
     device.remove_batch(0x10);
     let outcome = device.enable(&transport);
-    assert!(
-        matches!(
-            outcome,
-            Ok(EnableOutcome::Enabled | EnableOutcome::GenesisResumeLost)
-        ),
+    assert_eq!(
+        outcome.as_ref().ok(),
+        Some(&EnableOutcome::Enabled),
         "{outcome:?}"
     );
     assert_eq!(transport.puts.get(), puts);
     assert_eq!(device.snapshots.published().len(), 1);
+}
+
+/// A service whose `getArtifactStatus` answers about another id than the one asked for (a protocol
+/// fault): the answer to the first id names the second.
+struct Mislabeled<'a>(&'a artifacts::FakeService);
+
+impl ArtifactTransport for Mislabeled<'_> {
+    fn put(
+        &self,
+        vault_id: &[u8; 16],
+        key_epoch: u64,
+        artifact_id: &ArtifactId,
+        container: &[u8],
+    ) -> Result<ArtifactReceipt, TransportError> {
+        self.0.put(vault_id, key_epoch, artifact_id, container)
+    }
+
+    fn get(
+        &self,
+        vault_id: &[u8; 16],
+        key_epoch: u64,
+        artifact_id: &ArtifactId,
+    ) -> Result<Vec<u8>, TransportError> {
+        self.0.get(vault_id, key_epoch, artifact_id)
+    }
+
+    fn status(
+        &self,
+        vault_id: &[u8; 16],
+        key_epoch: u64,
+        ids: &[ArtifactId],
+    ) -> Result<Vec<ArtifactStatus>, TransportError> {
+        let mut answers = self.0.status(vault_id, key_epoch, ids)?;
+        answers[0].artifact_id = ids[1];
+        Ok(answers)
+    }
+}
+
+/// A status answer is checked against the id asked, in order (04a's R9): an answer that names another
+/// id is a protocol fault, not a present-and-verified artifact, even when every other field of it
+/// (present, the recorded hash) would pass.
+#[test]
+fn a_status_answer_for_another_id_is_refused() {
+    let device = Device::new();
+    device.attach(PDF, 0x78);
+    device.put_batch(0x10, true);
+    let transport = device.bridged();
+    assert_eq!(device.enable(&transport).unwrap(), EnableOutcome::Enabled);
+    let ids = device.produced();
+    assert!(ids.len() >= 2, "an attachment and a batch part");
+    let key = device.epoch_key();
+
+    // The honest service answers them all, so nothing is missing and nothing is put again.
+    let puts = transport.puts.get();
+    device.worker.reput_closure(&transport, &key, &ids).unwrap();
+    assert_eq!(transport.puts.get(), puts);
+
+    let lying = Mislabeled(&device.artifacts);
+    assert!(
+        matches!(
+            device.worker.reput_closure(&lying, &key, &ids),
+            Err(ProduceError::Status)
+        ),
+        "an answer for another id is refused"
+    );
+}
+
+/// A re-put is judged against what this device recorded (04a's R6): an id the mapping names that the
+/// re-produced logical object does not give back is `Changed`, never silently treated as put. A
+/// mapping row for a batch part the batch no longer has stands for it: the service lacks it, the
+/// batch is produced again by its logical id, and the real parts do not include it.
+#[test]
+fn a_re_put_that_does_not_give_back_a_recorded_id_is_refused_as_changed() {
+    let device = Device::new();
+    device.put_batch(0x10, true);
+    let transport = device.bridged();
+    assert_eq!(device.enable(&transport).unwrap(), EnableOutcome::Enabled);
+    let key = device.epoch_key();
+
+    let stale = ArtifactId::from_derived([0xee; 32]);
+    device
+        .worker
+        .write_sync_state(|tx| -> Result<(), db_worker::DbError> {
+            tx.execute(
+                "INSERT INTO sync_artifacts
+                     (key_epoch, sync_artifact_id, ciphertext_sha256, kind, logical_id,
+                      part_index, part_count)
+                 SELECT key_epoch, ?1, ciphertext_sha256, kind, logical_id,
+                        part_index + 1, part_count + 1
+                   FROM sync_artifacts WHERE kind = 2 LIMIT 1",
+                [stale.as_bytes().as_slice()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let result = device.worker.reput_closure(&transport, &key, &[stale]);
+    assert!(
+        matches!(result, Err(ProduceError::Changed(id)) if id == stale),
+        "{result:?}"
+    );
 }
 
 /// A saved genesis whose artifacts the service lacks and whose attachment is gone cannot have been
