@@ -375,6 +375,39 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
   explicit actions (`AGENTS.md` section 1). The two scratch tiers below are the
   only addition (`personal-cfo-0rein.12`).
 
+**Where a worktree lives: the nightly `/private/tmp` cleaner
+(`personal-cfo-0rein.16`, owner decision 2026-11-15).** macOS runs
+`/usr/libexec/tmp_cleaner` (`com.apple.tmp_cleaner`) every night at 00:00. On
+2026-11-15 it removed the `.git` link and older files from long-lived scratch
+worktrees under `/private/tmp` and left the directories behind: eight
+registrations became prunable across three lanes. A partly emptied tree is more
+dangerous than a missing one, because a gate can run over it with test files
+gone and still pass. So:
+
+- **`/private/tmp` is good for the day.** A scratch worktree there is valid only
+  for the day it was created. Anything that must outlive the day (a lane's
+  working copy, a review worktree held for a re-review) goes in the **named
+  scratch root `$HOME/dohflow-scratch/`**, laid out `<lane>/<purpose>/<worktree>`
+  (for example `~/dohflow-scratch/02c/m3d-runbook/platform`). Create it with
+  `git worktree add`, and name it with `--scratch-root` if it lives elsewhere.
+  macOS does not clear it. Nothing in it is a standing role worktree: it is
+  scratch, under the same two tiers below.
+- **A gate counts only in a tree known to be whole.** A gate, build, mutant or
+  test run counts only in a checkout created that day or verified whole that day.
+  Before running gates in a scratch worktree older than today, run
+  `scripts/dev-hygiene.sh --verify-tree <path>` (below). If it exits non-zero,
+  recreate the worktree from the PR head and run the gates there. A run that
+  crossed midnight in a `/private/tmp` tree is not evidence: rerun it in a
+  tree that passes the check.
+- **Reviewers recreate a `/private/tmp` review worktree per review**, and again
+  for any re-review that crosses midnight. **Standing role worktrees outside
+  `/tmp` are reused** (planning clarification, 2026-11-15): before each review,
+  `git status --short` must be empty, then the exact PR head is checked out and
+  `HEAD` is confirmed against it. A dirty tree stops the review and is reported.
+- **Nothing is pruned or deleted on account of this.** `git worktree prune` and
+  `git worktree remove` of a gutted tree stay the owner's call; the report only
+  flags them.
+
 **The tool.** `scripts/dev-hygiene.sh` is read-only by default.
 
 - `scripts/dev-hygiene.sh` (or `--report`, with `--json` for machine output) lists,
@@ -383,16 +416,23 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
   total, last activity, branch,
   whether the branch is merged into `origin/main` or its remote branch is gone,
   uncommitted changes, commits that exist on no remote, and whether a
-  cargo/rustc process is running in it. It flags every worktree whose targets
+  cargo/rustc process is running in it. It marks every registration git calls
+  **prunable** (as "PRUNABLE and GUTTED" when the directory remains but its `.git`
+  link is gone, and as "directory is gone" when the directory is gone) and every
+  checkout with tracked files deleted as **GUTTED**, with the count. It flags every worktree whose targets
   together pass the **cap** (`--target-cap-gib N`, default 16 GiB; see the cap
   paragraph below). It also reports the free disk space and flags free space under
   15%; on macOS, the number of Time Machine local snapshots, with a warning when
   snapshots exist and free space is under 15% that freed space may not return
   until the owner thins them (it only lists them, read-only); and the session
   scratch directory per session folder (below).
-- The scratch report. Scratch lives at
+- The scratch report. Two roots are reported. Scratch under `/tmp` lives at
   `/private/tmp/claude-<uid>/<project slug>/<session uuid>/`, one slug per lane
-  checkout. For every session folder under a DohFlow slug the report shows the
+  checkout; the **named root outside `/tmp`** (`--scratch-root`, default
+  `$HOME/dohflow-scratch`) lives at `<lane>/<purpose>/` and is all DohFlow, so
+  every folder in it is a session. Both are scanned, listed and cleaned under the
+  same conditions, and each has its own line and section in the report (`--json`
+  adds `scratch.named_root` and a `root` on every session). For every session folder under a DohFlow slug the report shows the
   slug, the session uuid, its size, its last activity, and whether a
   cargo/rustc process is running in it. Inside each it lists the git checkouts
   (registered with `git worktree list`, or unregistered: a clone, a copy, a
@@ -418,7 +458,8 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
   worktree it is run from. `scripts/tests/dev-hygiene.test.sh` covers those
   refusals.
 - `scripts/dev-hygiene.sh --clean --scratch [--idle-days N] [--yes]` (**Tier 2**)
-  adds, for the scratch session folders: `cargo clean` on a scratch cargo target
+  adds, for the scratch session folders (under `/tmp` and under the named root
+  alike): `cargo clean` on a scratch cargo target
   directory, and a plain `git worktree remove` (never `--force`) of a clean
   *registered* scratch worktree whose only ignored entries are `target/` and
   `node_modules/`. It acts only when the worktree's pull request is **merged or
@@ -430,6 +471,15 @@ that from building up again (`personal-cfo-0rein.6`, owner request 2026-10-19).
   cleaned, because no pull request ties it to finished work. The plan,
   confirmation, `--yes` and re-inspection after the prompt work as for `--clean`;
   the re-inspection also re-asks `gh`.
+- `scripts/dev-hygiene.sh --verify-tree <path>` is read-only and looks only at the
+  directory it is given. Run it before a quality gate in any scratch worktree older
+  than today. It exits **0** when the path is the top of a checkout whose
+  `git status` works and shows no tracked file deleted (a staged deletion is a
+  deliberate change, not damage), and **1**, with a plain message and the first
+  deleted files, when the directory is gone, has no working `.git` (missing, or a
+  link to an entry that no longer exists), is not the top of a checkout, or has
+  tracked files deleted. It changes nothing, runs no cargo, and needs no
+  repository or network. Usage errors exit 64.
 - `scripts/dev-hygiene.sh --cap-check [--target-cap-gib N]` is read-only and
   looks only at the worktree it is run from: each cargo target directory with its
   size, the total against the cap, and whether a cargo/rustc process works in it.
@@ -459,6 +509,12 @@ default, not a fact of the machine: pass `--target-cap-gib N` to change it, and
 change the default in the script and here together.
 
 **Rules per role.**
+
+- **Everyone, before a gate.** In any scratch worktree older than today (all of
+  `/private/tmp`, and the named root once a day has passed), run
+  `scripts/dev-hygiene.sh --verify-tree <path>` first, and run the gates only if
+  it exits 0. A tree it refuses is recreated from the PR head, never
+  repaired in place and never pruned by an agent.
 
 - **Implementation.** Any probe worktree you made in session scratch gets the
   Tier 1 treatment below once its PR is merged or closed. After a PR merges,
@@ -496,7 +552,8 @@ change the default in the script and here together.
   above. Never remove a worktree of an open PR, and never another session's.
 - **Overseer.** Run `scripts/dev-hygiene.sh --report` at session start and once a
   week. When free space is under 15%, **ask the owner before any `--clean`**.
-- **Everyone.** Session scratch under `/private/tmp/claude-<uid>` is cleaned
+- **Everyone.** Session scratch under `/private/tmp/claude-<uid>` and under the
+  named root `$HOME/dohflow-scratch` is cleaned
   only as the two tiers say: your own, per the role rules above (Tier 1), or by
   `--clean --scratch` under its conditions (Tier 2). **Removing an unregistered
   copy (`rm -r`) stays an explicit act, approved by the owner** (`AGENTS.md`

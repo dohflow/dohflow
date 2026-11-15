@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # dev-hygiene.sh — stop build caches and stale worktrees from filling the build
-# machine (personal-cfo-0rein.6, personal-cfo-0rein.12, personal-cfo-0rein.13).
+# machine (personal-cfo-0rein.6, personal-cfo-0rein.12, personal-cfo-0rein.13,
+# personal-cfo-0rein.16).
 #
 # READ-ONLY BY DEFAULT. `--report` (the default) changes nothing. `--clean` is
 # explicit. Without --scratch it does exactly two things, nothing else:
@@ -38,10 +39,19 @@
 # cleans anything. Exit status: 0 under the cap; 1 over the cap and quiet; 2 over
 # the cap and a build is running (or could not be ruled out). Usage errors exit 64.
 #
+# `--verify-tree PATH` (personal-cfo-0rein.16) is read-only too, and runs before a
+# quality gate: macOS empties /private/tmp every night at 00:00 and can leave a
+# checkout with its `.git` link or some tracked files gone, and a gate run over
+# such a tree can pass with test files missing. It exits 0 when PATH is the top of
+# a checkout whose `git status` works and shows no tracked file deleted; 1, with a
+# plain message, when the directory is gone, has no working `.git`, or has tracked
+# files deleted. Usage errors exit 64. It changes nothing.
+#
 # Usage:
 #   scripts/dev-hygiene.sh [--report] [--json] [--no-pr] [--target-cap-gib N]
 #   scripts/dev-hygiene.sh --clean [--scratch] [--idle-days N] [--yes] [--no-pr]
 #   scripts/dev-hygiene.sh --cap-check [--target-cap-gib N]
+#   scripts/dev-hygiene.sh --verify-tree PATH
 #   scripts/dev-hygiene.sh --help
 #
 # Options:
@@ -59,7 +69,15 @@
 #                     over it; --cap-check exits non-zero over it.
 #   --cap-check       Check the worktree this is run from against the cap. Never
 #                     cleans. See above for the exit status.
+#   --verify-tree P   Check that the checkout at P is whole before a gate runs. Never
+#                     changes anything. See above for the exit status.
 #   --scratch-dir D   Session scratch directory (default /private/tmp/claude-<uid>).
+#                     macOS clears /private/tmp nightly: work here is good for the
+#                     day it was made.
+#   --scratch-root D  The named scratch root outside /tmp for worktrees that must
+#                     outlive the day (default $HOME/dohflow-scratch, layout
+#                     <lane>/<purpose>/<worktree>). Reported and cleaned under the
+#                     same rules as --scratch-dir.
 #   --repo DIR        Repository to inspect (default: this script's repository).
 #
 # "Last activity" of a worktree is the newest modification time of its git
@@ -102,6 +120,8 @@ NO_PR=0
 CAP_CHECK=0
 TARGET_CAP_GIB=16
 SCRATCH_DIR="/private/tmp/claude-$(id -u)"
+DURABLE_DIR="${HOME:-/nonexistent}/dohflow-scratch"
+VERIFY_PATH="" VERIFY=0
 REPO=""
 
 usage() {
@@ -129,6 +149,12 @@ while [ $# -gt 0 ]; do
     --scratch-dir)
       [ $# -ge 2 ] || die "--scratch-dir needs a path"
       SCRATCH_DIR="$2"; shift ;;
+    --scratch-root)
+      [ $# -ge 2 ] || die "--scratch-root needs a path"
+      DURABLE_DIR="$2"; shift ;;
+    --verify-tree)
+      [ $# -ge 2 ] || die "--verify-tree needs a path"
+      VERIFY=1 VERIFY_PATH="$2"; shift ;;
     --repo)
       [ $# -ge 2 ] || die "--repo needs a path"
       REPO="$2"; shift ;;
@@ -151,6 +177,12 @@ fi
 if [ "$CAP_CHECK" = 1 ] && { [ "$MODE" = clean ] || [ "$FORMAT" = json ] || [ "$ASSUME_YES" = 1 ] || [ "$SCRATCH_CLEAN" = 1 ]; }; then
   die "--cap-check is read-only and stands alone: it cannot be combined with --clean, --json, --yes or --scratch"
 fi
+if [ "$VERIFY" = 1 ] && { [ "$CAP_CHECK" = 1 ] || [ "$MODE" = clean ] || [ "$FORMAT" = json ] || [ "$ASSUME_YES" = 1 ] || [ "$SCRATCH_CLEAN" = 1 ] || [ -n "$REPO" ]; }; then
+  die "--verify-tree is read-only and stands alone: it cannot be combined with --clean, --json, --yes, --scratch, --cap-check or --repo"
+fi
+if [ -z "$VERIFY_PATH" ] && [ "$VERIFY" = 1 ]; then
+  die "--verify-tree needs a path"
+fi
 if [ "$CAP_CHECK" = 1 ] && [ -n "$REPO" ]; then
   die "--cap-check checks the worktree it runs from; --repo does not apply"
 fi
@@ -164,9 +196,10 @@ if [ "$FORMAT" = json ] && [ "$MODE" = clean ]; then
   die "--json is a report format; it cannot be combined with --clean"
 fi
 
-# --cap-check looks only at the worktree it runs from, so it needs no repository
-# for the script itself (cap_check does its own git check on $PWD).
-if [ "$CAP_CHECK" != 1 ]; then
+# --cap-check looks only at the worktree it runs from, and --verify-tree only at
+# the path it is given, so neither needs a repository for the script itself
+# (each does its own git check).
+if [ "$CAP_CHECK" != 1 ] && [ "$VERIFY" != 1 ]; then
   if [ -z "$REPO" ]; then
     REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
   fi
@@ -175,6 +208,7 @@ fi
 
 # git and lsof report physical paths, so compare against the physical scratch root.
 if [ -d "$SCRATCH_DIR" ]; then SCRATCH_DIR="$(cd "$SCRATCH_DIR" && pwd -P)"; fi
+if [ -d "$DURABLE_DIR" ]; then DURABLE_DIR="$(cd "$DURABLE_DIR" && pwd -P)"; fi
 
 NOW="$(date +%s)"
 TAB="$(printf '\t')"
@@ -216,6 +250,69 @@ json_str() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk 'BEGIN { ORS = "" } { print }'
 }
 
+# deleted_count PORCELAIN-V1: how many tracked files the working tree has lost
+# (a second status column of D: ` D`, `MD`, `AD`). A staged deletion (`D `) is a
+# deliberate change, not a gutted tree.
+deleted_count() {
+  printf '%s\n' "$1" | awk 'substr($0, 2, 1) == "D" { n++ } END { print n + 0 }'
+}
+
+# ---------------------------------------------------------------------------
+# --verify-tree (personal-cfo-0rein.16). Read-only. Run before a quality gate.
+#
+# macOS runs /usr/libexec/tmp_cleaner at 00:00 and empties /private/tmp by age. It
+# has removed the `.git` link and older files from scratch worktrees and left the
+# directories behind. A gate over such a tree can pass with test files missing,
+# so a gate counts only in a tree this check calls whole.
+# ---------------------------------------------------------------------------
+
+verify_tree() {
+  local p="$1" phys top porcelain n shown
+  local hint="Do not run gates here. Recreate the worktree from the PR head (outside /private/tmp if it must outlive the day), then run the gates there."
+  if [ ! -d "$p" ]; then
+    echo "dev-hygiene --verify-tree: NOT USABLE — $p is not a directory (removed or never created)."
+    echo "  $hint"
+    return 1
+  fi
+  phys="$(cd "$p" && pwd -P)"
+  if [ ! -e "$phys/.git" ]; then
+    top="$(git -C "$phys" rev-parse --show-toplevel 2>/dev/null)" && top="$(cd "$top" && pwd -P)"
+    if [ -n "$top" ]; then
+      echo "dev-hygiene --verify-tree: NOT USABLE — $phys is not the top of a checkout (git finds one at $top)."
+      echo "  Pass the checkout's own directory. If $phys should be its own worktree, its .git link is gone: $hint"
+    else
+      echo "dev-hygiene --verify-tree: NOT USABLE — $phys has no .git (the checkout was emptied, usually by the nightly /private/tmp cleaner)."
+      echo "  $hint"
+    fi
+    return 1
+  fi
+  top="$(git -C "$phys" rev-parse --show-toplevel 2>/dev/null)" || {
+    echo "dev-hygiene --verify-tree: NOT USABLE — git cannot read $phys (its .git link points at a repository or worktree entry that is gone)."
+    echo "  $hint"
+    return 1
+  }
+  top="$(cd "$top" && pwd -P)"
+  if [ "$top" != "$phys" ]; then
+    echo "dev-hygiene --verify-tree: NOT USABLE — $phys is not the top of a checkout (git reports $top). Pass the checkout's own directory."
+    return 1
+  fi
+  porcelain="$(git -C "$phys" status --porcelain 2>/dev/null </dev/null)" || {
+    echo "dev-hygiene --verify-tree: NOT USABLE — git status fails in $phys."
+    echo "  $hint"
+    return 1
+  }
+  n="$(deleted_count "$porcelain")"
+  if [ "$n" -gt 0 ]; then
+    echo "dev-hygiene --verify-tree: NOT USABLE — $n tracked file(s) are deleted from $phys (a partly emptied tree). First ones:"
+    shown="$(printf '%s\n' "$porcelain" | awk 'substr($0, 2, 1) == "D" { print "    " substr($0, 4) }' | head -n 5)"
+    printf '%s\n' "$shown"
+    echo "  $hint"
+    return 1
+  fi
+  echo "dev-hygiene --verify-tree: ok — $phys has a working .git and no tracked file deleted."
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # Per-worktree inspection. Sets the W_* globals.
 # ---------------------------------------------------------------------------
@@ -223,6 +320,7 @@ json_str() {
 W_PATH="" W_BRANCH="" W_HEAD="" W_MISSING=0 W_TARGETS="" W_TARGET_KIB=0
 W_ACTIVITY="" W_IDLE_DAYS="" W_DIRTY="" W_UNPUSHED="" W_MERGED="" W_GONE=0
 W_BUSY=0 W_CURRENT=0 W_SKIP="" W_ELIGIBLE=0 W_TSIZES="" W_OVER=0
+W_PRUNABLE=0 W_GUTTED=""
 
 # Cargo target directories (a directory named `target` that holds CACHEDIR.TAG)
 # up to four levels down, never descending into node_modules, .git or a target,
@@ -372,13 +470,17 @@ EOF
 }
 
 inspect_worktree() {
-  # inspect_worktree PATH BRANCH HEAD MISSING
-  W_PATH="$1" W_BRANCH="$2" W_HEAD="$3" W_MISSING="$4"
+  # inspect_worktree PATH BRANCH HEAD MISSING [PRUNABLE]
+  W_PATH="$1" W_BRANCH="$2" W_HEAD="$3" W_MISSING="$4" W_PRUNABLE="${5:-0}"
   W_TARGETS="" W_TARGET_KIB=0 W_ACTIVITY="" W_IDLE_DAYS="" W_DIRTY="" W_UNPUSHED=""
-  W_MERGED="" W_GONE=0 W_BUSY=0 W_CURRENT=0 W_SKIP="" W_ELIGIBLE=0 W_TSIZES="" W_OVER=0
+  W_MERGED="" W_GONE=0 W_BUSY=0 W_CURRENT=0 W_SKIP="" W_ELIGIBLE=0 W_TSIZES="" W_OVER=0 W_GUTTED=""
 
   if [ "$W_MISSING" = 1 ]; then
-    W_SKIP="directory is gone (git worktree prune handles the registration)"
+    if [ -d "$W_PATH" ]; then
+      W_SKIP="gutted: the directory remains but git calls the registration prunable (git worktree prune handles the registration, never the files)"
+    else
+      W_SKIP="directory is gone (git worktree prune handles the registration)"
+    fi
     return
   fi
 
@@ -399,8 +501,12 @@ inspect_worktree() {
   local porcelain
   if porcelain="$(git -C "$W_PATH" status --porcelain 2>/dev/null)"; then
     if [ -n "$porcelain" ]; then W_DIRTY=1; else W_DIRTY=0; fi
+    W_GUTTED="$(deleted_count "$porcelain")"
   else
     W_DIRTY=""   # unknown: treated as unsafe
+    # Gutted only when git cannot open the tree at all (its .git link is gone or
+    # points nowhere); a corrupt index is just "status unreadable".
+    git -C "$W_PATH" rev-parse --git-dir >/dev/null 2>&1 || W_GUTTED=nogit
   fi
 
   if W_UNPUSHED="$(git -C "$W_PATH" rev-list --count HEAD --not --remotes 2>/dev/null)"; then
@@ -447,7 +553,7 @@ inspect_worktree() {
 # Calls $1 once per registered worktree, after inspecting it. Skips bare
 # entries. Parses `git worktree list --porcelain` (blank-line separated records).
 for_each_worktree() {
-  local cb="$1" line path="" branch="" head="" bare=0 missing=0 have=0 listing
+  local cb="$1" line path="" branch="" head="" bare=0 missing=0 prunable=0 have=0 listing
   # Read the whole listing first so commands run per worktree can never consume
   # the loop's input.
   listing="$(git -C "$REPO" worktree list --porcelain 2>/dev/null)"
@@ -455,20 +561,20 @@ for_each_worktree() {
     case "$line" in
       "worktree "*)
         if [ "$have" = 1 ] && [ "$bare" = 0 ]; then
-          inspect_worktree "$path" "$branch" "$head" "$missing"; "$cb"
+          inspect_worktree "$path" "$branch" "$head" "$missing" "$prunable"; "$cb"
         fi
-        path="${line#worktree }"; branch=""; head=""; bare=0; missing=0; have=1
+        path="${line#worktree }"; branch=""; head=""; bare=0; missing=0; prunable=0; have=1
         [ -d "$path" ] || missing=1 ;;
       "HEAD "*) head="${line#HEAD }" ;;
       "branch refs/heads/"*) branch="${line#branch refs/heads/}" ;;
       "bare") bare=1 ;;
-      "prunable"*) missing=1 ;;
+      "prunable"*) missing=1; prunable=1 ;;
     esac
   done <<EOF
 $listing
 EOF
   if [ "$have" = 1 ] && [ "$bare" = 0 ]; then
-    inspect_worktree "$path" "$branch" "$head" "$missing"; "$cb"
+    inspect_worktree "$path" "$branch" "$head" "$missing" "$prunable"; "$cb"
   fi
 }
 
@@ -516,16 +622,23 @@ low_disk() {
 # ---------------------------------------------------------------------------
 # Session scratch (personal-cfo-0rein.12)
 #
-# Layout: $SCRATCH_DIR/<project slug>/<session uuid>/. DohFlow has one slug per
-# lane checkout; the root also holds other projects' folders, which are measured
-# as one size and never opened. scan_scratch walks it ONCE, read-only, into SCAN:
-# one record per line, fields joined by $US.
+# Two roots are scanned (personal-cfo-0rein.16). The /tmp root,
+# $SCRATCH_DIR/<project slug>/<session uuid>/, is emptied by macOS every night at
+# 00:00; DohFlow has one slug per lane checkout there, and the root also holds
+# other projects' folders, which are measured as one size and never opened. The
+# named root outside /tmp, $DURABLE_DIR/<lane>/<purpose>/, holds worktrees that must
+# outlive the day: it is all DohFlow, so every folder in it is a session. Both go
+# through the same scan and the same Tier 2 conditions. scan_scratch walks them
+# ONCE, read-only, into SCAN: one record per line, fields joined by $US.
 #
-#   S slug uuid path kib activity idle_days busy current   a session folder
-#   C path kind branch head dirty unpushed pr_state pr_number ignored_ok common
+#   S slug uuid path kib activity idle_days busy current root   a session folder
+#   C path kind branch head dirty unpushed pr_state pr_number ignored_ok common gutted
 #                                                          a checkout inside it
 #   T path kib owner pr_state                              a cargo target dir
-#   F slug kib                                             another project
+#   F slug kib root                                        another project
+#
+# gutted is 0 for a whole tree, N for N tracked files deleted (a partly emptied
+# tree), and "nogit" when git cannot read it (its .git link points nowhere).
 #
 # kind is "registered" (a linked worktree git itself lists) or "unregistered"
 # (a clone, a copy, a stale .git file). Within a session every C comes before
@@ -630,7 +743,7 @@ scan_checkout() {
   # scan_checkout DIR: appends one C record to CK_BUF and raises CK_ACT to the
   # mtime of the checkout's git index, HEAD and reflog.
   local d="$1" kind=unregistered branch="" head="" dirty="" unpushed="" gitfile="" gitdir="" back="" ign ignok=1 common=""
-  local st line admin m
+  local st line admin m gutted=0
   if [ -f "$d/.git" ]; then
     read -r gitfile < "$d/.git" 2>/dev/null || gitfile=""
     gitfile="${gitfile#gitdir: }"
@@ -649,7 +762,7 @@ scan_checkout() {
   fi
   # One status call: branch, HEAD, changes, and ignored entries.
   if st="$(git -C "$d" status --porcelain=v2 --branch --ignored 2>/dev/null </dev/null)"; then
-    dirty=0
+    dirty=0 gutted=0
     while IFS= read -r line; do
       case "$line" in
         "# branch.oid "*) head="${line#\# branch.oid }"; [ "$head" = "(initial)" ] && head="" ;;
@@ -659,11 +772,20 @@ scan_checkout() {
           ign="${line#! }"; ign="${ign%/}"
           case "${ign##*/}" in target|node_modules) ;; *) ignok=0 ;; esac ;;
         "") ;;
+        "1 "*|"2 "*)
+          # ordinary and renamed entries: "1 XY ...". A second column of D is a
+          # tracked file missing from the working tree.
+          dirty=1
+          [ "${line:3:1}" = D ] && gutted=$((gutted + 1)) ;;
         *) dirty=1 ;;
       esac
     done <<STATUS
 $st
 STATUS
+  else
+    # Gutted when git cannot open the tree at all (its .git link points nowhere);
+    # a corrupt index is just an unreadable status, which already counts as dirty.
+    git -C "$d" rev-parse --git-dir >/dev/null 2>&1 </dev/null || gutted=nogit
   fi
   if [ -n "$head" ]; then
     unpushed="$(git -C "$d" rev-list --count HEAD --not --remotes 2>/dev/null </dev/null)" || unpushed=""
@@ -682,12 +804,12 @@ GITDIRS
     [ -n "$m" ] && { [ -z "$CK_ACT" ] || [ "$m" -gt "$CK_ACT" ]; } && CK_ACT="$m"
   fi
   pr_lookup "$d" "$branch" "$head"
-  CK_BUF="${CK_BUF}C${US}${d}${US}${kind}${US}${branch}${US}${head}${US}${dirty}${US}${unpushed}${US}${PR_STATE}${US}${PR_NUM}${US}${ignok}${US}${common}${NL}"
+  CK_BUF="${CK_BUF}C${US}${d}${US}${kind}${US}${branch}${US}${head}${US}${dirty}${US}${unpushed}${US}${PR_STATE}${US}${PR_NUM}${US}${ignok}${US}${common}${US}${gutted}${NL}"
 }
 
 scan_session() {
-  # scan_session DIR SLUG: appends the S, C and T records of one session folder.
-  local s="$1" slug="$2" uuid="${1##*/}" du_out kib act m idle busy=0 cur=0 here
+  # scan_session DIR SLUG ROOT: appends the S, C and T records of one session folder.
+  local s="$1" slug="$2" root="$3" uuid="${1##*/}" du_out kib act m idle busy=0 cur=0 here
   local gits g t tkib owner best ck targets tpr
   du_out="$(du -k -d 7 "$s" 2>/dev/null)"
   kib="$(printf '%s\n' "$du_out" | awk -F'\t' -v p="$s" '$2 == p { print $1; exit }')"
@@ -718,7 +840,7 @@ GITS
   case "$here/" in "$s"/*) cur=1 ;; esac
   case "$(cd "$REPO" 2>/dev/null && pwd -P)/" in "$s"/*) cur=1 ;; esac
 
-  SCAN="${SCAN}S${US}${slug}${US}${uuid}${US}${s}${US}${kib}${US}${act}${US}${idle}${US}${busy}${US}${cur}${NL}${CK_BUF}"
+  SCAN="${SCAN}S${US}${slug}${US}${uuid}${US}${s}${US}${kib}${US}${act}${US}${idle}${US}${busy}${US}${cur}${US}${root}${NL}${CK_BUF}"
 
   while IFS= read -r t; do
     [ -n "$t" ] || continue
@@ -744,21 +866,27 @@ TARGETS
 
 scan_scratch() {
   SCAN="" PRCACHE=""
-  [ -d "$SCRATCH_DIR" ] || return 0
-  local sd slug s
-  for sd in "$SCRATCH_DIR"/*/; do
-    sd="${sd%/}"
-    [ -d "$sd" ] && [ ! -L "$sd" ] || continue
-    slug="${sd##*/}"
-    if is_dohflow_slug "$slug"; then
-      for s in "$sd"/*/; do
-        s="${s%/}"
-        [ -d "$s" ] && [ ! -L "$s" ] || continue
-        scan_session "$s" "$slug"
-      done
-    else
-      SCAN="${SCAN}F${US}${slug}${US}$(du_kib "$sd")${NL}"
-    fi
+  local sd slug s all_doh root
+  for root in "$SCRATCH_DIR" "$DURABLE_DIR"; do
+    [ -d "$root" ] && [ ! -L "$root" ] || continue
+    # The /tmp root is shared with other projects, so only DohFlow slugs are
+    # opened there; the named root is DohFlow's own.
+    all_doh=0
+    [ "$root" = "$DURABLE_DIR" ] && all_doh=1
+    for sd in "$root"/*/; do
+      sd="${sd%/}"
+      [ -d "$sd" ] && [ ! -L "$sd" ] || continue
+      slug="${sd##*/}"
+      if [ "$all_doh" = 1 ] || is_dohflow_slug "$slug"; then
+        for s in "$sd"/*/; do
+          s="${s%/}"
+          [ -d "$s" ] && [ ! -L "$s" ] || continue
+          scan_session "$s" "$slug" "$root"
+        done
+      else
+        SCAN="${SCAN}F${US}${slug}${US}$(du_kib "$sd")${US}${root}${NL}"
+      fi
+    done
   done
 }
 
@@ -773,13 +901,13 @@ T2_ACTIONS="" T2_VERDICT=""
 
 evaluate_scratch() {
   T2_ACTIONS="" T2_VERDICT=""
-  local rec tag a b c d e f g h i j sess="" why rmwt="" v
+  local rec tag a b c d e f g h i j k sess="" why rmwt="" v
   while IFS= read -r rec; do
     [ -n "$rec" ] || continue
-    IFS="$US" read -r tag a b c d e f g h i j <<<"$rec"
+    IFS="$US" read -r tag a b c d e f g h i j k <<<"$rec"
     case "$tag" in
       S)
-        # a=slug b=uuid c=path d=kib e=activity f=idle g=busy h=current
+        # a=slug b=uuid c=path d=kib e=activity f=idle g=busy h=current i=root
         sess=""
         if [ "$h" = 1 ]; then sess="this is the folder (or repository) the script runs from"
         elif [ "$g" = 1 ]; then sess="a cargo/rustc process is running in it (or could not be checked)"
@@ -787,10 +915,12 @@ evaluate_scratch() {
         elif [ "$f" -lt "$IDLE_DAYS" ]; then sess="active ${f} day(s) ago, threshold is ${IDLE_DAYS}"
         fi ;;
       C)
-        # a=path b=kind c=branch d=head e=dirty f=unpushed g=pr_state h=pr_num i=ignored_ok j=common
+        # a=path b=kind c=branch d=head e=dirty f=unpushed g=pr_state h=pr_num i=ignored_ok j=common k=gutted
         why="$sess"
         if [ -n "$why" ]; then :
         elif [ "$b" != registered ]; then why="unregistered copy: removing it stays an explicit, owner-approved act"
+        elif [ "$k" = nogit ]; then why="gutted: git cannot read the tree (no working .git)"
+        elif [ "$k" != 0 ] && [ -n "$k" ]; then why="gutted: ${k} tracked file(s) deleted"
         elif [ "$e" != 0 ]; then why="uncommitted changes (or status unreadable)"
         elif [ "$f" != 0 ]; then why="commits that exist on no remote (or unreadable)"
         elif [ "$g" != merged ] && [ "$g" != closed ]; then why="pull request state is ${g} (only merged or closed qualifies)"
@@ -832,7 +962,12 @@ text_row() {
   echo
   echo "  $W_PATH"
   if [ "$W_MISSING" = 1 ]; then
-    echo "    registration: directory is gone (prunable)"
+    if [ -d "$W_PATH" ]; then
+      echo "    registration: PRUNABLE and GUTTED — the directory remains but its .git link is gone (git calls it prunable)."
+      echo "                  Do not run gates in it. Recreate it from the PR head; prune and removal stay the owner's call."
+    else
+      echo "    registration: directory is gone (prunable)"
+    fi
     return
   fi
   echo "    branch:       ${W_BRANCH:-(detached at ${W_HEAD:0:8})}"
@@ -864,6 +999,12 @@ TSIZES
   [ "$W_DIRTY" = 1 ] && state="UNCOMMITTED CHANGES"
   [ -z "$W_DIRTY" ] && state="status unreadable"
   echo "    working tree: $state"
+  if [ "$W_GUTTED" = nogit ]; then
+    echo "    GUTTED:       git cannot read this tree (no working .git). Do not run gates in it."
+  elif [ -n "$W_GUTTED" ] && [ "$W_GUTTED" -gt 0 ]; then
+    echo "    GUTTED:       $W_GUTTED tracked file(s) are deleted (a partly emptied tree). Do not run gates in it;"
+    echo "                  recreate it from the PR head. scripts/dev-hygiene.sh --verify-tree <path> says the same."
+  fi
   if [ -z "$W_UNPUSHED" ]; then
     echo "    unpushed:     unreadable"
   else
@@ -892,12 +1033,32 @@ json_tri() {
   fi
 }
 
+# gutted_bool K / gutted_num K: JSON for a gutted column (0 whole, N tracked files
+# deleted, nogit when git cannot read the tree). Functions, not an inline case in
+# $( ): bash 3.2 mis-parses a case pattern's ")" inside a command substitution.
+gutted_bool() {
+  case "$1" in
+    ''|0) echo false ;;
+    *) echo true ;;
+  esac
+}
+gutted_num() {
+  case "$1" in
+    ''|nogit) echo null ;;
+    *) echo "$1" ;;
+  esac
+}
+
 JSON_FIRST=1
 json_row() {
   [ "$JSON_FIRST" = 1 ] && JSON_FIRST=0 || printf ','
   printf '\n    {"path":"%s","branch":' "$(json_str "$W_PATH")"
   if [ -n "$W_BRANCH" ]; then printf '"%s"' "$(json_str "$W_BRANCH")"; else printf 'null'; fi
   printf ',"head":"%s","directory_missing":%s' "$(json_str "$W_HEAD")" "$([ "$W_MISSING" = 1 ] && echo true || echo false)"
+  printf ',"prunable":%s,"gutted":%s,"tracked_files_deleted":%s' \
+    "$([ "$W_PRUNABLE" = 1 ] && echo true || echo false)" \
+    "$(if [ "$W_MISSING" = 1 ] && [ -d "$W_PATH" ]; then echo true; else gutted_bool "$W_GUTTED"; fi)" \
+    "$(gutted_num "$W_GUTTED")"
   printf ',"target_dirs":['
   local first=1 t
   while IFS= read -r t; do
@@ -936,10 +1097,12 @@ slug_label() {
 }
 
 scratch_totals() {
-  # Sets SC_DOH_KIB, SC_OTHER_KIB and scratch_kib (their sum) from SCAN.
-  SC_DOH_KIB="$(printf '%s' "$SCAN" | awk -F"$US" '$1 == "S" { n += $5 } END { print n + 0 }')"
-  SC_OTHER_KIB="$(printf '%s' "$SCAN" | awk -F"$US" '$1 == "F" { n += $3 } END { print n + 0 }')"
+  # Sets SC_DOH_KIB, SC_OTHER_KIB and scratch_kib (their sum) for the /tmp root,
+  # and DUR_KIB for the named root outside /tmp, from SCAN.
+  SC_DOH_KIB="$(printf '%s' "$SCAN" | awk -F"$US" -v r="$SCRATCH_DIR" '$1 == "S" && $10 == r { n += $5 } END { print n + 0 }')"
+  SC_OTHER_KIB="$(printf '%s' "$SCAN" | awk -F"$US" -v r="$SCRATCH_DIR" '$1 == "F" && $4 == r { n += $3 } END { print n + 0 }')"
   scratch_kib=$(( SC_DOH_KIB + SC_OTHER_KIB ))
+  DUR_KIB="$(printf '%s' "$SCAN" | awk -F"$US" -v r="$DURABLE_DIR" '$1 == "S" && $10 == r { n += $5 } END { print n + 0 }')"
 }
 
 date_of() {
@@ -956,23 +1119,28 @@ t2_text() {
   if [ "$1" = ok ]; then echo "would $2"; else echo "skipped — $1"; fi
 }
 
-scratch_text() {
-  local rec tag a b c d e f g h i j v flags state br
-  if [ ! -d "$SCRATCH_DIR" ]; then
-    echo "Session scratch ($SCRATCH_DIR): not present"
-    return
-  fi
-  echo "Session scratch ($SCRATCH_DIR): $(human "$scratch_kib") — DohFlow sessions $(human "$SC_DOH_KIB"), other projects $(human "$SC_OTHER_KIB") (report only unless --clean --scratch)"
-  if low_disk; then
-    echo "  ** Free space is under 15% and scratch holds $(human "$scratch_kib"). Ask the owner before any --clean --scratch. **"
-  fi
-  echo
-  echo "DohFlow session folders (one du walk each; PR state from gh, unknown when it cannot be had):"
+gutted_text() {
+  # gutted_text K: the report line for a checkout git cannot read, or one with
+  # tracked files deleted (empty for a whole tree).
+  case "$1" in
+    ''|0) ;;
+    nogit) echo "                  GUTTED — git cannot read this tree (no working .git). Do not run gates in it; recreate it from the PR head." ;;
+    *) echo "                  GUTTED — $1 tracked file(s) are deleted (a partly emptied tree). Do not run gates in it; recreate it from the PR head." ;;
+  esac
+}
+
+# scratch_sessions_text ROOT: the session folders (with their checkouts and cargo
+# targets) of one scratch root, from SCAN.
+scratch_sessions_text() {
+  local root="$1" rec tag a b c d e f g h i j k v flags state br show=0
   while IFS= read -r rec; do
     [ -n "$rec" ] || continue
-    IFS="$US" read -r tag a b c d e f g h i j <<<"$rec"
+    IFS="$US" read -r tag a b c d e f g h i j k <<<"$rec"
     case "$tag" in
       S)
+        show=0
+        [ "$i" = "$root" ] || continue
+        show=1
         flags=""
         [ "${d:-0}" -gt "$BIG_KIB" ] && flags="$flags  ** OVER $(human "$BIG_KIB") **"
         [ "$g" = 1 ] && flags="$flags  [cargo/rustc running]"
@@ -981,10 +1149,12 @@ scratch_text() {
         echo "  $(slug_label "$a") / $b   $(human "${d:-0}")${flags}"
         if [ -n "$e" ]; then echo "    last active:  $(date_of "$e") (${f} day(s) ago)"; else echo "    last active:  unknown"; fi ;;
       C)
+        [ "$show" = 1 ] || continue
         br="${c:-(detached at ${d:0:8})}"
         state="clean"; [ "$e" = 1 ] && state="UNCOMMITTED CHANGES"; [ -z "$e" ] && state="status unreadable"
         echo "    checkout:     $a  [$b]"
         echo "                  $br; $state; ${f:-unreadable} unpushed; $(pr_text "$g" "$h")"
+        gutted_text "$k"
         v="$(verdict_for "$a")"
         if [ "$v" = ok ] && [ "$i" != 1 ]; then
           echo "                  --clean --scratch: would not remove it: ignored files other than target/ and node_modules/ are present"
@@ -992,28 +1162,52 @@ scratch_text() {
           echo "                  --clean --scratch: $(t2_text "$v" 'remove the worktree (plain, never forced)')"
         fi ;;
       T)
+        [ "$show" = 1 ] || continue
         echo "    cargo target: $(human "$b")  $a"
         echo "                  $([ -n "$c" ] && echo "owner $c" || echo "no owning checkout"); $(pr_text "$d" "")"
         echo "                  --clean --scratch: $(t2_text "$(verdict_for "$a")" 'run cargo clean')" ;;
-      F) : ;;
+      F) show=0 ;;
     esac
   done <<SCANNED
 $SCAN
 SCANNED
-  if [ "$(printf '%s' "$SCAN" | awk -F"$US" '$1 == "S"' | wc -l | tr -d ' ')" = 0 ]; then
+  if [ "$(printf '%s' "$SCAN" | awk -F"$US" -v r="$root" '$1 == "S" && $10 == r' | wc -l | tr -d ' ')" = 0 ]; then
     echo "  (none)"
   fi
-  echo
-  echo "Other projects under the scratch root (size only, never opened):"
-  if [ "$(printf '%s' "$SCAN" | awk -F"$US" '$1 == "F"' | wc -l | tr -d ' ')" = 0 ]; then
-    echo "  (none)"
+}
+
+scratch_text() {
+  local rec tag a b c
+  if [ ! -d "$SCRATCH_DIR" ]; then
+    echo "Session scratch ($SCRATCH_DIR): not present"
   else
-    while IFS= read -r rec; do
-      IFS="$US" read -r tag a b <<<"$rec"
-      [ "$tag" = F ] && echo "  $(human "$b")  $(slug_label "$a")"
-    done <<SCANNED
-$SCAN
+    echo "Session scratch ($SCRATCH_DIR): $(human "$scratch_kib") — DohFlow sessions $(human "$SC_DOH_KIB"), other projects $(human "$SC_OTHER_KIB") (report only unless --clean --scratch)"
+    echo "  ** macOS empties /private/tmp every night at 00:00: a worktree here is good only for the day it was made. **"
+    if low_disk; then
+      echo "  ** Free space is under 15% and scratch holds $(human "$scratch_kib"). Ask the owner before any --clean --scratch. **"
+    fi
+    echo
+    echo "DohFlow session folders (one du walk each; PR state from gh, unknown when it cannot be had):"
+    scratch_sessions_text "$SCRATCH_DIR"
+    echo
+    echo "Other projects under the scratch root (size only, never opened):"
+    if [ "$(printf '%s' "$SCAN" | awk -F"$US" -v r="$SCRATCH_DIR" '$1 == "F" && $4 == r' | wc -l | tr -d ' ')" = 0 ]; then
+      echo "  (none)"
+    else
+      while IFS= read -r rec; do
+        IFS="$US" read -r tag a b c <<<"$rec"
+        [ "$tag" = F ] && echo "  $(human "$b")  $(slug_label "$a")"
+      done <<SCANNED
+$(printf '%s' "$SCAN" | awk -F"$US" -v r="$SCRATCH_DIR" '$1 == "F" && $4 == r')
 SCANNED
+    fi
+  fi
+  echo
+  if [ ! -d "$DURABLE_DIR" ]; then
+    echo "Named scratch root outside /tmp ($DURABLE_DIR): not present"
+  else
+    echo "Named scratch root outside /tmp ($DURABLE_DIR): $(human "$DUR_KIB") (survives the nightly cleaner; same Tier 2 rules as /tmp scratch)"
+    scratch_sessions_text "$DURABLE_DIR"
   fi
   echo
   if [ -z "$T2_ACTIONS" ]; then
@@ -1036,18 +1230,18 @@ ACTIONS
 
 # json_scratch: the "sessions", "other_projects" and "tier2_candidates" members.
 json_scratch() {
-  local rec tag a b c d e f g h i j first_s=1 first_c=1 first_t=1 part="" first_o=1
+  local rec tag a b c d e f g h i j k first_s=1 first_c=1 first_t=1 part="" first_o=1
   printf '"sessions":['
   while IFS= read -r rec; do
     [ -n "$rec" ] || continue
-    IFS="$US" read -r tag a b c d e f g h i j <<<"$rec"
+    IFS="$US" read -r tag a b c d e f g h i j k <<<"$rec"
     case "$tag" in
       S)
         if [ -n "$part" ]; then
           if [ "$part" = ck ]; then printf '],"targets":[]}'; else printf ']}'; fi
         fi
         [ "$first_s" = 1 ] && first_s=0 || printf ','
-        printf '\n    {"slug":"%s","uuid":"%s","path":"%s","kib":%s' "$(json_str "$a")" "$(json_str "$b")" "$(json_str "$c")" "${d:-null}"
+        printf '\n    {"slug":"%s","uuid":"%s","path":"%s","root":"%s","kib":%s' "$(json_str "$a")" "$(json_str "$b")" "$(json_str "$c")" "$(json_str "$i")" "${d:-null}"
         printf ',"last_activity":%s,"idle_days":%s,"cargo_running":%s' "${e:-null}" "${f:-null}" "$([ "$g" = 1 ] && echo true || echo false)"
         printf ',"over_size_flag":%s,"run_from_here":%s,"checkouts":[' "$([ "${d:-0}" -gt "$BIG_KIB" ] && echo true || echo false)" "$([ "$h" = 1 ] && echo true || echo false)"
         part=ck first_c=1 first_t=1 ;;
@@ -1057,6 +1251,9 @@ json_scratch() {
         if [ -n "$c" ]; then printf '"%s"' "$(json_str "$c")"; else printf 'null'; fi
         printf ',"head":"%s","dirty":%s,"unpushed_commits":%s' "$(json_str "$d")" "$(json_tri "$e")" "${f:-null}"
         printf ',"pr_state":"%s","pr_number":%s' "$g" "${h:-null}"
+        printf ',"gutted":%s,"tracked_files_deleted":%s' \
+          "$(gutted_bool "$k")" \
+          "$(gutted_num "$k")"
         printf ',"tier2":"%s"}' "$(json_str "$(verdict_for "$a")")" ;;
       T)
         if [ "$part" = ck ]; then printf '],"targets":['; part=t; fi
@@ -1074,7 +1271,7 @@ SCANNED
   printf '\n  ],\n  "other_projects":['
   while IFS= read -r rec; do
     [ -n "$rec" ] || continue
-    IFS="$US" read -r tag a b <<<"$rec"
+    IFS="$US" read -r tag a b c <<<"$rec"
     [ "$tag" = F ] || continue
     [ "$first_o" = 1 ] && first_o=0 || printf ','
     printf '{"slug":"%s","kib":%s}' "$(json_str "$a")" "${b:-null}"
@@ -1108,6 +1305,8 @@ report() {
       "${LOCAL_SNAPSHOTS:-null}" "$(snapshots_delay && echo true || echo false)" "$CAP_KIB"
     printf '  "scratch":{"path":"%s","kib":%s,"dohflow_kib":%s,"other_projects_kib":%s,"session_flag_kib":%s,\n  ' \
       "$(json_str "$SCRATCH_DIR")" "${scratch_kib:-null}" "$SC_DOH_KIB" "$SC_OTHER_KIB" "$BIG_KIB"
+    printf '"named_root":{"path":"%s","present":%s,"kib":%s},\n  ' \
+      "$(json_str "$DURABLE_DIR")" "$([ -d "$DURABLE_DIR" ] && echo true || echo false)" "${DUR_KIB:-0}"
     json_scratch
     printf '},\n  "worktrees":['
     for_each_worktree json_row
@@ -1204,7 +1403,7 @@ TARGETS
 scratch_plan_text() {
   # What --clean --scratch will do, and why it leaves the rest alone.
   local rec tag a b c d e f g h i j v
-  echo "Scratch (--scratch) under $SCRATCH_DIR:"
+  echo "Scratch (--scratch) under $SCRATCH_DIR and $DURABLE_DIR:"
   while IFS= read -r rec; do
     [ -n "$rec" ] || continue
     IFS="$US" read -r tag a b c d e f g h i j <<<"$rec"
@@ -1247,7 +1446,7 @@ apply_scratch() {
       *) echo "  skipped ${rec#*"$US"} — changed since the plan"; continue ;;
     esac
     IFS="$US" read -r tag a <<<"$rec"
-    case "$a" in "$SCRATCH_DIR"/*) ;; *) echo "  skipped $a — outside the scratch directory"; continue ;; esac
+    case "$a" in "$SCRATCH_DIR"/*|"$DURABLE_DIR"/*) ;; *) echo "  skipped $a — outside the scratch directories"; continue ;; esac
     [ ! -L "$a" ] || { echo "  skipped $a — a symbolic link"; continue; }
     if [ "$tag" = CARGO ]; then
       d="$(dirname "$a")"
@@ -1283,7 +1482,7 @@ clean() {
   local prune_list
   prune_list="$(git -C "$REPO" worktree prune --dry-run -v 2>&1)"
   if [ -n "$prune_list" ]; then
-    echo "Registrations to prune (directory already gone):"
+    echo "Registrations to prune (directory gone, or its .git link gone; the files are never touched):"
     printf '%s\n' "$prune_list" | sed 's/^/  /'
   else
     echo "No registrations to prune."
@@ -1386,6 +1585,10 @@ TARGETS
   return 1
 }
 
+if [ "$VERIFY" = 1 ]; then
+  verify_tree "$VERIFY_PATH"
+  exit $?
+fi
 if [ "$CAP_CHECK" = 1 ]; then
   cap_check
   exit $?
