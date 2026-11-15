@@ -761,6 +761,51 @@ fn a_re_put_that_does_not_give_back_a_recorded_id_is_refused_as_changed() {
     );
 }
 
+/// A re-put is judged against the **hash** this device recorded as well as the id (04a's #362 review,
+/// AC12 item 2): the service lacks an artifact whose recorded `ciphertext_sha256` is not what a
+/// re-seal of its logical object produces (a corrupted row), so the re-put is a typed `Changed`, for
+/// an attachment and for a batch part alike. It stops before the put: nothing is sent, so there is no
+/// retry loop, and the service gains nothing.
+#[test]
+fn a_re_put_whose_hash_differs_from_the_recorded_one_is_refused_as_changed_before_any_put() {
+    let mut device = Device::new();
+    device.attach(PDF, 0x78);
+    device.put_batch(0x10, true);
+    let transport = device.bridged();
+    assert_eq!(device.enable(&transport).unwrap(), EnableOutcome::Enabled);
+    let ids = device.produced();
+    assert!(ids.len() >= 2, "an attachment and a batch part");
+    let key = device.epoch_key();
+
+    // The recorded hash of every artifact is no longer the one its object seals to.
+    for id in &ids {
+        device
+            .worker
+            .write_sync_state(|tx| -> Result<(), db_worker::DbError> {
+                let changed = tx.execute(
+                    "UPDATE sync_artifacts SET ciphertext_sha256 = ?1 WHERE sync_artifact_id = ?2",
+                    rusqlite::params![[0xab_u8; 32].as_slice(), id.as_bytes().as_slice()],
+                )?;
+                assert_eq!(changed, 1);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    // The service lost the objects, so each is produced again from its logical object.
+    drop(transport);
+    device.artifacts = artifacts::FakeService::default();
+    let transport = device.bridged();
+    for id in &ids {
+        let result = device.worker.reput_closure(&transport, &key, &[*id]);
+        assert!(
+            matches!(result, Err(ProduceError::Changed(changed)) if changed == *id),
+            "{result:?}"
+        );
+    }
+    assert_eq!(transport.puts.get(), 0, "nothing was put: no retry loop");
+}
+
 /// A saved genesis whose artifacts the service lacks and whose attachment is gone cannot have been
 /// installed (the service pins the whole closure before the compare-and-swap): the saved container
 /// is discarded and one fresh genesis is produced from the vault as it is, which the service
