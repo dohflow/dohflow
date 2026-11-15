@@ -205,12 +205,15 @@ pub fn apply_delta(
         }
     }
     for (kind, logical) in objects {
+        // Both vectors are ascending ([`ClosureSources`]), so a lookup is a binary search: the
+        // prune costs O(objects log sources) per envelope, not their product.
+        let held = |ids: &[[u8; 16]]| {
+            ids.binary_search_by(|id| id.as_slice().cmp(logical.as_slice()))
+                .is_ok()
+        };
         let held = match kind.as_str() {
-            "attachment" => sources
-                .attachments
-                .iter()
-                .any(|id| id.as_slice() == logical),
-            "batch" => sources.batches.iter().any(|id| id.as_slice() == logical),
+            "attachment" => held(&sources.attachments),
+            "batch" => held(&sources.batches),
             _ => return Err(LiveClosureError::Malformed),
         };
         if !held {
