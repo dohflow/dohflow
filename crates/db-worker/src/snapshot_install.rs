@@ -146,6 +146,58 @@ pub fn install_snapshot(
     vault_id: [u8; 16],
     verified: &Verified,
 ) -> Result<InstalledSnapshot, InstallError> {
+    install_inner(conn, vault_id, verified, false).map(|(installed, _)| installed)
+}
+
+/// One attachment row of a snapshot: the columns that travel. The local crypto fields (`storage_id`,
+/// the wrapped content key and the nonces) never travel; a replica makes them when it materializes
+/// the attachment's artifact, and creates the row from this and those.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotAttachment {
+    /// The attachment's id.
+    pub id: [u8; 16],
+    /// The plaintext size the origin recorded.
+    pub plaintext_size: i64,
+    /// The media type of the **row** (a later class-1 edit lives only there).
+    pub mime_type: Option<String>,
+    /// The original filename.
+    pub original_filename: Option<String>,
+    /// When the row was created.
+    pub created_at: String,
+}
+
+/// [`install_snapshot`] for a snapshot that carries a class-1b closure (`personal-cfo-1cltt.7`,
+/// slice D2). It differs in three ways, each because the closure's artifacts are not here yet:
+///
+/// * a snapshot with artifacts and attachment rows is accepted, not refused;
+/// * the `attachments` rows are **not inserted**: they are parsed and returned, because their
+///   local crypto fields come from materializing the artifacts, and the caller creates the rows
+///   then;
+/// * the re-export proof is **not run here**: attachment links hang under attachment rows (they are
+///   folded children of their parent in the export), so the state cannot be exported until the rows
+///   exist. The caller runs [`prove_installed`] once they do. (A snapshot with a closure is of the
+///   schema that introduced closures or later, so the build carries it forward before the proof.)
+///
+/// The caller sets `PRAGMA foreign_keys = OFF` on `conn` before calling (it cannot change inside the
+/// transaction) and checks the whole database with `foreign_key_check` once the artifacts are
+/// materialized: a provenance link names a source record that only a batch artifact makes.
+///
+/// # Errors
+/// An [`InstallError`]; the vault is unchanged.
+pub fn install_snapshot_with_closure(
+    conn: &mut Connection,
+    vault_id: [u8; 16],
+    verified: &Verified,
+) -> Result<(InstalledSnapshot, Vec<SnapshotAttachment>), InstallError> {
+    install_inner(conn, vault_id, verified, true)
+}
+
+fn install_inner(
+    conn: &mut Connection,
+    vault_id: [u8; 16],
+    verified: &Verified,
+    with_closure: bool,
+) -> Result<(InstalledSnapshot, Vec<SnapshotAttachment>), InstallError> {
     let manifest = &verified.manifest;
     let snapshot_schema: u64 = manifest.schema_version.parse().map_err(|_| {
         InstallError::Snapshot(SnapshotError::ManifestInvalid("the schema version"))
@@ -157,7 +209,7 @@ pub fn install_snapshot(
             vault: vault_schema,
         });
     }
-    if !manifest.artifacts.is_empty() {
+    if !with_closure && !manifest.artifacts.is_empty() {
         return Err(InstallError::NeedsArtifacts);
     }
 
@@ -186,10 +238,11 @@ pub fn install_snapshot(
         }
     }
     // An attachment row's bytes are an artifact.
-    if manifest
-        .tables
-        .iter()
-        .any(|t| t.name == "attachments" && t.row_count != "0")
+    if !with_closure
+        && manifest
+            .tables
+            .iter()
+            .any(|t| t.name == "attachments" && t.row_count != "0")
     {
         return Err(InstallError::NeedsArtifacts);
     }
@@ -227,8 +280,10 @@ pub fn install_snapshot(
     )?;
 
     let mut rows = 0_u64;
+    let mut attachments = Vec::new();
     for (entry, (name, content)) in manifest.tables.iter().zip(&verified.files) {
         debug_assert_eq!(&entry.name, name);
+        let holds_attachment_rows = with_closure && entry.name == "attachments";
         let names: Vec<&str> = entry.columns.iter().map(|c| c.name.as_str()).collect();
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({})",
@@ -239,18 +294,74 @@ pub fn install_snapshot(
         let mut insert = tx.prepare(&sql)?;
         for line in content.split_inclusive(|b| *b == b'\n') {
             let values = parse_row_line(line, &entry.columns)?;
-            insert.execute(rusqlite::params_from_iter(
-                values.into_iter().map(sql_value),
-            ))?;
+            if holds_attachment_rows {
+                attachments.push(attachment_of(&entry.columns, values)?);
+            } else {
+                insert.execute(rusqlite::params_from_iter(
+                    values.into_iter().map(sql_value),
+                ))?;
+            }
             rows += 1;
         }
     }
 
-    // The proof: what is installed exports to the snapshot, table for table.
-    let (again, _) = export_within(&tx, &ExportInput::default())?;
+    // The proof: what is installed exports to the snapshot, table for table. With a closure the
+    // attachment rows do not exist yet, so the proof waits for them (`prove_installed`).
+    if !with_closure {
+        prove_in(&tx, verified, true)?;
+    }
+    tx.commit()?;
+    Ok((
+        InstalledSnapshot {
+            tables: manifest.tables.len(),
+            rows,
+        },
+        attachments,
+    ))
+}
+
+/// The attachment row a snapshot's `attachments` line holds.
+fn attachment_of(
+    columns: &[ColumnEntry],
+    values: Vec<OwnedValue>,
+) -> Result<SnapshotAttachment, InstallError> {
+    let malformed = || InstallError::Snapshot(SnapshotError::MalformedRow);
+    let mut id = None;
+    let mut plaintext_size = None;
+    let mut mime_type = None;
+    let mut original_filename = None;
+    let mut created_at = None;
+    for (column, value) in columns.iter().zip(values) {
+        match (column.name.as_str(), value) {
+            ("id", OwnedValue::Blob(bytes)) => {
+                id = Some(<[u8; 16]>::try_from(bytes).map_err(|_| malformed())?);
+            }
+            ("plaintext_size", OwnedValue::Int(n)) => plaintext_size = Some(n),
+            ("mime_type", OwnedValue::Text(t)) => mime_type = Some(t),
+            ("mime_type", OwnedValue::Null) => mime_type = None,
+            ("original_filename", OwnedValue::Text(t)) => original_filename = Some(t),
+            ("original_filename", OwnedValue::Null) => original_filename = None,
+            ("created_at", OwnedValue::Text(t)) => created_at = Some(t),
+            _ => {}
+        }
+    }
+    Ok(SnapshotAttachment {
+        id: id.ok_or_else(malformed)?,
+        plaintext_size: plaintext_size.ok_or_else(malformed)?,
+        mime_type,
+        original_filename,
+        created_at: created_at.ok_or_else(malformed)?,
+    })
+}
+
+/// The proof that what is installed exports to the snapshot, table for table (the same file hash, row
+/// count and state digest, and the same header), run inside `tx`.
+fn prove_in(tx: &Connection, verified: &Verified, check_schema: bool) -> Result<(), InstallError> {
+    let manifest = &verified.manifest;
+    let (again, _) = export_within(tx, &ExportInput::default())?;
     let reexported = verify(&again)?;
     if reexported.manifest.vault_created_at != manifest.vault_created_at
-        || reexported.manifest.schema_version != manifest.schema_version
+        || (check_schema && reexported.manifest.schema_version != manifest.schema_version)
     {
         return Err(InstallError::HeaderMismatch);
     }
@@ -266,11 +377,22 @@ pub fn install_snapshot(
             });
         }
     }
-    tx.commit()?;
-    Ok(InstalledSnapshot {
-        tables: manifest.tables.len(),
-        rows,
-    })
+    Ok(())
+}
+
+/// The proof of [`install_snapshot_with_closure`], once the attachment rows exist: the installed state
+/// exports to the snapshot's tables, table for table (the same file hash, row count and state
+/// digest), and the vault's creation time is the snapshot's. The schema version is not compared: the
+/// build has carried the vault to its own schema since, and the tables' columns were checked equal
+/// to this build's at install.
+///
+/// # Errors
+/// [`InstallError::DigestMismatch`] naming the first table that differs, or
+/// [`InstallError::HeaderMismatch`].
+pub fn prove_installed(conn: &Connection, verified: &Verified) -> Result<(), InstallError> {
+    // One read transaction, so the proof reads one view.
+    let tx = conn.unchecked_transaction()?;
+    prove_in(&tx, verified, false)
 }
 
 /// The tables a snapshot installs, for a caller that wants to know before it creates a vault.

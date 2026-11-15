@@ -109,6 +109,7 @@ fn source<'a>(
         engine_version: version,
         own_engine_version: own,
         held_voids: held,
+        closure: None,
     }
 }
 
@@ -582,4 +583,62 @@ fn a_base_image_that_is_not_the_abandoned_bootstraps_own_is_never_removed() {
         std::fs::read(base_image_path(&path)).unwrap(),
         b"changed since"
     );
+}
+
+/// A snapshot with no closure is installed with foreign keys on, and they are still on when the base
+/// image is captured (the install's commit-time check is the C.8 check).
+#[test]
+fn a_snapshot_with_no_closure_keeps_foreign_keys_on_through_the_base_capture() {
+    let (_origin_dir, origin, verified) = origin();
+    let (version, own) = (engine(), engine());
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("vault.db");
+    bootstrap_replica(
+        &path,
+        &dek(),
+        &source(&origin, &verified, 3, &version, &own, &[]),
+    )
+    .unwrap();
+    assert_eq!(
+        super::super::sync_bootstrap::foreign_keys_at_capture(),
+        Some(true)
+    );
+}
+
+/// A snapshot with no closure and a row that names a row that is not there is refused through
+/// `bootstrap_replica`, and no vault is left.
+#[test]
+fn a_snapshot_with_no_closure_and_a_dangling_reference_is_refused_and_leaves_no_vault() {
+    let (_dir, origin, _) = origin();
+    {
+        let conn = origin.read_connection().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        conn.execute(
+            "INSERT INTO transaction_categorizations
+                 (transaction_id, category_id, source, confidence_bps, assigned_at)
+             VALUES (?1, ?2, 'user', 10000, 't')",
+            rusqlite::params![[0xee_u8; 16].as_slice(), [0xef_u8; 16].as_slice()],
+        )
+        .unwrap();
+    }
+    let verified = verify(
+        &export_genesis_plaintext(&origin.read_connection().unwrap(), &ExportInput::default())
+            .unwrap(),
+    )
+    .unwrap();
+    let (version, own) = (engine(), engine());
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("vault.db");
+    let error = bootstrap_replica(
+        &path,
+        &dek(),
+        &source(&origin, &verified, 3, &version, &own, &[]),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, BootstrapError::Install(_)),
+        "refused by the install's own commit-time check: {error:?}"
+    );
+    // The temporary replica is left for the next start to discard, as after any failed build.
+    assert!(!path.exists(), "no vault");
 }

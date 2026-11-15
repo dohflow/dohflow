@@ -98,6 +98,7 @@ mod spend_by_category;
 mod staged_import;
 pub mod sync_artifacts;
 pub mod sync_bootstrap;
+pub mod sync_bootstrap_artifacts;
 pub mod sync_enable;
 pub mod sync_genesis;
 pub mod sync_genesis_gap;

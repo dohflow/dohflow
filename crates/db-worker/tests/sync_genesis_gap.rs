@@ -122,6 +122,7 @@ impl Device {
             epoch_key: &key,
             chain: &chain,
             own_engine_version: &own,
+            artifacts: &self.artifacts,
         })
     }
 
@@ -702,6 +703,7 @@ fn the_armed_base_is_the_genesis_state_and_a_second_replica_applying_the_outbox_
             engine_version: &engine,
             own_engine_version: &EngineVersion::new(db_worker::ENGINE_VERSION).unwrap(),
             held_voids: &[],
+            closure: None,
         },
     )
     .unwrap();
@@ -848,6 +850,7 @@ fn an_import_taken_in_the_gap_arms_as_the_ordinary_pending_import_it_would_have_
             engine_version: &engine,
             own_engine_version: &EngineVersion::new(db_worker::ENGINE_VERSION).unwrap(),
             held_voids: &[],
+            closure: None,
         },
     )
     .unwrap();
@@ -1082,6 +1085,7 @@ fn a_rekey_on_the_origin_after_the_snapshot_changes_nothing_a_replica_depends_on
             engine_version: &engine,
             own_engine_version: &EngineVersion::new(db_worker::ENGINE_VERSION).unwrap(),
             held_voids: &[],
+            closure: None,
         },
     )
     .unwrap();
