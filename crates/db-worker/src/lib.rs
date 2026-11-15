@@ -70,6 +70,7 @@ mod forecast_backtest;
 mod forecast_events;
 mod forecast_overrides;
 mod forecast_persist;
+mod import_identity_backfill;
 mod ingestion;
 mod jobs;
 pub mod logical_export;
@@ -1645,6 +1646,17 @@ pub enum DbError {
     /// An existing vault does not match a proven supported migration layout.
     #[error("existing vault schema is unsupported or incomplete")]
     UnsupportedSchema,
+    /// A migration refused to run because Sync is armed on this vault (a `sync_base` or a
+    /// `sync_genesis` row exists): it writes class-1 rows outside a command, which no other device
+    /// would receive (ADR 0074 Addendum J item 7). The migration rolled back and the vault is at its
+    /// previous schema.
+    #[error("migration {version} is refused: {case}, so this vault cannot take a migration that writes shared rows outside a command")]
+    MigrationRefusedSyncArmed {
+        /// The migration that refused.
+        version: i64,
+        /// What armed the vault.
+        case: &'static str,
+    },
     /// The worker is not in a state that accepts writes.
     #[error("worker unavailable for writes: {0:?}")]
     WorkerUnavailable(WorkerState),
