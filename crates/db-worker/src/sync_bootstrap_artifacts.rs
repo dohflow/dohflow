@@ -95,9 +95,9 @@ pub enum InvalidSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ContentFault {
-    /// Another attachment already stores a blob with these bytes.
-    #[error("another attachment already stores a blob with these bytes")]
-    BlobHeld,
+    /// The snapshot has an attachment id the vault already holds.
+    #[error("the vault already holds an attachment with this id")]
+    AttachmentExists,
     /// The artifact is not a valid attachment.
     #[error("the artifact is not a valid attachment")]
     NotAnAttachment,
@@ -251,7 +251,6 @@ fn fetch_error(error: FetchError, id: ArtifactId) -> ClosureError {
 
 fn materialize_error(error: MaterializeError) -> ClosureError {
     match error {
-        MaterializeError::BlobHeld => InvalidSnapshot::Content(ContentFault::BlobHeld).into(),
         MaterializeError::NotAnAttachment => {
             InvalidSnapshot::Content(ContentFault::NotAnAttachment).into()
         }
@@ -422,8 +421,8 @@ pub(crate) fn finish(
                     CreateAttachmentError::SizeDisagrees => {
                         ClosureError::from(InvalidSnapshot::AttachmentSize)
                     }
-                    CreateAttachmentError::AlreadyExists | CreateAttachmentError::StorageIdHeld => {
-                        InvalidSnapshot::Content(ContentFault::BlobHeld).into()
+                    CreateAttachmentError::AlreadyExists => {
+                        InvalidSnapshot::Content(ContentFault::AttachmentExists).into()
                     }
                     CreateAttachmentError::ArtifactMissing
                     | CreateAttachmentError::WrongAttachment => {
@@ -465,10 +464,6 @@ mod tests {
             _ => None,
         };
         assert_eq!(
-            invalid(MaterializeError::BlobHeld),
-            Some(ContentFault::BlobHeld)
-        );
-        assert_eq!(
             invalid(MaterializeError::NotAnAttachment),
             Some(ContentFault::NotAnAttachment)
         );
@@ -482,11 +477,18 @@ mod tests {
             invalid(MaterializeError::LiveReference),
             Some(ContentFault::LiveReference)
         );
-        assert!(matches!(
-            materialize_error(MaterializeError::Local(DbError::WorkerUnavailable(
-                crate::WorkerState::Healthy
-            ))),
-            ClosureError::Local(LocalFault::Materialize(_))
-        ));
+        // A blob this device holds that cannot be used (it conflicts with the bytes, or is gone) is
+        // this device's disk, never the snapshot's: it is local only because nothing maps it to an
+        // invalid snapshot.
+        for error in [
+            MaterializeError::BlobConflict,
+            MaterializeError::BlobMissing,
+            MaterializeError::Local(DbError::WorkerUnavailable(crate::WorkerState::Healthy)),
+        ] {
+            assert!(matches!(
+                materialize_error(error),
+                ClosureError::Local(LocalFault::Materialize(_))
+            ));
+        }
     }
 }
