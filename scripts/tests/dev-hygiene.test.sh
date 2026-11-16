@@ -927,6 +927,14 @@ out="$(RUN_V --clean --yes 2>&1)"
 grep -q "prune skipped: 1 gutted registration(s)" <<<"$out" && pass "gutted only: the prune is skipped with the list" || fail "gutted only: no skip line: $out"
 [ "$(registered "$VT/gutonly")" = 1 ] && [ -f "$VT/gutonly/Cargo.toml" ] && pass "gutted only: the registration and the files stay" || fail "gutted only: it was pruned"
 git -C "$SMAIN" worktree repair "$VT/gutonly" >/dev/null 2>&1
+# (3b) the gutted tree is the LAST record git lists (it sorts by path): the final record must be checked too
+vt_wt zzlast; unlink "$VT/zzlast/.git"
+last_wt="$(git -C "$SMAIN" worktree list --porcelain | grep '^worktree ' | tail -n 1)"
+[ "$last_wt" = "worktree $VT/zzlast" ] && pass "setup: the gutted tree is the last registration listed" || fail "setup: zzlast is not last: $last_wt"
+out="$(RUN_V --clean --yes 2>&1)"
+grep -q "prune skipped: 1 gutted registration(s)" <<<"$out" && pass "a gutted tree listed last still skips the prune" || fail "last-record gutted tree missed: $out"
+[ "$(registered "$VT/zzlast")" = 1 ] && [ -f "$VT/zzlast/Cargo.toml" ] && pass "and its registration and files stay" || fail "the last-record gutted tree was pruned"
+git -C "$SMAIN" worktree repair "$VT/zzlast" >/dev/null 2>&1
 # (4) the check is repeated after the prompt: a tree gutted while the prompt waited stops the prune
 vt_wt late
 mv "$VT/late" "$TMP/vt-late-moved"                   # a gone directory: the plan will say "prune"
