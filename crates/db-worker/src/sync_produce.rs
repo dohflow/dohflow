@@ -595,6 +595,11 @@ impl DbWorker {
                 Err(other) => return Err(other),
             }
         }
+        // Every id put again must come back from the logical object that was produced. The id half
+        // is the live check (a recorded id the object no longer has). The hash half is a second guard
+        // behind the seal-time one (`Changed` when a re-seal's hash is not the recorded one, before
+        // any put): `a_re_put_whose_hash_differs_from_the_recorded_one_is_refused_as_changed_before_any_put`
+        // pins the seal-time guard and, with the id test, this comparison as a whole.
         for index in missing {
             let (id, hash, ..) = &recorded[index];
             let now = again.iter().find(|p| p.id == *id);
