@@ -910,6 +910,8 @@ registered() { git -C "$SMAIN" worktree list --porcelain | grep -c -F -- "worktr
 out="$(RUN_V --clean --yes 2>&1)"
 grep -q "prune skipped: 1 gutted registration(s) still have a directory; pruning them is the owner's call" <<<"$out" && pass "gutted plus gone: the plan says the prune is skipped, and why" || fail "no skip line: $out"
 grep -q "$VT/nogit" <<<"$out" && pass "and lists the gutted registration" || fail "gutted registration not listed: $out"
+if grep -q "appeared since the plan" <<<"$out"; then fail "the plan skipped the prune and the apply step also reported a late skip: $out"; else pass "the plan itself dropped the prune (no late skip was needed)"; fi
+if grep -q "Registrations to prune" <<<"$out"; then fail "the plan offered a prune beside the skip line: $out"; else pass "and offered no prune beside the skip line"; fi
 [ "$(registered "$VT/nogit")" = 1 ] && [ "$(registered "$VT/goneT")" = 1 ] && pass "gutted plus gone: both stay registered (nothing was pruned)" || fail "a registration was pruned although a gutted one exists: $out"
 [ -d "$VT/nogit" ] && [ -f "$VT/nogit/Cargo.toml" ] && pass "and the gutted tree's files stay" || fail "--clean touched the gutted tree"
 # (2) gone only: the registration is pruned, as before
