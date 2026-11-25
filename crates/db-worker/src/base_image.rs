@@ -351,7 +351,7 @@ impl KeyMaterial {
 /// Empty every secret-bearing table of the image at `path` and vacuum it, leaving one closed file
 /// with no side files. `secure_delete` zeroes deleted content and the vacuum rewrites the file, so
 /// no free page keeps a credential the live vault once held.
-fn strip_secrets(path: &Path, key: &KeyMaterial) -> Result<(), DbError> {
+pub(crate) fn strip_secrets(path: &Path, key: &KeyMaterial) -> Result<(), DbError> {
     let conn = key.open_image(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     conn.pragma_update(None, "journal_mode", "DELETE")?;
     conn.pragma_update(None, "secure_delete", "ON")?;
@@ -817,9 +817,9 @@ pub(crate) fn copy_file_synced(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 /// The `sync_base` row: `(base_seq, base_digest, state)`.
-type BaseRow = (i64, Option<Vec<u8>>, SyncBaseState);
+pub(crate) type BaseRow = (i64, Option<Vec<u8>>, SyncBaseState);
 
-fn read_base_row(conn: &Connection) -> Result<Option<BaseRow>, DbError> {
+pub(crate) fn read_base_row(conn: &Connection) -> Result<Option<BaseRow>, DbError> {
     let row: Option<(i64, Option<Vec<u8>>, String)> = conn
         .query_row(
             "SELECT base_seq, base_digest, state FROM sync_base WHERE singleton = 1",

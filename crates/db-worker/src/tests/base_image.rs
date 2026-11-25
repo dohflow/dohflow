@@ -281,7 +281,21 @@ fn the_outbox_check_and_the_copy_are_one_critical_section_and_the_strip_is_not()
                     finished.store(true, Ordering::SeqCst);
                 }));
             }
-            std::thread::sleep(Duration::from_millis(150));
+            if label == "stripping" {
+                // The writer was let through before the strip starts, so wait for it to finish
+                // rather than guess how long its dispatch takes: a fixed pause failed on a loaded
+                // CI runner. The generous bound only matters when the writer is stuck, which the
+                // assertion below reports.
+                let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                while !finished.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            } else {
+                // The writer must still be blocked here. A pause is the right tool for that
+                // direction: a writer that is wrongly let through finishes well inside it and the
+                // test fails, and a slow machine can only make the pause too short to notice.
+                std::thread::sleep(Duration::from_millis(150));
+            }
             blocked_at
                 .lock()
                 .unwrap()
@@ -301,6 +315,7 @@ fn the_outbox_check_and_the_copy_are_one_critical_section_and_the_strip_is_not()
         ]
     );
     writer.lock().unwrap().take().unwrap().join().unwrap();
+    assert!(finished.load(Ordering::SeqCst), "the writer finished");
     // The write landed after the copy, so the base does not contain it and the outbox holds it.
     let image = open_image(&worker, &base_image_path(&worker.path));
     assert_eq!(count_in(&image, "accounts"), accounts_before);
