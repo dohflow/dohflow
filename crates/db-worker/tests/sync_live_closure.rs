@@ -363,6 +363,35 @@ fn an_apply_removes_what_reachability_no_longer_holds_and_keeps_the_rest() {
         })
         .unwrap();
     assert!(vault.table().is_empty(), "no link reaches the batch now");
+    // The batch's source records are still rows of the vault, but its batch is no longer live, so the
+    // record map `load` builds leaves them out (04a's L11). A replica bootstrapped at this position
+    // seeds no batch, so it holds the same closure; if the tailed one kept the stale map, a later
+    // delta binding a new batch to one of these record ids would be judged differently on the two.
+    let stale: i64 = vault
+        .worker
+        .read_connection()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM source_records", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(stale, 1, "the pruned batch's record is still in the vault");
+    assert_eq!(
+        vault.live(1).batch_of_record(&RECORD),
+        None,
+        "a record of a batch that is no longer live belongs to no live batch"
+    );
+    let boot = bootstrapped(&s);
+    boot.worker
+        .write_sync_state(|tx| -> Result<(), LiveClosureError> {
+            tx.execute("DELETE FROM attachments", [])?;
+            tx.execute("DELETE FROM source_provenance_links", [])?;
+            seed(tx, 1, &[])
+        })
+        .unwrap();
+    assert_eq!(
+        vault.live(1),
+        boot.live(1),
+        "tailed and bootstrapped load the same closure, record map included"
+    );
 
     // Adds come first, then the prune: an entry for an object nothing reaches is gone at once.
     vault
