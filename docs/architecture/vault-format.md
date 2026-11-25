@@ -23,8 +23,8 @@ fails CI. The [table-class manifest](../../crates/db-worker/table_classes.toml)
 and its real-SQLCipher test are the exhaustive table and field inventory; this
 document defines the meaning and compatibility of those bytes.
 
-<!-- vault-format: spec-version=48 -->
-<!-- vault-format: schema-version=75 -->
+<!-- vault-format: spec-version=49 -->
+<!-- vault-format: schema-version=76 -->
 <!-- vault-format: envelope-version=1 -->
 <!-- vault-format: backup-write-version=2 -->
 <!-- vault-format: backup-read-versions=1,2 -->
@@ -272,6 +272,7 @@ synthetic no-app recovery test before any such public claim.
   door, and that a client MUST run the receiver checks on the exact bytes it uploads), binds the
   receiver-check rule set to `engine_version`, and adds the typed failure
   `AuthenticatedEnvelopeInvalid` to C.11. No wire layout or vector changes.
+- `spec-version = 49` (personal-cfo-0g528.2, AC9, schema version 76; provisional: it settles at merge) lets two attachments share one blob. The same bytes attached on two devices are two attachment ids (ADR 0013's random ids stand), and on a receiver they have one `StorageId_B`, so `attachments.storage_id` stops being unique and a blob is owned by the **set** of `attachments` rows and staged mappings that name it: written once, never overwritten, removed only with the last name, and by one rule everywhere a blob is removed. C.9 now says what a receiver does when a blob under the name is already held (check it, reuse it, stage a copy of the holder's crypto fields), the lookup of an attachment by its bytes returns the lowest id, and a rotation renames a shared blob once. A local fault replaces the refusal: a held blob that does not decrypt to the bytes, or is missing, is never a stage-9(b) verdict. No wire layout, write-set rule, vector or `engine_version` change.
 - `spec-version = 48` (personal-cfo-1cltt.7, slice D2; provisional: it settles at merge) changes the C.8 "Replica bootstrap" install normatively for a snapshot that carries a class-1b closure: the installer's single transaction becomes a build in which the closure is fetched, verified and materialized before the vault exists (a verified part waiting for its siblings is spooled as ciphertext), the `attachments` rows are created from the snapshot's row and the staged crypto, foreign keys are checked over the whole database at the end, and the re-export proof moves after the materialization; a failure is deterministic, transient or local. No wire layout, write-set rule, vector, `engine_version` or schema change.
 - `spec-version = 47` (personal-cfo-1cltt.7, slice D1, schema version 75; provisional: it settles at merge) adds the SQLite home of the live closure (B.2 `sync_live_closure`, C.9): derived, class 3, excluded from both formats, written only where the vault's class-1 state equals its accepted state (an accepted envelope's apply; the push path, which brings the table to the accepted head in the transaction that empties the outbox, because an own envelope is not applied when its push is accepted; the seed at bootstrap; the rebuild at a key epoch), never by a local command or a local-command replay. No wire layout, write-set rule, vector or `engine_version` change.
 - `spec-version = 46` (personal-cfo-1cltt.7, slice C, schema version 74; provisional: it settles at merge) **fixes the plaintext under an artifact's address** (planning ruling 2026-11-13 on a review of the genesis closure). C.3 addressed an attachment by its bytes alone while C.9 seals the attachment's id into its plaintext, so a shred followed by a re-import of the same bytes put a second, different plaintext under one address's key and zero nonce. (1) **An attachment's first id names its logical id**: `HMAC-SHA256(Expand(K_e, label "dohflow/sync-attachment-address/v1" ‖ uuid vault_id), storage_id_raw ‖ uuid attachment_id)`; a source batch part keeps the bytes-only address; re-addressing at a key-changing epoch is unchanged; only the producer computes a first id, so no receiver, decoder or engine rule changes. Vectors `attachment_artifact_id_epoch1` and `attachment_artifact_id_epoch1_other_id` are new; every existing vector is unchanged. (2) C.9's fixed-plaintext rule is stated as a producer procedure: at an artifact's first seal in an epoch, **before** the put, the producer records the SHA-256 of the complete transport plaintext and the `logical_metadata` bytes in its `sync_artifacts` row (two nullable device-local columns, `transport_plaintext_sha256` and `logical_metadata`; a producer's row writes both, a receiver's leaves them NULL), finds the row **by the logical id** on every later seal (never by an address recomputed from a storage id), rebuilds the plaintext from the stored metadata and the blob, and seals with the stored digest as its fixity; a mismatch is `ArtifactDescriptorChanged`, refused before any encryption, for batch parts as for attachments. (3) A resume of a genesis that names a saved closure asks the service which of its artifacts it holds, verifies each present one against the recorded `ciphertext_sha256`, and puts again only the missing ones. No wire layout, write-set rule, `engine_version` or existing vector change.
@@ -651,7 +652,7 @@ therefore requires reviewing this inventory.
 | `credit_card_cycles` | 1 | include | include | Canonical user intent. |
 | `credit_card_statements` | 1 | include | include | Canonical user intent. |
 | `change_journal_entries` | 1 | include | include | Canonical user intent. |
-| `attachments` | 4 | fields | fields | `id`, `plaintext_size`, `mime_type`, `original_filename` and `created_at` travel; `content_alg` and `ref_count` are rebuilt; `storage_id`, `wrapped_content_key`, `content_key_nonce` and `content_nonce` never travel. |
+| `attachments` | 4 | fields | fields | `id`, `plaintext_size`, `mime_type`, `original_filename` and `created_at` travel; `content_alg` and `ref_count` are rebuilt; `storage_id`, `wrapped_content_key`, `content_key_nonce` and `content_nonce` never travel. `storage_id` is not unique: two rows may share one blob (spec 49, C.9). |
 | `attachment_links` | 4 | include | include | Class-4 group routed to class 1 by ADR 0074 Decision 5. |
 | `source_batches` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
 | `source_records` | 1b | include | artifact | Import provenance rows travel as data in the portable export; Sync carries them as opaque artifacts under the closure rule. |
@@ -2504,12 +2505,16 @@ service-visible field. The service sees only vault routing metadata, the opaque
 artifact kind and logical metadata stay inside the encrypted object.
 
 **Receiver materialization.** A receiver verifies the outer AEAD, then the
-descriptor's length and plaintext digest, **before** it materializes anything. It
-then derives its own `StorageId_B` under its DEK, generates a fresh content key,
-re-encrypts the bytes, wraps the key under its DEK, writes the blob and row
-atomically, and records only a device-local mapping from `sync_artifact_id_e` to
-the local identity. A failure is `ArtifactMaterializationFailed`, leaves the live
-vault unchanged, and discards temporary plaintext and ciphertext. **Materialization fails only for a
+descriptor's length and plaintext digest, **before** it materializes anything.
+It then derives its own `StorageId_B` under its DEK. If no `attachments` row or
+other artifact's staging names that blob, it generates a fresh content key,
+re-encrypts the bytes, wraps the key under its DEK and writes the blob; if one
+does, it decrypts the held blob under the holder's key, checks that it equals
+these bytes and copies the holder's wrapped key and nonces, so identical bytes
+are one blob (below). It then atomically records only a device-local mapping
+from `sync_artifact_id_e` to the local identity, with the receiver-local crypto
+fields staged beside it. A failure is `ArtifactMaterializationFailed`, leaves
+the live vault unchanged, and discards temporary plaintext and ciphertext. **Materialization fails only for a
 reason local to the device** (the disk, the DEK, a write): every deterministic defect of an artifact or
 a batch is found at stage 9(b) of C.4 *before* materialization, as `ArtifactClosureMismatch`, so no
 replica can reach a materialization failure that another replica does not. A received
@@ -2519,7 +2524,7 @@ attach command's `apply` creates the row from them, so a missing mapping at `app
 `ArtifactMissing` and a row never exists without bytes. For a source batch, materialization writes the
 class-1b batch, record and parser-run rows (outside any command), before the envelope that references
 them is applied. Origin storage ids, wrapped keys and nonces never enter a write-set hash, and an
-existing blob with the same `StorageId_B` is reused, never overwritten.
+existing blob with the same `StorageId_B` is reused, never overwritten. **Two attachment ids may carry the same bytes** (two devices attached one file), and on a receiver they share one blob: the materializer asks first whether the artifact is already here **by attachment id** (the apply may have consumed its staging), and otherwise, when an `attachments` row or another artifact's staging already holds the name, it decrypts the held blob under the holder's key, compares it with the artifact's bytes, and stages a **copy of the holder's crypto fields** (the blob is encrypted once, so nothing is re-encrypted and no nonce is reused); it never writes a second blob. A held blob that does not decrypt to the bytes (`BlobConflict`) or is missing (`BlobMissing`) is a **local** fault, never a stage-9(b) verdict and never an overwrite, and the blob and the staging are left as they were. A file that **only the base image names** (a row deleted here since the base was taken) is not an orphan: a fresh materialization never overwrites it under a new content key, and refuses with the local fault `BlobInBaseImage` until a later change reuses it under the base's own crypto fields. The blob is owned by the set of rows and stagings naming it: deleting an attachment removes its row, and the file goes only when no row, no staging, no base image and no swap or rebase in progress still names it (one rule for an unlink, the orphan sweep and a materialization's own cleanup, checked after the commit under the writer lock). A rotation renames a shared blob once. A lookup of an attachment by its bytes returns the lowest id. A local-origin row and a received row that share a blob keep their own addresses: a received row's address is its mapping's, and publishing it from its blob is refused (`AttachmentMapped`).
 
 **Receipts and pins.** `ArtifactReceiptV1` is `label "dohflow/sync-receipt/v1" ‖
 uuid vault_id ‖ u64 key_epoch ‖ digest sync_artifact_id ‖ u64 ciphertext_length ‖

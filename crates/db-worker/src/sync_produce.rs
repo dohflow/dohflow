@@ -105,6 +105,13 @@ pub enum ProduceError {
     /// This vault holds no attachment with that id.
     #[error("the vault holds no such attachment")]
     AttachmentNotFound,
+    /// The attachment already has a mapping that is not the address this publication would derive:
+    /// it arrived from a peer (its address is its origin's), or it was published under another epoch.
+    /// Its address is the mapping's, never derived from its blob: a local-origin row and a received
+    /// row may share one blob (AC9), and deriving the received row's address from the blob would
+    /// name the local row's artifact with different bytes. The caller asks the mapping instead.
+    #[error("the attachment already has an address of its own")]
+    AttachmentMapped,
     /// An attachment's stored address is not 64 lowercase hex digits.
     #[error("an attachment's storage id is not a 32-byte address")]
     BadStorageId,
@@ -346,6 +353,33 @@ impl DbWorker {
                 )
                 .map_err(DbError::from)?;
             let stored = sealed_by_this_device(&conn, key, true, attachment_id)?;
+            // A row with a mapping that is not one this device produced in this epoch is not
+            // first-published from its blob: it arrived from a peer (its address is its origin's),
+            // or it was published under another epoch. A local-origin row and a received row may
+            // share one blob (AC9), so the received row's artifact must never be put again from
+            // here. The caller asks the mapping instead.
+            let mut stmt = conn
+                .prepare(
+                    "SELECT key_epoch, sync_artifact_id FROM sync_artifacts
+                      WHERE kind = 1 AND logical_id = ?1",
+                )
+                .map_err(DbError::from)?;
+            let rows = stmt
+                .query_map([attachment_id.as_slice()], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
+                })
+                .map_err(DbError::from)?;
+            for row in rows {
+                let (epoch, mapped) = row.map_err(DbError::from)?;
+                let own = u64::try_from(epoch).ok() == Some(key.key_epoch())
+                    && stored
+                        .iter()
+                        .any(|held| mapped.as_slice() == held.mapping.artifact_id.as_slice());
+                if !own {
+                    return Err(ProduceError::AttachmentMapped);
+                }
+            }
+            drop(stmt);
             (fields.storage_id, mime, stored)
         };
         let bytes = self.read_attachment_bytes(id)?;

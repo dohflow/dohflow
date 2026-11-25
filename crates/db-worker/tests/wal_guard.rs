@@ -163,9 +163,14 @@ fn a_mismatched_wal_is_refused_and_everything_is_left_byte_identical() {
     );
     assert_unchanged(dir.path(), &before);
 
-    // The sizes are the whole message: no path.
+    // The words the person reads (Studio's wording, personal-cfo-5vto5): the outcome first, both
+    // sizes as numbers, both files covered, and no path.
     let text = by_passphrase.to_string();
-    assert!(text.contains("8192") && text.contains("4096"), "{text}");
+    assert_eq!(
+        text,
+        "DohFlow did not open the vault. The write-ahead log reports a page size of 8192 bytes, \
+         but the vault requires 4096 bytes per page. Neither file was changed or deleted."
+    );
     assert!(!text.contains("copy.vault"), "no path in {text}");
 }
 
