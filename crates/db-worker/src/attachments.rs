@@ -8,9 +8,11 @@
 //! **No plaintext attachment bytes ever leave the vault.** Import encrypts in
 //! memory and writes ciphertext via a `.tmp` sibling *inside* `blobs/` followed
 //! by an atomic rename — the OS temp dir is never used. Deletion is a
-//! crypto-shred: dropping the metadata row removes the only wrapped copy of the
-//! content key, so the blob ciphertext is permanently undecryptable whether or
-//! not the file is reclaimed.
+//! crypto-shred: dropping the metadata row removes that row's wrapped copy of the
+//! content key. Two attachments may share one blob (the same bytes attached on two
+//! devices, AC9), each row holding a wrapped copy of the one content key, so the
+//! blob stays readable while any row or staging names it and is permanently
+//! undecryptable, and its file removed, with the last.
 //!
 //! This module holds the SQL + filesystem helpers; the `DbWorker` methods that
 //! orchestrate them (supplying the DEK, the writer lock, and the vault path) live
@@ -144,25 +146,57 @@ pub(crate) fn names_in_image(
     Ok(names)
 }
 
-/// Remove every file in `dir` that no `attachments` row and no staged mapping names (D7,
-/// `personal-cfo-0g528.2`): the ciphertext of a blob whose key was never committed, or a stale
-/// `.tmp`. The caller holds the writer lock, so no import or materialization is between writing its
-/// blob and recording its row. Returns how many files were removed.
+/// What keeps a blob file besides the database it is opened beside: a swap or a rebase in progress
+/// (the new-name blobs of an interrupted rotation, and any blob only a rebase's scratch vault, the
+/// base image or the pre-rebase copy names, are not named by the database), and the names the base
+/// image (`sync/base.db`, the rollback target of a rebase) holds. The one place that decides whether
+/// a blob may go, for the orphan sweep, an unlink and a materialization's own cleanup (AC9).
+#[derive(Debug, Default)]
+pub(crate) struct BlobKeep {
+    /// Nothing may be removed: a swap or a rebase is in progress.
+    pub(crate) hold_all: bool,
+    /// The names the base image holds in its rows and stagings.
+    pub(crate) image: std::collections::HashSet<String>,
+}
+
+/// Whether the database names the blob `name`: an `attachments` row or a staged mapping.
+pub(crate) fn named_in_db(conn: &Connection, name: &str) -> Result<bool, DbError> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM attachments WHERE storage_id = ?1)
+             OR EXISTS (SELECT 1 FROM sync_artifacts WHERE staged_storage_id = ?1)",
+        params![name],
+        |r| r.get(0),
+    )?)
+}
+
+/// Remove the blob file `name` unless something names it: an `attachments` row, a staged mapping,
+/// the base image, or a swap or rebase in progress. A blob is owned by the SET of rows and stagings
+/// naming it and goes with the last; the caller holds the writer lock and has already committed the
+/// change that removed the last name (never remove before commit). Returns whether it removed.
+pub(crate) fn remove_if_unnamed(
+    dir: &Path,
+    conn: &Connection,
+    keep: &BlobKeep,
+    name: &str,
+) -> Result<bool, DbError> {
+    if keep.hold_all || keep.image.contains(name) || named_in_db(conn, name)? {
+        return Ok(false);
+    }
+    remove_blob(dir, name)?;
+    Ok(true)
+}
+
+/// Remove every file in `dir` that nothing names (D7, `personal-cfo-0g528.2`): the ciphertext of a
+/// blob whose key was never committed, or a stale `.tmp`. The caller holds the writer lock, so no
+/// import or materialization is between writing its blob and recording its row. Returns how many
+/// files were removed.
 pub(crate) fn sweep_orphans(
     dir: &Path,
     conn: &Connection,
-    also_named: &std::collections::HashSet<String>,
+    keep: &BlobKeep,
 ) -> Result<usize, DbError> {
-    let mut referenced: std::collections::HashSet<String> = also_named.clone();
-    {
-        let mut stmt = conn.prepare(
-            "SELECT storage_id FROM attachments
-             UNION SELECT staged_storage_id FROM sync_artifacts WHERE staged_storage_id IS NOT NULL",
-        )?;
-        let names = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        for name in names {
-            referenced.insert(name?);
-        }
+    if keep.hold_all {
+        return Ok(0);
     }
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -178,11 +212,9 @@ pub(crate) fn sweep_orphans(
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if referenced.contains(&name) {
-            continue;
+        if remove_if_unnamed(dir, conn, keep, &name)? {
+            removed += 1;
         }
-        remove_blob(dir, &name)?;
-        removed += 1;
     }
     Ok(removed)
 }
@@ -206,7 +238,7 @@ pub(crate) fn find_id_by_storage_id(
 ) -> Result<Option<AttachmentId>, DbError> {
     let id: Option<Uuid> = conn
         .query_row(
-            "SELECT id FROM attachments WHERE storage_id = ?1",
+            "SELECT id FROM attachments WHERE storage_id = ?1 ORDER BY id LIMIT 1",
             params![storage_id],
             |r| r.get(0),
         )
@@ -342,9 +374,9 @@ pub(crate) fn delete_link(
     Ok(removed)
 }
 
-/// Crypto-shred: delete the metadata row (dropping the only wrapped content key)
-/// and return its `storage_id` so the caller can unlink the now-undecryptable
-/// blob. Returns `None` if the row was already gone.
+/// Crypto-shred: delete the metadata row (dropping its wrapped content key) and return its
+/// `storage_id`, so the caller can remove the blob if nothing else names it
+/// ([`remove_if_unnamed`]). Returns `None` if the row was already gone.
 pub(crate) fn take_storage_id_and_delete(
     conn: &Connection,
     id: AttachmentId,
