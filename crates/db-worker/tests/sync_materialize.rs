@@ -1322,9 +1322,13 @@ fn the_log_line_carries_counts_and_nothing_the_user_typed_or_imported() {
     forged.records[0].normalized_json = "{\"n\":100}".to_owned();
 
     let buffer = Buffer::default();
+    // DoD §2.4 rule 3: no timestamp in the captured line. The forbidden tokens include digit-only
+    // strings, and the default timestamp's microseconds contain "177" about once in a few hundred
+    // runs (personal-cfo-56w.10).
     let subscriber = tracing_subscriber::fmt()
         .with_writer(buffer.clone())
         .with_ansi(false)
+        .without_time()
         .finish();
     tracing::subscriber::with_default(subscriber, || {
         vault
