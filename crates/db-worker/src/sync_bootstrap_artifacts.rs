@@ -136,6 +136,10 @@ pub enum LocalFault {
     /// The spool could not be written or read.
     #[error("the spool could not be used: {0}")]
     Spool(io::Error),
+    /// A spooled part no longer opens. It opened when it was fetched, before it was written to the
+    /// spool, so only this device's disk can have changed it: never the snapshot's fault.
+    #[error("the spooled part {0:?} no longer opens: this device's disk")]
+    SpoolCorrupt(ArtifactId),
     /// The database failed.
     #[error("{0}")]
     Db(DbError),
@@ -327,8 +331,11 @@ pub(crate) fn materialize_closure(
                             opened.plaintext().blob.to_vec()
                         } else {
                             let stored = spool.take(part_id).map_err(LocalFault::Spool)?;
+                            // It opened at fetch, before it was spooled: a failure now is this
+                            // device's disk, not the snapshot (a local fault never marks a root
+                            // invalid).
                             let reopened = open_fetched(key, part_id, &stored)
-                                .map_err(|e| fetch_error(e, *part_id))?;
+                                .map_err(|_| LocalFault::SpoolCorrupt(*part_id))?;
                             reopened.plaintext().blob.to_vec()
                         };
                         blobs.push((*index, *claimed, blob));
@@ -441,4 +448,47 @@ pub(crate) fn finish(
         seed(tx, key_epoch, &materialized.live)?;
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! The classification of a materialize error: a defect of the artifact's content is the
+    //! snapshot's (deterministic, whatever the fetch order); anything else is this device's.
+
+    use super::*;
+
+    #[test]
+    fn a_content_error_is_the_snapshots_and_every_other_error_is_local() {
+        let invalid = |error: MaterializeError| match materialize_error(error) {
+            ClosureError::Invalid(InvalidSnapshot::Content(fault)) => Some(fault),
+            _ => None,
+        };
+        assert_eq!(
+            invalid(MaterializeError::NotAnAttachment),
+            Some(ContentFault::NotAnAttachment)
+        );
+        // Not reachable through a bootstrap (a snapshot's closure is judged against an empty live
+        // closure, and `RowsDiffer` needs a live holder), so the mapping is tested here.
+        assert_eq!(
+            invalid(MaterializeError::RowsDiffer),
+            Some(ContentFault::RowsDiffer)
+        );
+        assert_eq!(
+            invalid(MaterializeError::LiveReference),
+            Some(ContentFault::LiveReference)
+        );
+        // A blob this device holds that cannot be used (it conflicts with the bytes, or is gone) is
+        // this device's disk, never the snapshot's: it is local only because nothing maps it to an
+        // invalid snapshot.
+        for error in [
+            MaterializeError::BlobConflict,
+            MaterializeError::BlobMissing,
+            MaterializeError::Local(DbError::WorkerUnavailable(crate::WorkerState::Healthy)),
+        ] {
+            assert!(matches!(
+                materialize_error(error),
+                ClosureError::Local(LocalFault::Materialize(_))
+            ));
+        }
+    }
 }
