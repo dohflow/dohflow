@@ -2923,8 +2923,9 @@ pub enum KernelError {
     /// (personal-cfo-5vto5, RUSTSEC-2026-0459). Nothing was opened and the file was left exactly where
     /// it is. The two sizes are all that is reported: no path crosses the boundary.
     #[error(
-        "a write-ahead log beside the vault was written with a page size of {found_page_size} bytes, \
-         not the {expected_page_size} this vault uses; it was left untouched and the vault was not opened"
+        "DohFlow did not open the vault. The write-ahead log reports a page size of \
+         {found_page_size} bytes, but the vault requires {expected_page_size} bytes per page. \
+         Neither file was changed or deleted."
     )]
     WalHeaderMismatch {
         /// The page size the file's header names.
