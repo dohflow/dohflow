@@ -782,6 +782,7 @@ fn import_commands(account: core_ledger::AccountId) -> Vec<(db_worker::CommandMe
                 transaction_date: None,
                 category_id: None,
                 forced: false,
+                identity: None,
             },
         ),
     ]

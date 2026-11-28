@@ -124,6 +124,7 @@ fn source_sites() -> std::collections::BTreeSet<(String, u32)> {
         "apply/assumption_cmds.rs",
         "apply/balance_cmds.rs",
         "apply/categorization_cmds.rs",
+        "apply/import_identity.rs",
         "apply/ingestion_cmds.rs",
         "apply/merchant_cmds.rs",
         "apply/mod.rs",

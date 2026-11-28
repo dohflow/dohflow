@@ -40,7 +40,8 @@ pub(crate) enum Class3Effect {
     /// Nothing: the command writes no class-3 row.
     None,
     /// The scratch vault's own apply wrote the class-3 rows and they are not in the base image:
-    /// an audit row keyed by the command, or a `user.*` setting. The overlay never drops them.
+    /// an audit row keyed by the command (a committed import row's `merged` meeting writes one), or a
+    /// `user.*` setting. The overlay never drops them.
     SurvivesOverlay,
     /// Forget this device's refresh watermark for the mapped account.
     ClearLinkCursor,
@@ -61,7 +62,9 @@ pub(crate) const fn effect_of(cmd: &WriteCommand) -> Class3Effect {
     match cmd {
         W::SetConnectorLinkAccount { .. } => Class3Effect::ClearLinkCursor,
         W::DeleteConnectorConnection { .. } => Class3Effect::ScrubDeletedConnection,
-        W::SetHouseholdTimezone { .. } | W::SetUserSetting { .. } => Class3Effect::SurvivesOverlay,
+        W::SetHouseholdTimezone { .. }
+        | W::SetUserSetting { .. }
+        | W::CommitImportedTransaction { .. } => Class3Effect::SurvivesOverlay,
         W::CommitStaged { .. } | W::SkipStaged { .. } => Class3Effect::DeferredStaging,
         W::CreateAccount { .. }
         | W::UpdateAccount { .. }
@@ -91,7 +94,6 @@ pub(crate) const fn effect_of(cmd: &WriteCommand) -> Class3Effect {
         | W::CreateSourceBatch { .. }
         | W::AttachSourceRecord { .. }
         | W::UpdateBatchState { .. }
-        | W::CommitImportedTransaction { .. }
         | W::SnoozeInboxItem { .. }
         | W::DismissInboxItem { .. }
         | W::DismissRecurringSuggestion { .. }
@@ -161,6 +163,11 @@ pub(crate) const CLASS3_APPLY_SITES: &[(&str, &str, Class3Effect)] = &[
     ),
     (
         "household.rs",
+        "audit_events",
+        Class3Effect::SurvivesOverlay,
+    ),
+    (
+        "import_identity.rs",
         "audit_events",
         Class3Effect::SurvivesOverlay,
     ),

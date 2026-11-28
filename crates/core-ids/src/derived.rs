@@ -604,6 +604,33 @@ impl DerivedIds {
         self.key.content_id(tag, natural_key)
     }
 
+    /// A provider-transaction id (see [`DerivedIdKey::provider_txn_id`]): independent of the command
+    /// and consuming no ordinal.
+    ///
+    /// # Errors
+    /// See [`DerivedIdKey::provider_txn_id`].
+    pub fn provider_txn_id(
+        &self,
+        connection_id: &Uuid,
+        account_key: &str,
+        txn_id: &str,
+    ) -> Result<Uuid, DerivedIdError> {
+        self.key.provider_txn_id(connection_id, account_key, txn_id)
+    }
+
+    /// A file-row id (see [`DerivedIdKey::file_row_id`]): independent of the command and consuming
+    /// no ordinal.
+    ///
+    /// # Errors
+    /// See [`DerivedIdKey::file_row_id`].
+    pub fn file_row_id(
+        &self,
+        fingerprint: &FileFingerprint,
+        row_ordinal: u32,
+    ) -> Result<Uuid, DerivedIdError> {
+        self.key.file_row_id(fingerprint, row_ordinal)
+    }
+
     /// How many identifiers this command has minted so far.
     #[must_use]
     pub const fn minted(&self) -> u32 {

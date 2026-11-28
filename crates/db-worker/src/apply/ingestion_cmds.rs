@@ -17,6 +17,7 @@ use core_money::Money;
 use rusqlite::{Connection, OptionalExtension};
 use uuid::Uuid;
 
+use crate::apply::import_identity;
 use crate::{
     currency_from_code, ensure_system_ledger_account, ingestion, money_inbox, persist_transaction,
     record_transaction_detail, CommandMeta, DbError, RejectCode,
@@ -101,6 +102,7 @@ pub(crate) fn apply_commit_imported_transaction(
     transaction_date: &Option<NaiveDate>,
     category_id: &Option<CategoryId>,
     forced: &bool,
+    identity: &Option<crate::ImportIdentityClaim>,
 ) -> Result<Uuid, DbError> {
     if amount.is_zero() {
         return Err(DbError::reject(
@@ -168,6 +170,26 @@ pub(crate) fn apply_commit_imported_transaction(
             RejectCode::ReferenceMissing,
             "an imported transaction names a source record that does not exist".to_owned(),
         ));
+    };
+
+    // A row that claims a cross-device identity is decided by what `import_identities` holds for it
+    // (`dohflow-engine-5`); a row without one keeps the path it always had.
+    let new_identity = match identity {
+        Some(claim) => match import_identity::resolve(
+            tx,
+            meta,
+            ids,
+            claim,
+            transaction_id,
+            account_id,
+            source_record_id,
+            occurred_at,
+            amount,
+        )? {
+            import_identity::Resolution::Settled(existing) => return Ok(existing),
+            import_identity::Resolution::Commit(new) => Some(new),
+        },
+        None => None,
     };
 
     let already: bool = tx.query_row(
@@ -241,6 +263,10 @@ pub(crate) fn apply_commit_imported_transaction(
             ],
         )?;
     }
+    // The identity is recorded in the same apply as the commit, before the decision that names it.
+    if let Some(new) = &new_identity {
+        import_identity::record_identity(tx, meta, transaction_id.as_uuid(), new)?;
+    }
     // A forced commit is the person's "import anyway" override of a suspected duplicate; record that
     // intent in the audit trail. The decision is about the transaction, not the device-local staging
     // row: it is keyed by the transaction (it carries no staged id).
@@ -254,7 +280,7 @@ pub(crate) fn apply_commit_imported_transaction(
             source_batch_id: batch_id,
             layer: "transaction",
             transaction_id: Some(transaction_id.as_uuid()),
-            identity_id: None,
+            identity_id: new_identity.as_ref().map(|new| new.id()),
             matched_entity_type: None,
             matched_entity_id: None,
             decision: "committed",
