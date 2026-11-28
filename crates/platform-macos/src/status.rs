@@ -2,7 +2,7 @@
 //! host. Only fixed enum values and the numeric status leave this function: platform messages can
 //! echo what was passed in, so they are never used.
 
-use platform_traits::{SecretError, UnavailableReason};
+use platform_traits::{SecretError, StoreStep, UnavailableReason};
 
 pub const ERR_USER_CANCELED: i32 = -128;
 pub const ERR_SEC_AUTH_FAILED: i32 = -25293;
@@ -32,6 +32,32 @@ pub fn map_os_status(status: i32) -> SecretError {
     }
 }
 
+/// The status [`SecretError::StoreFailed`] carries when the platform refused a step without an error
+/// object to read (a null access control with no `CFError`). `0` is `errSecSuccess`, so it can never be
+/// a real failure code and reads as "no code given".
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const NO_STATUS_GIVEN: i32 = 0;
+
+/// The error for a store step that failed with `status`: the typed error when the status means
+/// something of its own for a store (a missing entitlement, which the app answers with its
+/// signed-build copy; a locked keychain, which it answers with "try again when it is unlocked"),
+/// otherwise [`SecretError::StoreFailed`] naming the step and the number. A store step never reports
+/// "the user cancelled" or "authentication failed" from a status: those describe a prompt, and a store
+/// shows none, so they would mislead a caller that read them as a wrong finger.
+#[must_use]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn store_step_error(step: StoreStep, status: i32) -> SecretError {
+    match map_os_status(status) {
+        error @ SecretError::Unavailable(
+            UnavailableReason::MissingEntitlement | UnavailableReason::Locked,
+        ) => error,
+        _ => SecretError::StoreFailed {
+            step,
+            code: i64::from(status),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,6 +78,36 @@ mod tests {
         assert_eq!(
             map_os_status(-25291),
             SecretError::Unavailable(UnavailableReason::Unsupported)
+        );
+    }
+
+    #[test]
+    fn a_failed_store_step_names_the_step_and_the_number() {
+        for step in [StoreStep::AccessControl, StoreStep::Delete, StoreStep::Add] {
+            for code in [-25293, -25291, -128, -50, 1, NO_STATUS_GIVEN] {
+                assert_eq!(
+                    store_step_error(step, code),
+                    SecretError::StoreFailed {
+                        step,
+                        code: i64::from(code)
+                    },
+                    "{step:?} {code}"
+                );
+            }
+            // A missing entitlement and a locked keychain keep their typed meaning: the app has copy for both.
+            assert_eq!(
+                store_step_error(step, -34018),
+                SecretError::Unavailable(UnavailableReason::MissingEntitlement)
+            );
+            assert_eq!(
+                store_step_error(step, -25308),
+                SecretError::Unavailable(UnavailableReason::Locked)
+            );
+        }
+        let text = format!("{}", store_step_error(StoreStep::Add, -25293));
+        assert_eq!(
+            text,
+            "the platform secret store refused the add step (status -25293)"
         );
     }
 

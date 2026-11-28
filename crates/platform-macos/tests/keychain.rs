@@ -258,12 +258,15 @@ fn entitled_a_public_tag_is_updated_without_authentication_and_the_secret_is_unt
 }
 
 #[test]
-#[ignore = "needs a Touch ID Mac and a signed entitled build (AC K6: does an attribute-only update of a biometric item prompt?)"]
-fn manual_updating_the_tag_of_a_biometric_item_needs_no_authentication() {
-    // The owner's Touch ID run. The update runs with a context that may not show UI, so if the platform
-    // would need the user to authenticate it FAILS (`Unavailable(Locked)`, errSecInteractionNotAllowed)
-    // instead of prompting. Ok means the markers can live in the item's public tag. A failure means they
-    // must move to a sibling non-secret item (same class, no access control): tell planning.
+#[ignore = "needs a Touch ID Mac and a signed entitled build (personal-cfo-xuu: the markers cannot live on a biometric item)"]
+fn manual_the_tag_of_a_biometric_item_cannot_be_read_or_updated_without_authentication() {
+    // The owner's Touch ID run. This test was written (AC K6) as "reading and updating the tag of a
+    // biometric item needs no authentication", expecting Ok, with the note that a failure meant the
+    // markers must move to a sibling item. It was never run, and the shipped app kept its markers on the
+    // biometric item: on a real Mac every status read right after Turn on failed. Reading or updating an
+    // attribute of an item whose access control needs a fingerprint makes the platform evaluate that
+    // access control, and with no prompt allowed it refuses. So this now ASSERTS the refusal, and the
+    // app keeps its markers on a sibling item (the next test). The exact error is printed.
     let store = entitled_store();
     assert!(
         MacBiometricAuth::new().is_available(),
@@ -271,29 +274,114 @@ fn manual_updating_the_tag_of_a_biometric_item_needs_no_authentication() {
     );
     let k = SecretKey::new(
         "app.dohflow.keychain-test",
-        &format!("bio-markers-{}", std::process::id()),
+        &format!("bio-tag-{}", std::process::id()),
     )
     .unwrap();
-    let first = PublicTag::new(&[0x33; 40]).unwrap();
-    let second = PublicTag::new(&[0x44; 40]).unwrap();
+    let tag = PublicTag::new(&[0x33; 40]).unwrap();
     store
         .store_secret_tagged(
             &k,
             &value(),
             AccessPolicy::DeviceOnlyBiometryCurrentSet,
-            Some(&first),
+            Some(&tag),
         )
         .expect("store");
     let read = store.public_tag(&k);
-    let updated = store.update_public_tag(&k, Some(&second));
-    let after = store.public_tag(&k);
-    store.delete_secret(&k).expect("cleanup");
+    let updated = store.update_public_tag(&k, Some(&tag));
+    let removed = store.delete_secret(&k);
+    println!("BIOMETRIC_TAG_READ={read:?} BIOMETRIC_TAG_UPDATE={updated:?}");
+    assert!(
+        read.is_err() && updated.is_err(),
+        "the tag of a biometric item turned out to be readable and updatable without authentication: \
+         the markers could live there after all (read {read:?}, update {updated:?})"
+    );
+    removed.expect(
+        "remove the biometric item without a prompt (or run: security delete-generic-password)",
+    );
+}
+
+#[test]
+#[ignore = "needs a Touch ID Mac and a signed entitled build (personal-cfo-xuu: the sibling that holds the markers)"]
+fn manual_the_markers_sibling_reads_and_updates_without_authentication_next_to_a_biometric_item() {
+    // What the app does: the biometric item carries no tag, and a device-only SIBLING item (the same
+    // account, the service plus ".markers", no access control) carries the markers. Next to a real
+    // biometric item the sibling must read, update and delete with no prompt, and the biometric item
+    // must be removable with no prompt (`[U]` until this ran on a Touch ID Mac).
+    let store = entitled_store();
+    assert!(
+        MacBiometricAuth::new().is_available(),
+        "run this on a Mac with Touch ID enrolled"
+    );
+    let account = format!("bio-sibling-{}", std::process::id());
+    let item = SecretKey::new("app.dohflow.keychain-test", &account).unwrap();
+    let markers = SecretKey::new("app.dohflow.keychain-test.markers", &account).unwrap();
+    let first = PublicTag::new(&[0x33; 40]).unwrap();
+    let second = PublicTag::new(&[0x44; 40]).unwrap();
+    store
+        .store_secret_tagged(
+            &item,
+            &value(),
+            AccessPolicy::DeviceOnlyBiometryCurrentSet,
+            None,
+        )
+        .expect("store the biometric item");
+    store
+        .store_secret_tagged(&markers, &value(), AccessPolicy::DeviceOnly, Some(&first))
+        .expect("store the markers sibling");
+    let read = store.public_tag(&markers);
+    let updated = store.update_public_tag(&markers, Some(&second));
+    let after = store.public_tag(&markers);
+    let removed_item = store.delete_secret(&item);
+    let removed_markers = store.delete_secret(&markers);
     assert_eq!(
-        read.expect("reading the tag of a biometric item needs no authentication"),
+        read.expect("reading the sibling needs no authentication"),
         Some(first)
     );
-    updated.expect("updating the tag of a biometric item needs no authentication");
+    updated.expect("updating the sibling needs no authentication");
     assert_eq!(after.expect("tag"), Some(second));
+    removed_item.expect("removing the biometric item needs no authentication");
+    removed_markers.expect("remove the sibling");
+}
+
+#[test]
+#[ignore = "needs a signed build with the keychain entitlement"]
+fn entitled_a_markers_sibling_round_trips_next_to_a_device_only_item() {
+    // The part of the sibling design a Mac without Touch ID can check: two items for one account, one
+    // under the service plus ".markers", are separate items; the sibling's tag reads and updates with no
+    // prompt; and removing the pair leaves nothing. Runs in the signed harness everywhere.
+    let store = entitled_store();
+    let account = format!("sibling-{}", std::process::id());
+    let item = SecretKey::new("app.dohflow.keychain-test", &account).unwrap();
+    let markers = SecretKey::new("app.dohflow.keychain-test.markers", &account).unwrap();
+    let first = PublicTag::new(&[0x11; 40]).unwrap();
+    let second = PublicTag::new(&[0x22; 40]).unwrap();
+    store
+        .store_secret(&item, &value(), AccessPolicy::DeviceOnly)
+        .expect("store the item");
+    store
+        .store_secret_tagged(&markers, &value(), AccessPolicy::DeviceOnly, Some(&first))
+        .expect("store the markers sibling");
+    let item_tag = store.public_tag(&item);
+    let read = store.public_tag(&markers);
+    store
+        .update_public_tag(&markers, Some(&second))
+        .expect("update the sibling's tag");
+    let after = store.public_tag(&markers);
+    store.delete_secret(&item).expect("remove the item");
+    let markers_left = store.public_tag(&markers);
+    store.delete_secret(&markers).expect("remove the sibling");
+    assert_eq!(item_tag.expect("tag"), None, "the item carries no tag");
+    assert_eq!(read.expect("tag"), Some(first));
+    assert_eq!(after.expect("tag"), Some(second.clone()));
+    assert_eq!(
+        markers_left.expect("the sibling outlives the item until it is removed"),
+        Some(second)
+    );
+    assert_eq!(
+        store.public_tag(&markers).unwrap_err(),
+        SecretError::NotFound
+    );
+    assert_eq!(store.public_tag(&item).unwrap_err(), SecretError::NotFound);
 }
 
 #[test]

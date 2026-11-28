@@ -302,9 +302,14 @@ fn removing_every_fingerprint_invalidates_the_item_and_availability_says_why() {
 
 // ---- the public tag ----------------------------------------------------------------------------
 
+// These two tests used to say that a tag read and update work on a BIOMETRIC item. A real Mac does not
+// allow either (see `a_tag_read_or_update_on_a_biometric_item_fails_locked_by_default`), so the mock is
+// switched to a store that does, and they keep what they were written to show: a tag never prompts and
+// never touches the secret or its protection (personal-cfo-xuu).
 #[test]
 fn a_public_tag_reads_without_a_prompt_even_when_the_item_would_need_one() {
     let store = MockSecretStore::new();
+    store.allow_tag_access_on_biometric_items(true);
     let k = key("wrapped-dek");
     let tag = PublicTag::new(&[7_u8; 32]).unwrap();
     store
@@ -340,6 +345,7 @@ fn a_public_tag_is_bounded_and_prints_only_its_length() {
 #[test]
 fn updating_the_tag_never_prompts_never_touches_the_secret_and_works_on_a_biometric_item() {
     let store = MockSecretStore::new();
+    store.allow_tag_access_on_biometric_items(true);
     let k = key("wrapped-dek");
     let first = PublicTag::new(&[1_u8; 40]).unwrap();
     let second = PublicTag::new(&[2_u8; 40]).unwrap();
@@ -456,4 +462,62 @@ fn the_mock_witness_can_play_a_failing_platform_and_clones_share_state() {
     assert_eq!(witness.counter(&context), Ok(Some(1)));
     witness.forget_counter(&context);
     assert_eq!(witness.counter(&context), Ok(None));
+}
+
+/// A real Mac refuses to read or update an attribute of an item whose access control needs a fingerprint:
+/// the platform evaluates the access control, and with no prompt allowed it answers
+/// `errSecInteractionNotAllowed`. The mock does the same by default, so a design that keeps its
+/// non-secret markers on a biometric item fails a test with no sensor (personal-cfo-xuu).
+#[test]
+fn a_tag_read_or_update_on_a_biometric_item_fails_locked_by_default() {
+    let store = MockSecretStore::new();
+    let tag = PublicTag::new(b"marker").unwrap();
+    store
+        .store_secret_tagged(
+            &key("bio"),
+            &value(b"secret"),
+            AccessPolicy::DeviceOnlyBiometryCurrentSet,
+            Some(&tag),
+        )
+        .unwrap();
+    let locked = SecretError::Unavailable(UnavailableReason::Locked);
+    assert_eq!(store.public_tag(&key("bio")).unwrap_err(), locked);
+    assert_eq!(
+        store
+            .update_public_tag(&key("bio"), Some(&tag))
+            .unwrap_err(),
+        locked
+    );
+    // An absent item is still "not found", and a device-only item (no access control) still reads and
+    // updates its tag with no prompt: that is where the markers live.
+    assert_eq!(
+        store.public_tag(&key("absent")).unwrap_err(),
+        SecretError::NotFound
+    );
+    store
+        .store_secret_tagged(
+            &key("device"),
+            &value(b"marker item"),
+            AccessPolicy::DeviceOnly,
+            Some(&tag),
+        )
+        .unwrap();
+    assert_eq!(store.public_tag(&key("device")).unwrap(), Some(tag.clone()));
+    store.update_public_tag(&key("device"), Some(&tag)).unwrap();
+}
+
+#[test]
+fn the_failure_can_be_turned_off_to_model_a_store_without_it() {
+    let store = MockSecretStore::new();
+    store.allow_tag_access_on_biometric_items(true);
+    let tag = PublicTag::new(b"marker").unwrap();
+    store
+        .store_secret_tagged(
+            &key("bio"),
+            &value(b"secret"),
+            AccessPolicy::DeviceOnlyBiometryCurrentSet,
+            Some(&tag),
+        )
+        .unwrap();
+    assert_eq!(store.public_tag(&key("bio")).unwrap(), Some(tag));
 }

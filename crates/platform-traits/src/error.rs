@@ -18,6 +18,31 @@ pub enum UnavailableReason {
     Unsupported,
 }
 
+/// The step of a store that the platform refused. A fixed vocabulary, so a log line or a test failure can
+/// say where a store stopped without carrying anything the platform said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StoreStep {
+    /// Creating the access control the item is protected by (biometry, device-only).
+    AccessControl,
+    /// Removing the item a replacement store would supersede.
+    Delete,
+    /// Adding the item.
+    Add,
+}
+
+impl StoreStep {
+    /// The fixed label for logs: `access_control`, `delete` or `add`.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::AccessControl => "access_control",
+            Self::Delete => "delete",
+            Self::Add => "add",
+        }
+    }
+}
+
 /// A store or biometric failure. **Every `Display` and `Debug` is a fixed string**: no variant can
 /// carry a secret value, and `Platform` carries only the platform's numeric status.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -48,4 +73,10 @@ pub enum SecretError {
     /// here. Never a message: platform messages can echo what was passed in.
     #[error("the platform secret store failed (status {code})")]
     Platform { code: i64 },
+    /// A store stopped at `step` with the platform's numeric status `code` (an `OSStatus` on Apple
+    /// platforms, `0` when the platform refused without giving one). Never a message. It is returned
+    /// for every refusal at a store step except the ones with a typed meaning of their own (a missing
+    /// entitlement, a locked keychain), so a caller can name the step and the code and not guess a cause.
+    #[error("the platform secret store refused the {} step (status {code})", .step.label())]
+    StoreFailed { step: StoreStep, code: i64 },
 }

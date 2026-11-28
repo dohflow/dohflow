@@ -48,6 +48,9 @@ pub enum Reason {
     SignedBuildNeeded,
     /// The secret store is not available (locked, or no keychain here).
     StoreUnavailable,
+    /// The Mac's secure storage refused to store the Touch ID key (a status it gave, not a locked or
+    /// missing store): Touch ID could not be turned on, and the vault stays password-only.
+    StoreRefused,
     /// Touch ID was never enabled for this vault.
     NotEnabled,
     /// A Touch ID prompt was cancelled or did not match; Touch ID is still offered next time (fewer
@@ -77,6 +80,7 @@ impl Reason {
             Self::BiometryUnknown => "biometry_unknown",
             Self::SignedBuildNeeded => "signed_build_needed",
             Self::StoreUnavailable => "store_unavailable",
+            Self::StoreRefused => "store_refused",
             Self::NotEnabled => "not_enabled",
             Self::PromptNotCompleted => "prompt_not_completed",
             Self::UnlockUnavailable => "unlock_unavailable",
@@ -318,6 +322,7 @@ mod tests {
             Reason::BiometryUnknown,
             Reason::SignedBuildNeeded,
             Reason::StoreUnavailable,
+            Reason::StoreRefused,
             Reason::NotEnabled,
             Reason::PromptNotCompleted,
             Reason::UnlockUnavailable,
