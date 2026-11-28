@@ -129,7 +129,7 @@ pub(crate) fn resolve(
                     "only a SimpleFIN transaction has a provider identity",
                 ));
             }
-            // The record's own normalized payload, through the migration-76 backfill's parser (one
+            // The record's own normalized payload, through the migration-77 backfill's parser (one
             // function), so a backfilled row's first refresh compares equal.
             let (account_key, posted_date, description) =
                 crate::import_identity_backfill::parse_normalized(&source.normalized_json)
