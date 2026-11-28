@@ -646,9 +646,12 @@ impl Write for RawLog {
 impl RawLog {
     fn capture<T>(&self, f: impl FnOnce() -> T) -> T {
         let writer = self.clone();
+        // No timestamp: FORBIDDEN holds digit-only tokens ("123456"), and the default timestamp's
+        // microseconds can match one (DoD section 2.4, personal-cfo-56w.10).
         let subscriber = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::TRACE)
             .with_ansi(false)
+            .without_time()
             .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
             .with_writer(move || writer.clone())
             .finish();
