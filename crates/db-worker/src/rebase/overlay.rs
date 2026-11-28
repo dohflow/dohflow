@@ -923,6 +923,10 @@ fn drop_inherited(
     for key in inherited.get(spec.table).into_iter().flatten() {
         match tx.execute(&sql, params_from_iter(key.iter())) {
             Ok(n) => removed += n,
+            // A defensive net, unreachable at schema 78: nothing references a table the overlay drops
+            // (the only such foreign key was the old `dedupe_decisions.staged_transaction_id`), and
+            // `carry_sources` only adds source rows. `fk_classes` (its empty `KNOWN_VIOLATIONS`) stops
+            // a replicated table from gaining a foreign key into a class-3 one, so it stays that way.
             Err(rusqlite::Error::SqliteFailure(error, _))
                 if error.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY =>
             {
