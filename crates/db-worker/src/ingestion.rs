@@ -1162,10 +1162,11 @@ mod tests {
 
     /// A batch that has committed rows is never discarded (personal-cfo-0g528.3): a committed decision
     /// and the provenance link of a committed transaction name the batch and its records, and nothing
-    /// is removed when the discard is refused.
+    /// is removed when the discard is refused. Each of the guard's four arms is the only one that sees
+    /// its own case below (personal-cfo-0g528.3, review note N2).
     #[test]
     fn a_batch_with_committed_rows_is_not_discarded() {
-        for how in ["decision", "provenance", "staged"] {
+        for how in ["decision", "provenance", "staged", "committed_id"] {
             let conn = migrated();
             seed_account(&conn);
             let batch = create_source_batch(
@@ -1244,9 +1245,19 @@ mod tests {
                     )
                     .unwrap();
                 }
-                _ => {
+                "staged" => {
                     conn.execute(
                         "UPDATE staged_transactions SET commit_status = 'committed' WHERE id = ?1",
+                        [staged],
+                    )
+                    .unwrap();
+                }
+                _ => {
+                    // A committed transaction id with no committed status, no decision and no
+                    // ledger link: only the guard's own `committed_transaction_id` arm sees it.
+                    conn.execute(
+                        "UPDATE staged_transactions SET committed_transaction_id = randomblob(16)
+                          WHERE id = ?1",
                         [staged],
                     )
                     .unwrap();

@@ -346,7 +346,7 @@ fn a_snapshot_below_a_row_writing_migration_is_refused_before_anything_is_create
             &verified,
             &[],
             below.unsigned_abs(),
-            TABLES_ADDED_BY_THE_LATEST_MIGRATION,
+            TABLES_ADDED_BY_THE_FIRST_MARKED_MIGRATION,
         );
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("vault.db");
@@ -383,7 +383,7 @@ fn a_snapshot_below_a_row_writing_migration_is_refused_before_anything_is_create
             &verified,
             &[],
             between.unsigned_abs(),
-            TABLES_ADDED_BY_THE_LATEST_MIGRATION,
+            TABLES_ADDED_BY_THE_FIRST_MARKED_MIGRATION,
         );
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("vault.db");
@@ -414,8 +414,10 @@ fn a_snapshot_below_a_row_writing_migration_is_refused_before_anything_is_create
     );
 }
 
-/// The class-1 tables the marked migration added, which a snapshot exported before it does not hold.
-const TABLES_ADDED_BY_THE_LATEST_MIGRATION: &[&str] = &["import_dispositions", "import_identities"];
+/// The class-1 tables the first marked migration (77) added, which a snapshot exported before it does
+/// not hold. The second marked migration (78) adds none.
+const TABLES_ADDED_BY_THE_FIRST_MARKED_MIGRATION: &[&str] =
+    &["import_dispositions", "import_identities"];
 
 #[test]
 fn a_crash_at_any_step_leaves_no_vault_and_a_clean_second_attempt_ends_ready() {
