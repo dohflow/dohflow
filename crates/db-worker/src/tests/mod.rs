@@ -5,6 +5,7 @@
 
 mod base_image;
 mod import_identity;
+mod import_planner;
 mod instance_parity;
 mod loan_bill_overlap;
 mod loan_link;
@@ -5801,7 +5802,7 @@ fn a_duplicate_fingerprint_is_flagged_not_committed() {
 /// `CommitImportedTransaction` names no staged row), and it goes up again: the class-1 decisions and the
 /// staged flags are the same as the replay left them.
 #[test]
-fn apply_keys_every_committed_decision_and_migration_77_gives_the_replayed_state() {
+fn apply_keys_every_committed_decision_and_migration_78_gives_the_replayed_state() {
     let (_dir, worker) = worker();
     let account = sample_account();
     let account_id = account.id();
@@ -6117,6 +6118,62 @@ fn duplicate_candidates_returns_the_committed_counterpart() {
     // A freshly-staged row with a unique fingerprint has no committed counterpart.
     let lonely = stage_a_transaction(&worker, account_id, -500, "unique-fp");
     assert!(worker.duplicate_candidates(lonely).unwrap().is_empty());
+}
+
+/// personal-cfo-0g528.3 (review note N3): the counterpart a flag names is found through the staged
+/// row's own `flag_matched_transaction_id`, not only by fingerprint. The counterpart's staged row
+/// gets another fingerprint, so the fingerprint arm of the query finds nothing and only the flag's
+/// own column leads to the committed transaction.
+#[test]
+fn duplicate_candidates_finds_a_flags_counterpart_that_does_not_share_its_fingerprint() {
+    let (_dir, worker) = worker();
+    let account = sample_account();
+    let account_id = account.id();
+    worker
+        .dispatch(
+            meta(),
+            WriteCommand::CreateAccount {
+                account: Box::new(account),
+                opening_balance: None,
+            },
+        )
+        .unwrap();
+    let first = stage_a_transaction(&worker, account_id, -1299, "same-fp");
+    let second = stage_a_transaction(&worker, account_id, -1299, "same-fp");
+    for staged in [first, second] {
+        worker
+            .dispatch(
+                meta(),
+                WriteCommand::CommitStaged {
+                    staged_transaction_id: staged,
+                    force: false,
+                },
+            )
+            .unwrap();
+    }
+    let conn = worker.read_connection().unwrap();
+    let matched: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT flag_matched_transaction_id FROM staged_transactions WHERE id = ?1",
+            [second.as_uuid()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(matched.is_some(), "the flag names its counterpart");
+
+    // The counterpart's staged row no longer shares the flagged row's fingerprint.
+    conn.execute(
+        "UPDATE staged_transactions SET txn_fingerprint = 'another-fp' WHERE id = ?1",
+        [first.as_uuid()],
+    )
+    .unwrap();
+    let candidates = worker.duplicate_candidates(second).unwrap();
+    assert_eq!(
+        candidates.len(),
+        1,
+        "the flag's own counterpart column finds it"
+    );
+    assert_eq!(candidates[0].amount, Money::new(-1299, Currency::Usd));
 }
 
 #[test]

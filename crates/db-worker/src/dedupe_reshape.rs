@@ -735,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn an_armed_vault_refuses_migration_77_and_stays_at_76() {
+    fn an_armed_vault_refuses_migration_78_and_stays_at_77() {
         for sql in [
             "INSERT INTO sync_base (singleton, base_seq, state, updated_at)
              VALUES (1, 0, 'NoBase', 't')",
