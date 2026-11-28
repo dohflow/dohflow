@@ -64,10 +64,11 @@ Each feature ships with the layers that apply to it. "Applies" means the layer c
 
 ### 2.4 Tests that capture log output
 
-A test that captures `tracing` output to prove something is, or is not, logged follows two rules (`personal-cfo-56w.5`):
+A test that captures `tracing` output to prove something is, or is not, logged follows three rules (`personal-cfo-56w.5`, `personal-cfo-56w.10`):
 
 - **Install the process-wide test subscriber first.** Call `observability::testing::install_global_test_subscriber()` before installing the test's own scoped subscriber (`tracing::subscriber::with_default`). Without it, a parallel test thread can make `tracing` cache "never interested" for a shared callsite while this test's subscriber is the only one alive, and the capture silently loses those events. That always fails on many-core machines and sometimes on smaller ones. Crates outside `observability` reach the helper through a dev-dependency with the `test-support` feature.
 - **Prove the capture is not empty before asserting an absence.** Assert that a known event or field the code under test emits (or a sentinel the test emits itself) is present before asserting that a secret is absent. An empty capture must never be able to pass a no-leak check.
+- **Keep generated fields out of the capture, or out of the tokens.** A test that asserts a token is absent from captured log output builds its subscriber without time (`.without_time()`), or uses a token that cannot appear in a generated field (the timestamp, a thread name or id, a span id). A digit-only token such as `177` matches the microseconds of a timestamp about once in a few hundred runs, and the failure ejects whatever pull request is in the merge queue.
 
 ---
 
