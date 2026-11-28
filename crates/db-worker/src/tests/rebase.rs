@@ -13,7 +13,7 @@ use crate::base_image::BaseImageStatus;
 use crate::rebase::{ForkEvidence, PulledEnvelope, RebaseError, Scratch};
 
 const FINGERPRINT: [u8; 32] = [7; 32];
-const ENGINE: &str = "dohflow-engine-3";
+const ENGINE: &str = "dohflow-engine-4";
 
 /// What stands in for the vault-crypto keyed tag: any fixed function of the key.
 fn tag_for(key: &IdempotencyKey) -> IdempotencyKeyTag {
@@ -3634,28 +3634,25 @@ mod overlay {
         assert_eq!(live_base, scratch_base);
     }
 
+    /// A dedupe decision of the rebuilt vault is keyed to a ledger transaction and an import
+    /// identity, never to a staged row (personal-cfo-0g528.3, spec 51), so it cannot pin the staged
+    /// rows a rebase drops: the overlay removes the staged row the live vault no longer has.
     #[test]
-    fn a_base_row_that_rebuilt_state_still_refers_to_cannot_be_dropped_and_blocks() {
+    fn a_dedupe_decision_no_longer_pins_a_staged_row_and_the_overlay_drops_it() {
         let w = world();
         let (mut scratch, image) = ready(&w);
-        // A dedupe decision of the rebuilt vault names the staged row the live vault removed.
         exec(
             scratch.worker(),
             "INSERT INTO dedupe_decisions
-                (id, source_batch_id, layer, staged_transaction_id, decision, reason, decided_at)
-             VALUES (?1, ?2, 'transaction', ?3, 'skipped', 'fake', 't')",
-            params![Uuid::now_v7(), w.batch, w.staged_gone],
+                (id, source_batch_id, layer, decision, reason, decided_at)
+             VALUES (?1, ?2, 'transaction', 'skipped', 'fake', 't')",
+            params![Uuid::now_v7(), w.batch],
         );
-        let blocked = blocked(scratch.overlay_class3(&image).unwrap_err());
-        assert_eq!(blocked.table, "staged_transactions");
-        assert!(matches!(
-            blocked.cause,
-            BlockCause::StillReferenced { rows } if rows.count == 1
-        ));
+        scratch.overlay_class3(&image).unwrap();
         assert_eq!(
             count(scratch.worker(), "SELECT COUNT(*) FROM staged_transactions"),
-            2,
-            "nothing was dropped"
+            1,
+            "the staged row the live vault removed is dropped, the kept one stays"
         );
     }
 

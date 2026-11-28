@@ -33,13 +33,7 @@ fn classes() -> BTreeMap<String, String> {
 
 /// Known violations, each owned by the bead that removes it. The test fails on a new one AND on a
 /// listed one that no longer exists, so the list can only shrink.
-const KNOWN_VIOLATIONS: &[(&str, &str)] = &[(
-    "dedupe_decisions.staged_transaction_id -> staged_transactions",
-    // The import dedupe decision (class 4, routed to class 1 by ADR 0074 Decision 5) references the
-    // device-local staging row it decided on. personal-cfo-5ymg8.6 reshapes the decision to
-    // reference replicated state only (or drops the foreign key) when it routes the writer.
-    "personal-cfo-5ymg8.6",
-)];
+const KNOWN_VIOLATIONS: &[(&str, &str)] = &[];
 
 fn replicated(class: &str) -> bool {
     matches!(class, "1" | "1b" | "4")
