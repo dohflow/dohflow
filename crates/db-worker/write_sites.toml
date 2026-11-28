@@ -105,7 +105,7 @@ class = "1"
 statements = 1
 status = "allowed"
 bead = "personal-cfo-0g528.3"
-note = "migration 77's conversion (one INSERT): re-keys the committed and merged decisions of a vault from before the reshape and keeps what it cannot key, with NULL keys. Not a command: it runs once, inside the migration's transaction, and the migration refuses before it writes anything on a vault where Sync is armed (a sync_base or sync_genesis row), because a class-1 write outside a command reaches no other device (ADR 0074 Addendum J item 7). After launch a backfill is a command."
+note = "migration 78's conversion (one INSERT): re-keys the committed and merged decisions of a vault from before the reshape and keeps what it cannot key, with NULL keys. Not a command: it runs once, inside the migration's transaction, and the migration refuses before it writes anything on a vault where Sync is armed (a sync_base or sync_genesis row), because a class-1 write outside a command reaches no other device (ADR 0074 Addendum J item 7). After launch a backfill is a command."
 
 [[site]]
 module = "import_identity_backfill.rs"
