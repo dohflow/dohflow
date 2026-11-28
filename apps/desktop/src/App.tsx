@@ -13,6 +13,7 @@ import { RecoveryScreen } from "@/vault/screens/RecoveryScreen";
 import { Screen } from "@/vault/screens/Screen";
 import { ThemeProvider } from "@/theme/ThemeProvider";
 import { ThemeToggle } from "@/theme/ThemeToggle";
+import { useKeyboardInset } from "@/lib/useKeyboardInset";
 
 // The vault is the app's front door (personal-cfo-8v2 / -3ry): the screen the
 // user sees is a pure function of the vault lifecycle state, which the kernel
@@ -25,6 +26,9 @@ import { ThemeToggle } from "@/theme/ThemeToggle";
 // one ThemeProvider instance in the whole app.
 export default function App() {
   const [queryClient] = useState(createQueryClient);
+  // Publishes the on-screen keyboard's height for the shell's bottom padding; a no-op without a touch
+  // pointer (personal-cfo-i93n3.25).
+  useKeyboardInset();
   return (
     <ThemeProvider>
       <QueryClientProvider client={queryClient}>

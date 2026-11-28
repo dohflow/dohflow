@@ -88,7 +88,7 @@ export function BuildBadge({
       )}
     >
       {isRelease ? (
-        <span className="truncate text-[10px] text-muted-foreground">
+        <span className="truncate text-[0.625rem] text-muted-foreground">
           v{info.version}
         </span>
       ) : (
@@ -96,14 +96,14 @@ export function BuildBadge({
         // mistake for the installed build. The ink is `--on-brand-fill`, which does not
         // flip with the theme — the fill does not either.
         <span
-          className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[color:var(--on-brand-fill)]"
+          className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-[color:var(--on-brand-fill)]"
           style={{ backgroundColor: "var(--terracotta)" }}
         >
           {collapsed ? "D" : label === "Development" ? "DEV" : info.channel}
         </span>
       )}
       {!collapsed && commit && (
-        <span aria-hidden className="truncate font-mono text-[10px] text-muted-foreground">
+        <span aria-hidden className="truncate font-mono text-[0.625rem] text-muted-foreground">
           {commit}
           {info.dirty && "*"}
         </span>

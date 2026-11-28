@@ -99,7 +99,7 @@ export function TransactionFilterBar({
           <SlidersHorizontal aria-hidden />
           Filters
           {facets > 0 && (
-            <span className="inline-flex size-5 items-center justify-center rounded-full bg-primary text-[11px] font-semibold text-primary-foreground">
+            <span className="inline-flex size-5 items-center justify-center rounded-full bg-primary text-[0.6875rem] font-semibold text-primary-foreground">
               {facets}
             </span>
           )}

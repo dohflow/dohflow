@@ -158,7 +158,7 @@ export function Sidebar({
               {!collapsed && (
                 <p
                   id={headingId}
-                  className="px-2.5 pb-0.5 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70"
+                  className="px-2.5 pb-0.5 pt-3 text-[0.625rem] font-semibold uppercase tracking-wider text-muted-foreground/70"
                 >
                   {group.label}
                 </p>
@@ -202,7 +202,7 @@ export function Sidebar({
           {!collapsed && (
             <>
               <span className="flex-1 truncate text-left">Search</span>
-              <kbd className="rounded border bg-muted px-1.5 py-0.5 font-sans text-[10px] font-medium text-muted-foreground">
+              <kbd className="rounded border bg-muted px-1.5 py-0.5 font-sans text-[0.625rem] font-medium text-muted-foreground">
                 ⌘K
               </kbd>
             </>
@@ -301,7 +301,7 @@ function NavButton({
         <span
           aria-hidden
           className={cn(
-            "rounded-full bg-primary/15 text-[10px] font-semibold tabular-nums text-primary",
+            "rounded-full bg-primary/15 text-[0.625rem] font-semibold tabular-nums text-primary",
             // Collapsed: a compact dot-badge pinned to the icon's corner.
             collapsed
               ? "absolute right-1 top-1 min-w-4 px-1 py-px text-center leading-4"

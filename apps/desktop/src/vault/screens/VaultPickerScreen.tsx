@@ -108,7 +108,7 @@ export function VaultPickerScreen() {
   }
 
   return (
-    <main className="flex min-h-screen flex-col items-center bg-background px-8 pt-12 pb-6">
+    <main className="flex min-h-dvh flex-col items-center bg-background pt-[calc(3rem+var(--safe-area-top))] pr-[calc(2rem+var(--safe-area-right))] pb-[calc(1.5rem+max(var(--safe-area-bottom),var(--keyboard-inset)))] pl-[calc(2rem+var(--safe-area-left))]">
       <div className="flex h-full w-full max-w-[476px] flex-1 flex-col">
         {/* The stacked lockup above the vault list (personal-cfo-4d8.28.3): the mark
             centered over the wordmark, the tagline aligned to the wordmark's left edge. */}
@@ -119,10 +119,10 @@ export function VaultPickerScreen() {
           </span>
         </div>
 
-        <h1 className="mb-1 text-[27px] font-semibold leading-tight tracking-[-0.02em]">
+        <h1 className="mb-1 text-[1.6875rem] font-semibold leading-tight tracking-[-0.02em]">
           Welcome back
         </h1>
-        <p className="mb-5 text-[15px] text-muted-foreground">Choose a vault to unlock.</p>
+        <p className="mb-5 text-[0.9375rem] text-muted-foreground">Choose a vault to unlock.</p>
 
         {vaults.length > 3 && (
           <div className="relative mb-4">
@@ -159,7 +159,7 @@ export function VaultPickerScreen() {
                 {vault.name.trim().charAt(0).toUpperCase() || "V"}
               </div>
               <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="truncate text-[14.5px] font-semibold leading-tight">
+                <span className="truncate text-[0.90625rem] font-semibold leading-tight">
                   {vault.name}
                 </span>
                 <span className="text-xs leading-none text-muted-foreground">
@@ -293,7 +293,7 @@ function UnlockVaultModal({
           </div>
           <div>
             <h2 className="mb-1 text-xl font-semibold leading-tight">{vault.name}</h2>
-            <p className="text-[13.5px] text-muted-foreground">
+            <p className="text-[0.84375rem] text-muted-foreground">
               Enter your master password to unlock.
             </p>
           </div>
@@ -333,7 +333,7 @@ function UnlockVaultModal({
             <button
               type="button"
               onClick={() => setForgot((v) => !v)}
-              className="py-0.5 text-[12.5px] font-medium text-primary hover:underline"
+              className="py-0.5 text-[0.78125rem] font-medium text-primary hover:underline"
             >
               Forgot master password?
             </button>
@@ -441,7 +441,7 @@ function CreateVaultModal({ onBack }: { onBack: () => void }) {
             <Plus className="size-7 text-primary-foreground" aria-hidden />
           </div>
           <h2 className="text-xl font-semibold leading-tight">New vault</h2>
-          <p className="text-[13.5px] text-muted-foreground">
+          <p className="text-[0.84375rem] text-muted-foreground">
             A separate, fully encrypted space with its own password.
           </p>
         </div>
