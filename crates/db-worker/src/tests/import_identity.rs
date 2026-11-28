@@ -77,8 +77,15 @@ fn stage(
     (batch, record, commands)
 }
 
+/// The posted epoch every provider test record carries (2026-03-04 12:00 UTC).
+const POSTED: i64 = 1_772_625_600;
+
 fn simplefin_json(description: &str) -> String {
-    format!(r#"{{"account_key":"ACT-9","posted":1772625600,"description":"{description}"}}"#)
+    simplefin_json_at(description, POSTED)
+}
+
+fn simplefin_json_at(description: &str, posted: i64) -> String {
+    format!(r#"{{"account_key":"ACT-9","posted":{posted},"description":"{description}"}}"#)
 }
 
 /// A provider row: its batch, its record and the commit that claims the identity of
@@ -90,6 +97,18 @@ pub(super) fn provider_row(
     minor: i64,
     description: &str,
 ) -> (Vec<WriteCommand>, WriteCommand) {
+    provider_row_posted(worker, account, txn, minor, description, POSTED)
+}
+
+/// [`provider_row`] for a record whose `posted` epoch is the given one.
+fn provider_row_posted(
+    worker: &DbWorker,
+    account: AccountId,
+    txn: &str,
+    minor: i64,
+    description: &str,
+    posted: i64,
+) -> (Vec<WriteCommand>, WriteCommand) {
     let connection = Uuid::from_u128(CONNECTION);
     let (_, record, staged) = stage(
         worker,
@@ -97,7 +116,7 @@ pub(super) fn provider_row(
         None,
         Some(connection),
         Some(txn),
-        &simplefin_json(description),
+        &simplefin_json_at(description, posted),
     );
     let id = key(worker)
         .provider_txn_id(&connection, "ACT-9", txn)
@@ -133,6 +152,17 @@ fn file_row(
     ordinal: u32,
     minor: i64,
 ) -> (SourceBatchId, WriteCommand) {
+    file_row_at(worker, account, ordinal, minor, when())
+}
+
+/// [`file_row`] for a row that commits as the given instant (its date is that instant's UTC day).
+fn file_row_at(
+    worker: &DbWorker,
+    account: AccountId,
+    ordinal: u32,
+    minor: i64,
+    occurred_at: DateTime<Utc>,
+) -> (SourceBatchId, WriteCommand) {
     let (batch, record, _) = stage(worker, "csv", Some(FINGERPRINT), None, None, "{}");
     let fingerprint = core_ids::FileFingerprint::parse(FINGERPRINT).unwrap();
     let key = key(worker);
@@ -149,7 +179,7 @@ fn file_row(
         transaction_id: TransactionId::from_uuid(ledger_id),
         account_id: account,
         source_record_id: record,
-        occurred_at: when(),
+        occurred_at,
         amount: Money::new(minor, Currency::Usd),
         counterparty: None,
         memo: None,
@@ -522,7 +552,7 @@ fn a_claim_that_is_not_its_rows_own_is_refused_and_writes_nothing() {
     assert_eq!(count(&worker, "SELECT COUNT(*) FROM import_identities"), 0);
 
     // A file row's claim is bound the same way: the batch's own fingerprint, and the (batch, ordinal) id.
-    let (_, record, _) = stage(&worker, "csv", Some(FINGERPRINT), None, None, "{}");
+    let (batch, record, _) = stage(&worker, "csv", Some(FINGERPRINT), None, None, "{}");
     let fingerprint = core_ids::FileFingerprint::parse(FINGERPRINT).unwrap();
     let id = key.file_row_id(&fingerprint, 1).unwrap();
     let file_commit = |ledger: Uuid, fingerprint_text: &str, ordinal: u32, identity: Uuid| {
@@ -550,10 +580,20 @@ fn a_claim_that_is_not_its_rows_own_is_refused_and_writes_nothing() {
     let other_id = key
         .file_row_id(&core_ids::FileFingerprint::parse(other).unwrap(), 1)
         .unwrap();
+    // The batch's own (batch, ordinal) ledger id, so the case below is wrong in its fingerprint alone.
+    let batch_ledger_id = key
+        .content_id(
+            "txn.import",
+            &[
+                batch.as_uuid().as_bytes(),
+                i64::from(1_u32).to_be_bytes().as_slice(),
+            ],
+        )
+        .unwrap();
     for (label, command) in [
         (
-            "another file's fingerprint",
-            file_commit(Uuid::now_v7(), other, 1, other_id),
+            "another file's fingerprint (its identity consistent, its ledger id the batch's own)",
+            file_commit(batch_ledger_id, other, 1, other_id),
         ),
         (
             "a ledger id that is not the batch's and the ordinal's",
@@ -600,6 +640,27 @@ fn two_uploads_of_one_file_row_meet_and_a_different_row_is_a_conflict_not_a_sile
     let (_, routed) = file_row(&worker, other_account, 1, -700);
     worker.dispatch(meta(), routed).unwrap();
     assert_eq!(imported_transactions(&worker), 1);
+    assert_eq!(count(&worker, "SELECT COUNT(*) FROM import_identities"), 1);
+    // The account is the only field that differs: it is a conflict of its own, not a second merge.
+    assert_eq!(
+        count(
+            &worker,
+            "SELECT COUNT(*) FROM dedupe_decisions WHERE decision = 'merged'"
+        ),
+        1,
+        "the routed row did not merge"
+    );
+    let (kind, detail): (String, String) = worker
+        .read_connection()
+        .unwrap()
+        .query_row("SELECT kind, detail FROM import_dispositions", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(
+        (kind.as_str(), detail.as_str()),
+        ("file_row_conflict", "account")
+    );
     let (_, changed_amount) = file_row(&worker, account, 1, -999);
     worker.dispatch(meta(), changed_amount).unwrap();
     assert_eq!(imported_transactions(&worker), 1);
@@ -618,6 +679,72 @@ fn two_uploads_of_one_file_row_meet_and_a_different_row_is_a_conflict_not_a_sile
         .query_row("SELECT detail FROM import_dispositions", [], |r| r.get(0))
         .unwrap();
     assert_eq!(detail, "amount", "the latest differing commit's fields");
+}
+
+/// The posted date is compared for both kinds: a meeting that differs in it alone is a conflict
+/// (provider: a revision), never a silent merge.
+#[test]
+fn a_meeting_that_differs_only_in_its_posted_date_is_a_conflict_for_both_kinds() {
+    let (_dir, worker) = worker();
+    let account = account(&worker, "Checking");
+
+    // A provider record whose posted epoch is a day later; amount, currency and description equal.
+    let (_, first) = provider_row(&worker, account, "TXN-1", -1_234, "COFFEE");
+    let (_, later) =
+        provider_row_posted(&worker, account, "TXN-1", -1_234, "COFFEE", POSTED + 86_400);
+    worker.dispatch(meta(), first).unwrap();
+    worker.dispatch(meta(), later).unwrap();
+    assert_eq!(imported_transactions(&worker), 1, "nothing is committed");
+    let disposition = |worker: &DbWorker, kind: &str| -> (i64, String) {
+        let conn = worker.read_connection().unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM import_dispositions WHERE kind = ?1",
+                [kind],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let detail: String = conn
+            .query_row(
+                "SELECT detail FROM import_dispositions WHERE kind = ?1",
+                [kind],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (rows, detail)
+    };
+    assert_eq!(
+        disposition(&worker, "provider_revision"),
+        (1, "posted_date".to_owned())
+    );
+    assert_eq!(
+        count(
+            &worker,
+            "SELECT COUNT(*) FROM dedupe_decisions WHERE decision = 'merged'"
+        ),
+        0,
+        "a revision is not a merge"
+    );
+
+    // A file row that commits as an instant on another UTC day; account, amount and currency equal.
+    let (_, first) = file_row(&worker, account, 1, -700);
+    let next_day = when() + chrono::Duration::days(1);
+    let (_, later) = file_row_at(&worker, account, 1, -700, next_day);
+    worker.dispatch(meta(), first).unwrap();
+    worker.dispatch(meta(), later).unwrap();
+    assert_eq!(imported_transactions(&worker), 2, "only the two firsts");
+    assert_eq!(
+        disposition(&worker, "file_row_conflict"),
+        (1, "posted_date".to_owned())
+    );
+    assert_eq!(
+        count(
+            &worker,
+            "SELECT COUNT(*) FROM dedupe_decisions WHERE decision = 'merged'"
+        ),
+        0,
+        "a conflict is not a merge"
+    );
 }
 
 fn engine() -> EngineVersion {
